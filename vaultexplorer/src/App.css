@@ -1,0 +1,2749 @@
+/* ============================================================
+   VaultExplorer — macOS Finder look
+   ============================================================ */
+
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
+  --emoji-font: "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji",
+    "Twemoji Mozilla", sans-serif;
+
+  --accent: #0a6cff;
+  --accent-grad-top: #4c9bff;
+  --accent-grad-bot: #0a6cff;
+
+  --win-bg: #ffffff;
+  --toolbar-bg: rgba(246, 246, 246, 0.82);
+  --toolbar-border: rgba(0, 0, 0, 0.09);
+  --sidebar-bg: rgba(232, 233, 236, 0.68);
+  --sidebar-text: #3a3a3c;
+  --sidebar-section: #8a8a8e;
+  --text: #1d1d1f;
+  --text-2: #6e6e73;
+  --row-hover: rgba(0, 0, 0, 0.05);
+  --statusbar-bg: rgba(246, 246, 246, 0.9);
+  --statusbar-border: rgba(0, 0, 0, 0.08);
+  --menu-bg: rgba(246, 246, 246, 0.86);
+  --menu-border: rgba(0, 0, 0, 0.12);
+  --sheet-bg: #ececec;
+  --field-bg: rgba(0, 0, 0, 0.05);
+  --window-border: rgba(0, 0, 0, 0.18);
+  --window-radius: 11px;
+  --row-alt: rgba(0, 0, 0, 0.035);
+  --selection-bg: #3b82e0;
+  --sidebar-sel-bg: rgba(0, 0, 0, 0.10);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --win-bg: #1e1e1e;
+    --toolbar-bg: rgba(46, 46, 48, 0.82);
+    --toolbar-border: rgba(255, 255, 255, 0.09);
+    --sidebar-bg: rgba(40, 40, 43, 0.66);
+    --sidebar-text: #e4e4e6;
+    --sidebar-section: #8e8e93;
+    --text: #f5f5f7;
+    --text-2: #9b9ba0;
+    --row-hover: rgba(255, 255, 255, 0.07);
+    --statusbar-bg: rgba(40, 40, 42, 0.9);
+    --statusbar-border: rgba(255, 255, 255, 0.08);
+    --menu-bg: rgba(50, 50, 52, 0.9);
+    --menu-border: rgba(255, 255, 255, 0.12);
+    --sheet-bg: #2c2c2e;
+    --field-bg: rgba(255, 255, 255, 0.09);
+    --window-border: rgba(255, 255, 255, 0.14);
+    --row-alt: rgba(255, 255, 255, 0.045);
+    --selection-bg: #2f6fc7;
+    --sidebar-sel-bg: rgba(255, 255, 255, 0.14);
+  }
+}
+
+/* ============================================================
+   Explicit Light/Dark override (Preferences -> Appearance)
+   ============================================================
+   "System" leaves no [data-theme] attribute on <html> at all, so the
+   @media (prefers-color-scheme) blocks above/below keep governing it --
+   that's genuinely live already (confirmed by toggling the GTK theme
+   under a running window), no JS listener needed for that case.
+   Forcing Light or Dark stamps [data-theme] on <html>; every rule below
+   is scoped under :root[data-theme=...] specifically so it's MORE
+   specific than the plain-selector rules the @media blocks use above,
+   which is what lets an explicit choice win even when it disagrees with
+   the OS setting -- e.g. data-theme="light" while the OS is dark. */
+:root[data-theme="light"] {
+  --win-bg: #ffffff;
+  --toolbar-bg: rgba(246, 246, 246, 0.82);
+  --toolbar-border: rgba(0, 0, 0, 0.09);
+  --sidebar-bg: rgba(232, 233, 236, 0.68);
+  --sidebar-text: #3a3a3c;
+  --sidebar-section: #8a8a8e;
+  --text: #1d1d1f;
+  --text-2: #6e6e73;
+  --row-hover: rgba(0, 0, 0, 0.05);
+  --statusbar-bg: rgba(246, 246, 246, 0.9);
+  --statusbar-border: rgba(0, 0, 0, 0.08);
+  --menu-bg: rgba(246, 246, 246, 0.86);
+  --menu-border: rgba(0, 0, 0, 0.12);
+  --sheet-bg: #ececec;
+  --field-bg: rgba(0, 0, 0, 0.05);
+  --window-border: rgba(0, 0, 0, 0.18);
+  --row-alt: rgba(0, 0, 0, 0.035);
+  --selection-bg: #3b82e0;
+  --sidebar-sel-bg: rgba(0, 0, 0, 0.10);
+}
+:root[data-theme="dark"] {
+  --win-bg: #1e1e1e;
+  --toolbar-bg: rgba(46, 46, 48, 0.82);
+  --toolbar-border: rgba(255, 255, 255, 0.09);
+  --sidebar-bg: rgba(40, 40, 43, 0.66);
+  --sidebar-text: #e4e4e6;
+  --sidebar-section: #8e8e93;
+  --text: #f5f5f7;
+  --text-2: #9b9ba0;
+  --row-hover: rgba(255, 255, 255, 0.07);
+  --statusbar-bg: rgba(40, 40, 42, 0.9);
+  --statusbar-border: rgba(255, 255, 255, 0.08);
+  --menu-bg: rgba(50, 50, 52, 0.9);
+  --menu-border: rgba(255, 255, 255, 0.12);
+  --sheet-bg: #2c2c2e;
+  --field-bg: rgba(255, 255, 255, 0.09);
+  --window-border: rgba(255, 255, 255, 0.14);
+  --row-alt: rgba(255, 255, 255, 0.045);
+  --selection-bg: #2f6fc7;
+  --sidebar-sel-bg: rgba(255, 255, 255, 0.14);
+}
+:root[data-theme="light"] .unlock-screen {
+  background: linear-gradient(160deg, #f3f4f7 0%, #e6e8ee 100%);
+}
+:root[data-theme="dark"] .unlock-screen {
+  background: linear-gradient(160deg, #242427 0%, #1a1a1c 100%);
+}
+:root[data-theme="light"] .checkbox-row input[type="checkbox"] {
+  border-color: rgba(0, 0, 0, 0.28);
+}
+:root[data-theme="dark"] .checkbox-row input[type="checkbox"] {
+  border-color: rgba(255, 255, 255, 0.32);
+}
+:root[data-theme="light"] ::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.035);
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.38);
+  background-clip: content-box;
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.52);
+  background-clip: content-box;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.035);
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.38);
+  background-clip: content-box;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.52);
+  background-clip: content-box;
+}
+:root[data-theme="light"] .progress-row {
+  background: rgba(246, 246, 246, 0.92);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+:root[data-theme="light"] .progress-row-label {
+  color: #333;
+}
+:root[data-theme="light"] .progress-row-bar {
+  background: rgba(0, 0, 0, 0.1);
+}
+:root[data-theme="dark"] .progress-row {
+  background: rgba(50, 50, 52, 0.85);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+:root[data-theme="dark"] .progress-row-label {
+  color: #eee;
+}
+:root[data-theme="dark"] .progress-row-bar {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  color: var(--text);
+  user-select: none;
+  cursor: default;
+}
+
+button {
+  font-family: var(--font);
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+}
+
+/* ---- resize handles ----
+   A `decorations: false` window has no OS-drawn border for the window
+   manager to hit-test drags against, and the webview content underneath
+   fills 100% of the window with its own `cursor: default` -- so without
+   this, hovering the true window edge never shows a resize cursor at
+   all, and there's nothing to actually grab. Thin invisible strips along
+   each edge/corner, each showing the matching resize cursor and kicking
+   off a real native resize via `startResizeDragging` on mousedown. */
+.resize-handle {
+  position: fixed;
+  z-index: 50;
+}
+.resize-handle.n,
+.resize-handle.s {
+  left: 6px;
+  right: 6px;
+  height: 6px;
+  cursor: ns-resize;
+}
+.resize-handle.n {
+  top: 0;
+}
+.resize-handle.s {
+  bottom: 0;
+}
+.resize-handle.e,
+.resize-handle.w {
+  top: 6px;
+  bottom: 6px;
+  width: 6px;
+  cursor: ew-resize;
+}
+.resize-handle.e {
+  right: 0;
+}
+.resize-handle.w {
+  left: 0;
+}
+.resize-handle.ne,
+.resize-handle.sw {
+  width: 10px;
+  height: 10px;
+  cursor: nesw-resize;
+}
+.resize-handle.nw,
+.resize-handle.se {
+  width: 10px;
+  height: 10px;
+  cursor: nwse-resize;
+}
+.resize-handle.nw {
+  top: 0;
+  left: 0;
+}
+.resize-handle.ne {
+  top: 0;
+  right: 0;
+}
+.resize-handle.sw {
+  bottom: 0;
+  left: 0;
+}
+.resize-handle.se {
+  bottom: 0;
+  right: 0;
+}
+
+/* ---- window shell ---- */
+.app-window {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+  /* Opaque shell. A fully-transparent shell + backdrop-filter chrome was
+     tried for a "liquid glass" look, but WebKitGTK on Linux/X11 composites
+     that unstably (flickering panels, a white border, transparency only
+     appearing after a repaint/resize) -- real desktop-blur vibrancy is a
+     macOS/Windows-only capability. This keeps the window solid and stable;
+     the rounded corners still work because the webview itself is cleared to
+     transparent (see lib.rs set_background_color), so only the 4 corners
+     outside this rounded rect show through. */
+  background: var(--win-bg);
+  border-radius: var(--window-radius);
+  border: 0.5px solid var(--window-border);
+  overflow: hidden;
+}
+
+/* ---- titlebar + traffic lights ---- */
+/* This row carries the toolbar's nav/search controls too (see
+   TitleBar.tsx) instead of giving them a whole separate bar underneath --
+   that second bar was pure wasted vertical space. */
+.titlebar {
+  height: 40px;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  position: relative;
+  background: var(--toolbar-bg);
+  border-bottom: 0.5px solid var(--toolbar-border);
+}
+
+.traffic-lights {
+  display: flex;
+  gap: 9px;
+  padding-left: 13px;
+  align-items: center;
+  z-index: 5;
+  flex-shrink: 0;
+}
+
+.titlebar-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  min-width: 0;
+}
+/* Two-pane macOS layout: the toolbar now lives at the top of the content
+   pane (right of the full-height sidebar), so back/forward etc. sit clear
+   of the sidebar. Reuses .titlebar's height/bg/border; adds the spacing
+   .titlebar-content used to provide. */
+.titlebar.toolbar {
+  gap: 10px;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+/* Traffic lights row at the top of the sidebar (Finder-style). Height
+   matches the toolbar so the lights line up with it; negative side margins
+   let it span the sidebar's full width under its padding. */
+.sidebar-top {
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  margin: 0 -10px 2px;
+  padding-left: 6px;
+}
+
+.tl {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 0.5px solid rgba(0, 0, 0, 0.18);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.tl-close {
+  background: #ff5f57;
+}
+.tl-min {
+  background: #febc2e;
+}
+.tl-max {
+  background: #28c840;
+}
+.traffic-lights:hover .tl {
+  filter: brightness(0.95);
+}
+
+.titlebar-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  pointer-events: none;
+}
+
+/* ============================================================
+   Unlock screen
+   ============================================================ */
+.unlock-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, #f3f4f7 0%, #e6e8ee 100%);
+}
+@media (prefers-color-scheme: dark) {
+  .unlock-screen {
+    background: linear-gradient(160deg, #242427 0%, #1a1a1c 100%);
+  }
+}
+
+.unlock-card {
+  width: 340px;
+  padding: 30px 30px 28px;
+  background: var(--win-bg);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: center;
+}
+.unlock-badge {
+  width: 62px;
+  height: 62px;
+  border-radius: 16px;
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(160deg, var(--accent-grad-top), var(--accent-grad-bot));
+  box-shadow: 0 6px 16px rgba(10, 108, 255, 0.4);
+}
+.unlock-card h1 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0 0 2px;
+}
+.unlock-sub {
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin: 0 0 20px;
+}
+.unlock-card label {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  gap: 5px;
+  margin-bottom: 12px;
+}
+.unlock-card input {
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: var(--win-bg);
+  color: var(--text);
+  outline: none;
+  user-select: text;
+}
+.unlock-card input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10, 108, 255, 0.25);
+}
+.hint {
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin: -4px 0 12px;
+  text-align: left;
+}
+.error {
+  color: #ff3b30;
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+/* ---- buttons ---- */
+.btn-primary {
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  background: linear-gradient(180deg, var(--accent-grad-top), var(--accent-grad-bot));
+  border: 0.5px solid rgba(0, 0, 0, 0.1);
+  border-radius: 7px;
+  padding: 7px 16px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+}
+.btn-primary:disabled {
+  opacity: 0.45;
+}
+.btn-primary.wide {
+  width: 100%;
+  padding: 9px;
+  margin-top: 4px;
+}
+.btn-primary.danger {
+  background: linear-gradient(180deg, #ff6961, #ff3b30);
+}
+.btn-plain {
+  font-size: 13px;
+  color: var(--text);
+  background: var(--win-bg);
+  border: 0.5px solid rgba(0, 0, 0, 0.18);
+  border-radius: 7px;
+  padding: 7px 16px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+}
+.btn-plain.small {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.btn-plain.danger {
+  color: #ff3b30;
+  border-color: rgba(255, 59, 48, 0.35);
+}
+
+/* ============================================================
+   Explorer
+   ============================================================ */
+.explorer {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---- sidebar ---- */
+.sidebar {
+  width: 196px;
+  min-width: 196px;
+  background: var(--sidebar-bg);
+  border-right: 0.5px solid var(--toolbar-border);
+  padding: 0 10px 6px;
+  display: flex;
+  flex-direction: column;
+  /* Without this, enough favorites/vaults to overflow the sidebar's
+     height just silently clip past the bottom edge -- no scrollbar ever
+     shows up to reach them, which reads as items (or "the scrollbar")
+     randomly disappearing. */
+  overflow-y: auto;
+}
+.sidebar-section {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sidebar-section);
+  padding: 8px 8px 4px;
+  border-radius: 5px;
+}
+.sidebar-section.drop {
+  background: rgba(10, 108, 255, 0.18);
+  box-shadow: inset 0 0 0 2px var(--accent);
+  color: var(--text);
+}
+.sidebar-emoji {
+  font-size: 20px;
+  line-height: 1;
+  font-family: var(--emoji-font);
+}
+.sidebar-fav-img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  -webkit-user-drag: none;
+}
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--sidebar-text);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+.sidebar-item:hover {
+  background: var(--row-hover);
+}
+/* macOS Finder selection: not a solid blue fill -- a subtle tinted
+   background with the icon + label switching to a (slightly lighter)
+   accent blue and the label going semibold. */
+.sidebar-item.active {
+  background: var(--sidebar-sel-bg);
+  color: var(--accent-grad-top);
+  font-weight: 600;
+}
+.sidebar-item.active .sidebar-ico {
+  color: var(--accent-grad-top);
+}
+.sidebar-ico {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+  position: relative;
+}
+.sync-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: flex;
+  border-radius: 50%;
+  background: var(--win-bg);
+  box-shadow: 0 0 0 1.5px var(--win-bg);
+}
+/* Syncing/synced convention shared by the sidebar favorite dot and the
+   grid/list tile badge: spin while a sync is actually in flight, flash
+   green for a moment right after it finishes, otherwise just the plain
+   brand icon -- same as Dropbox/OneDrive/Google Drive Desktop. */
+@keyframes ve-sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.sync-badge.syncing svg,
+.entry-sync-badge.syncing svg {
+  animation: ve-sync-spin 1.1s linear infinite;
+}
+.entry-sync-badge svg,
+.sync-badge svg {
+  color: var(--text-2);
+}
+.entry-sync-badge.synced,
+.sync-badge.synced {
+  color: #1fae63;
+}
+/* Unlocked-vault row icon: just an open padlock, no colored box. Amber so
+   it reads as "this is open right now" (don't forget to lock it). */
+.sidebar-ico.vault-open {
+  background: transparent;
+  color: #ff9f0a;
+}
+/* Small dot marking a vault kept unlocked after leaving it. */
+.vault-kept {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff9f0a;
+  margin-left: auto;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+.sidebar-ico.vault {
+  background: linear-gradient(160deg, #4c9bff, #0a6cff);
+}
+.sidebar-item.active .sidebar-ico.vault {
+  background: rgba(255, 255, 255, 0.28);
+}
+.sidebar-spacer {
+  flex: 1;
+}
+/* ---- main ---- */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--win-bg);
+}
+
+/* The folder name/view options/+File/+Folder/Paste row that used to live
+   here got folded into the titlebar row itself (see App.tsx's <TitleBar>
+   children) -- a second 44px bar under the titlebar was wasted vertical
+   space once everything fit in one row. */
+/* Grouped toolbar cluster on a subtle recessed background, like the
+   macOS Finder toolbar's segmented button groups. */
+.nav-buttons {
+  display: flex;
+  gap: 2px;
+  background: var(--field-bg);
+  border-radius: 8px;
+  padding: 2px;
+}
+.tool-btn {
+  height: 26px;
+  min-width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font-size: 12.5px;
+  padding: 0 6px;
+}
+/* +File / +Folder / Paste read as real buttons, not bare toolbar glyphs:
+   a filled pill with a hairline border, the macOS toolbar-button look. */
+.tool-btn.wide-btn {
+  padding: 0 12px;
+  background: var(--field-bg);
+  border: 0.5px solid rgba(0, 0, 0, 0.14);
+  font-weight: 500;
+}
+/* Pushes the whole trailing control cluster (actions + view + search +
+   prefs) to the right edge, title stays left. */
+.cluster-start {
+  margin-left: auto;
+}
+.tool-btn:hover:not(:disabled) {
+  background: var(--row-hover);
+}
+.tool-btn.wide-btn:hover:not(:disabled) {
+  background: var(--row-hover);
+  border-color: rgba(0, 0, 0, 0.22);
+}
+.tool-btn:disabled {
+  opacity: 0.35;
+}
+/* Chrome-style circular reload button, instead of the same rounded-square
+   shape every other toolbar icon uses. */
+.refresh-btn {
+  border-radius: 50%;
+  width: 26px;
+  padding: 0;
+}
+/* Finder's "View Options" toolbar button: current view's icon + a small
+   caret, opening a dropdown (see openViewMenu) instead of a 4-wide
+   segmented control. */
+.view-menu-btn {
+  gap: 3px;
+  padding: 0 6px 0 8px;
+}
+.view-menu-btn svg:last-child {
+  opacity: 0.6;
+}
+.toolbar-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin: 0 4px 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+.segmented {
+  display: flex;
+  background: var(--field-bg);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 2px;
+}
+.seg {
+  width: 30px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+}
+.seg.on {
+  background: var(--win-bg);
+  color: var(--accent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+/* Text-labeled segments (vs. the toolbar's icon-only view toggle) need to
+   grow with their label instead of clipping it inside a fixed 30px box. */
+.seg.seg-text {
+  width: auto;
+  min-width: 30px;
+  padding: 0 12px;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.search-toggle {
+  /* right-alignment now comes from .cluster-start on the first action;
+     search sits between the view menu and prefs, no auto-margin here. */
+}
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 180px;
+  height: 26px;
+  padding: 0 9px;
+  background: var(--field-bg);
+  border-radius: 7px;
+  color: var(--text-2);
+}
+.search-clear {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  font-size: 9px;
+  color: var(--text-2);
+  background: rgba(0, 0, 0, 0.12);
+}
+.search-clear:hover {
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--text);
+}
+.search-field input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 12.5px;
+  color: var(--text);
+  user-select: text;
+}
+
+/* ---- error bar ---- */
+.error-bar {
+  background: #ffefef;
+  color: #d70015;
+  font-size: 12.5px;
+  padding: 7px 14px;
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 0.5px solid rgba(215, 0, 21, 0.2);
+}
+.error-x {
+  opacity: 0.6;
+}
+
+/* ---- content ---- */
+.content {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+/* icon grid */
+.entries.icon {
+  --icon-scale: 1;
+  display: grid;
+  /* A capped minmax(), not a bare `1fr` max: letting leftover row width
+     stretch tracks without a cap divides that leftover among however many
+     columns fit, and at high icon-scale zoom (few, bigger tiles per row)
+     that ballooned the gap between icons instead of just trailing after
+     the last column. Capping the max at 1.25x keeps that growth modest at
+     any column count. (`min(1fr, ...)` was tried here first -- `fr` isn't
+     a valid argument to `min()`/`max()`/`calc()` per spec, only to
+     minmax() directly, so that made the whole grid-template-columns value
+     invalid and collapsed the grid to a single column. This fixed-length
+     max works instead: grid's "Maximize Tracks" step distributes leftover
+     space up to a track's max even when that max isn't `fr`.) */
+  grid-template-columns: repeat(auto-fill, minmax(calc(92px * var(--icon-scale)), calc(130px * var(--icon-scale))));
+  gap: 6px 4px;
+  padding: 18px 10px;
+  align-content: start;
+}
+.entry.icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 6px 10px;
+  border-radius: 8px;
+}
+.entry-icon {
+  position: relative;
+  display: inline-flex;
+  /* Icon (and its badges) must never be a click target -- otherwise a
+     double-click whose two clicks land on different elements (the tile vs.
+     the icon <img>/<span>) isn't recognized as a dblclick, and the
+     second click's rename timer fires instead of opening. Routing all
+     pointer events to the tile makes double-click open reliably, custom
+     icons included. */
+  pointer-events: none;
+}
+.entry-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 6px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.16));
+}
+.entry.list .entry-thumb {
+  border-radius: 3px;
+}
+.custom-icon-emoji {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: inherit;
+  line-height: 1;
+  font-family: var(--emoji-font);
+}
+/* WhiteSur (macOS) file/folder tile artwork, rendered as <img>. */
+.fileicon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+.fileicon-wrap {
+  position: relative;
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+}
+.fileicon-lock {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 45%;
+  height: 45%;
+  max-width: 18px;
+  max-height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  color: #3a3a3c;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.fileicon-lock svg {
+  width: 62%;
+  height: 62%;
+}
+.entry-tag-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--win-bg);
+}
+.entry-pin-badge {
+  position: absolute;
+  left: calc(-3px * var(--icon-scale, 1));
+  top: calc(-3px * var(--icon-scale, 1));
+  display: flex;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.45));
+}
+.entry-sync-badge {
+  /* Top-right rather than the color-tag dot's bottom-right corner (which
+     it shares its base class with) -- easier to spot at a glance instead
+     of blending in with a similarly-placed tag dot. Nudged in from the
+     bare corner (rather than flush at -3px like the pin badge) so a
+     bigger icon doesn't clip outside the tile. */
+  top: 3px;
+  right: 3px;
+  bottom: auto;
+  width: auto;
+  height: auto;
+  border: none;
+  border-radius: 50%;
+  background: var(--win-bg);
+  box-shadow: 0 0 0 1.5px var(--win-bg);
+  display: flex;
+}
+/* Grow the pin/sync badges along with the icon-grid zoom level instead of
+   staying a fixed size that looks lost next to a zoomed-up icon -- CSS
+   width/height on the <svg> itself wins over its own presentation
+   attributes, so this can override the size prop the glyph components
+   were given. */
+.entry.icon .entry-pin-badge svg,
+.entry.icon .entry-sync-badge svg {
+  width: calc(11px * var(--icon-scale, 1));
+  height: calc(11px * var(--icon-scale, 1));
+}
+.entry.icon .entry-sync-badge svg {
+  width: calc(20px * var(--icon-scale, 1));
+  height: calc(20px * var(--icon-scale, 1));
+}
+.entry.icon .entry-icon {
+  width: calc(64px * var(--icon-scale, 1));
+  height: calc(64px * var(--icon-scale, 1));
+  font-size: calc(42px * var(--icon-scale, 1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.16));
+}
+.entry.icon .entry-name {
+  font-size: 12.5px;
+  line-height: 1.25;
+  text-align: center;
+  max-width: 92px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.entry.icon.selected .entry-name {
+  background: var(--selection-bg);
+  color: #fff;
+}
+.entry.icon .entry-name-edit {
+  width: auto;
+  min-width: 92px;
+  max-width: 220px;
+  text-align: center;
+}
+.entry.list .entry-name-edit {
+  flex: 1;
+  min-width: 0;
+}
+.entry-name-edit {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--win-bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+  outline: none;
+}
+/* The auto-selected filename stem on entering rename -- lighter than the
+   browser's default (fully-saturated) selection blue, which read heavy
+   against this small a field. */
+.entry-name-edit::selection {
+  background: rgba(10, 108, 255, 0.28);
+  color: inherit;
+}
+
+/* list view */
+.list-header {
+  display: grid;
+  grid-template-columns: 18px 1fr 170px 90px 130px;
+  gap: 9px;
+  padding: 4px 18px 6px 18px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  user-select: none;
+}
+.list-header .lh-spacer {
+  grid-column: 1;
+}
+.list-header > span {
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.list-header > span:hover,
+.list-header > span.on {
+  color: var(--text);
+}
+.list-header .lh-size {
+  text-align: right;
+}
+/* List+Preview: Date/Size/Type are all redundant with the preview pane,
+   which already shows them for whatever's selected -- drop all three and
+   let the name column use the freed-up space. */
+.list-header.compact,
+.entry.list.compact {
+  grid-template-columns: 18px 1fr;
+}
+.entries.list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 8px 6px;
+}
+.entry.list {
+  display: grid;
+  grid-template-columns: 18px 1fr 170px 90px 130px;
+  align-items: center;
+  gap: 9px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.entry.list:nth-child(odd) {
+  background: var(--row-alt);
+}
+.entry.list .entry-icon {
+  width: 18px;
+  height: 18px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.entry.list .entry-name {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry.list .entry-date,
+.entry.list .entry-kind {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry.list .entry-size {
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: right;
+  white-space: nowrap;
+}
+.entry.list.selected {
+  background: var(--selection-bg, var(--accent));
+  color: #fff;
+}
+.entry.list.selected .entry-kind,
+.entry.list.selected .entry-date,
+.entry.list.selected .entry-size {
+  color: rgba(255, 255, 255, 0.8);
+}
+/* Contiguous selected rows read as one smooth block, corners rounded only
+   at the top/bottom of the run -- not a stack of separately-rounded
+   chips, matching how Finder renders a multi-row selection. */
+.entry.list.selected + .entry.list.selected {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.entry.list.selected:has(+ .entry.list.selected) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.entry:hover:not(.selected) {
+  background: var(--row-hover);
+}
+.entry.dimmed:not(.selected) {
+  opacity: 0.55;
+}
+.entry.cut .entry-icon,
+.entry.cut .entry-name {
+  opacity: 0.45;
+}
+.column-row.cut .column-ico,
+.column-row.cut .column-name {
+  opacity: 0.45;
+}
+
+.empty-hint {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 13px;
+  margin-top: 60px;
+}
+
+/* ---- columns / miller view ---- */
+.columns {
+  display: flex;
+  height: 100%;
+  overflow-x: auto;
+}
+.column {
+  width: 220px;
+  min-width: 220px;
+  border-right: 0.5px solid var(--toolbar-border);
+  padding: 5px 6px;
+  overflow-y: auto;
+}
+.column-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+.column-row:hover:not(.selected) {
+  background: var(--row-hover);
+}
+.column-row.selected {
+  background: var(--accent);
+  color: #fff;
+}
+.column-ico {
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.column-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.column-chevron {
+  opacity: 0.5;
+  font-size: 14px;
+}
+.column-row.selected .column-chevron {
+  opacity: 0.9;
+}
+.column-empty {
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.preview-column {
+  width: 390px;
+  min-width: 390px;
+  padding: 16px 14px;
+  overflow-y: auto;
+  background: var(--sidebar-bg);
+}
+.preview-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border-radius: 6px;
+}
+.preview-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+  /* zoom is applied via inline transform: scale(); this only needs to
+     stay smooth and clipped to the thumb's own box (see overflow above). */
+  transition: transform 0.03s linear;
+}
+.preview-icon {
+  width: 144px;
+  height: 144px;
+}
+.preview-name {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  word-break: break-word;
+}
+.preview-column .info-rows {
+  margin-bottom: 0;
+}
+.preview-column .info-row {
+  font-size: 11.5px;
+}
+
+/* ---- list-with-preview view ---- */
+.list-preview-split {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+.list-preview-split .entries-wrap {
+  flex: 1 1 340px;
+  min-width: 220px;
+  max-width: 420px;
+  overflow-y: auto;
+}
+.preview-pane {
+  flex: 1 1 auto;
+  min-width: 480px;
+  border-left: 0.5px solid var(--toolbar-border);
+  background: var(--sidebar-bg);
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  overflow-y: auto;
+}
+.preview-pane .preview-column {
+  width: auto;
+  min-width: 0;
+  padding: 0;
+  border-right: none;
+  background: transparent;
+}
+.preview-pane-empty {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.saving-hint {
+  font-weight: 400;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.text-editor-pane {
+  min-height: 0;
+}
+.text-editor-area {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: var(--win-bg);
+  color: var(--text);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+}
+.markdown-pane {
+  min-height: 0;
+}
+.markdown-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.markdown-pane-header .preview-name {
+  margin-bottom: 0;
+  text-align: left;
+}
+.preview-name-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.preview-name-row .preview-name {
+  margin-bottom: 0;
+}
+.markdown-pane-header .preview-name-row {
+  margin-bottom: 0;
+  justify-content: flex-start;
+  flex: 1;
+  min-width: 0;
+}
+.preview-name.editable {
+  cursor: text;
+}
+.preview-name.editable:hover {
+  text-decoration: underline dotted;
+}
+.preview-name-edit {
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 5px;
+  padding: 2px 6px;
+  background: var(--win-bg);
+  color: var(--text);
+  outline: none;
+  min-width: 80px;
+}
+.markdown-toolbar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.markdown-toolbar .btn-plain.small {
+  width: 26px;
+  padding: 0;
+  text-align: center;
+}
+.markdown-rendered {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.markdown-editable {
+  outline: none;
+  border-radius: 7px;
+  padding: 4px 8px;
+  cursor: text;
+  user-select: text;
+}
+.markdown-editable:focus {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.md-img {
+  display: inline-block;
+  max-width: 100%;
+  width: 320px;
+  height: auto;
+  resize: both;
+  overflow: hidden;
+  vertical-align: middle;
+  border-radius: 4px;
+}
+.markdown-rendered h1,
+.markdown-rendered h2,
+.markdown-rendered h3,
+.markdown-rendered h4,
+.markdown-rendered h5,
+.markdown-rendered h6 {
+  margin: 0.8em 0 0.4em;
+  line-height: 1.3;
+}
+.markdown-rendered h1 {
+  font-size: 1.5em;
+}
+.markdown-rendered h2 {
+  font-size: 1.3em;
+}
+.markdown-rendered h3 {
+  font-size: 1.15em;
+}
+.markdown-rendered p {
+  margin: 0 0 0.8em;
+}
+.markdown-rendered ul,
+.markdown-rendered ol {
+  margin: 0 0 0.8em;
+  padding-left: 1.4em;
+}
+.markdown-rendered code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  background: var(--field-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.92em;
+}
+.markdown-rendered a {
+  color: var(--accent);
+}
+
+/* ---- search results ---- */
+.search-results {
+  padding: 10px 14px;
+}
+.search-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--text-2);
+  padding: 4px 4px 10px;
+}
+.search-results ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.search-results li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.search-results li:hover {
+  background: var(--row-hover);
+}
+.result-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.result-name {
+  flex-shrink: 0;
+}
+.result-path {
+  color: var(--text-2);
+  font-size: 11.5px;
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- statusbar / path bar ---- */
+.statusbar {
+  height: 26px;
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: var(--statusbar-bg);
+  border-top: 0.5px solid var(--statusbar-border);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.status-count {
+  flex-shrink: 0;
+}
+.breadcrumb-crumbs {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.breadcrumb-path-input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 3px 7px;
+  background: var(--win-bg);
+  color: var(--text);
+  outline: none;
+}
+.breadcrumb-copy {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: 6px;
+  border-radius: 4px;
+  color: var(--text-2);
+  opacity: 0.75;
+}
+.breadcrumb-copy:hover {
+  background: var(--row-hover);
+  color: var(--accent);
+  opacity: 1;
+}
+.breadcrumb-copy.copied {
+  color: #2fa84f;
+  opacity: 1;
+}
+
+/* ============================================================
+   Context menu
+   ============================================================ */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  padding: 5px;
+  background: var(--menu-bg);
+  border: 0.5px solid var(--menu-border);
+  border-radius: 8px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.28);
+}
+.context-item-wrapper {
+  position: relative;
+}
+.context-submenu {
+  position: fixed;
+  z-index: 1001;
+}
+.context-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+}
+.context-item:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+.context-label-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.context-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.context-item:disabled {
+  opacity: 0.35;
+}
+.context-item.danger {
+  color: #ff3b30;
+}
+.context-item.danger:hover {
+  background: #ff3b30;
+  color: #fff;
+}
+.context-shortcut {
+  font-size: 12px;
+  opacity: 0.6;
+}
+.context-item:hover .context-shortcut {
+  opacity: 0.85;
+}
+.context-sep {
+  height: 0.5px;
+  background: var(--menu-border);
+  margin: 5px 8px;
+}
+
+/* ============================================================
+   Sheet (modal)
+   ============================================================ */
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.18);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 900;
+}
+.reauth-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+.sheet-card {
+  margin-top: 64px;
+  width: 360px;
+  background: var(--sheet-bg);
+  border-radius: 12px;
+  padding: 20px 22px 18px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  animation: sheet-drop 0.18s ease-out;
+}
+@keyframes sheet-drop {
+  from {
+    transform: translateY(-16px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+/* macOS-style "no" shake on a wrong password (see useShakeOnError) --
+   overrides the one-shot sheet-drop entrance animation, which has
+   already finished playing by the time an error can happen. */
+.sheet-card.shake {
+  animation: shake 0.4s ease;
+}
+@keyframes shake {
+  10%,
+  90% {
+    transform: translateX(-1px);
+  }
+  20%,
+  80% {
+    transform: translateX(2px);
+  }
+  30%,
+  50%,
+  70% {
+    transform: translateX(-4px);
+  }
+  40%,
+  60% {
+    transform: translateX(4px);
+  }
+}
+.info-card {
+  text-align: center;
+}
+.machine-info-card {
+  width: 440px;
+}
+.machine-info-card .info-row {
+  text-align: left;
+}
+.icon-picker-card {
+  width: 380px;
+}
+.icon-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  /* Fixed row height instead of aspect-ratio on the buttons themselves --
+     aspect-ratio sizing on grid items (esp. combined with 1fr columns and
+     an auto-fit emoji glyph) rendered unreliably, letting rows overlap. */
+  grid-auto-rows: 34px;
+  gap: 6px;
+  margin-bottom: 16px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.icon-choice {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-size: 18px;
+  line-height: 1;
+  font-family: var(--emoji-font);
+  border: none;
+  outline: none;
+  padding: 0;
+  border-radius: 7px;
+  background: var(--field-bg);
+}
+.icon-choice:hover {
+  background: var(--row-hover);
+}
+.icon-choice.on {
+  /* Keep the same neutral background the glyph was designed against --
+     filling the whole button solid blue instead just made colorful
+     emoji look washed out/translucent next to the saturated accent, an
+     optical effect easy to mistake for an actual transparency bug. A
+     ring plus a soft tint reads as "selected" without changing the
+     glyph's contrast. */
+  background: var(--field-bg);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* One scroll area holding both the WhiteSur folder section and the emoji
+   section, so the grids themselves don't each scroll independently. */
+.icon-picker-scroll {
+  max-height: 330px;
+  overflow-y: auto;
+  margin-bottom: 16px;
+}
+.icon-picker-scroll .icon-grid {
+  max-height: none;
+  overflow: visible;
+  margin-bottom: 10px;
+}
+.icon-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  margin: 2px 2px 8px;
+}
+.icon-choice.ws {
+  padding: 3px;
+}
+.icon-choice.ws img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none;
+}
+/* Monochrome Tabler symbol icons, inlined as SVG: the SVG strokes with
+   currentColor, so it paints in the inherited text color (tint +
+   light/dark adaptation). */
+.symbol-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text);
+}
+.symbol-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.icon-choice.sym {
+  padding: 6px;
+  color: var(--text);
+}
+.sidebar-sym {
+  width: 24px;
+  height: 24px;
+}
+.info-icon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 8px;
+}
+.info-name {
+  margin: 0 0 14px;
+  font-size: 14px;
+  word-break: break-word;
+}
+.info-rows {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+  border-bottom: 0.5px solid var(--toolbar-border);
+  padding-bottom: 6px;
+}
+.info-row > span:first-child {
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+.info-row .info-path {
+  text-align: right;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+.qr-code {
+  display: flex;
+  justify-content: center;
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.qr-code svg {
+  width: 180px;
+  height: 180px;
+}
+.sheet-card h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.sheet-card p {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0 0 16px;
+  line-height: 1.4;
+}
+.sheet-card input {
+  width: 100%;
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: var(--win-bg);
+  color: var(--text);
+  outline: none;
+  margin-bottom: 16px;
+  user-select: text;
+}
+.sheet-card input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10, 108, 255, 0.25);
+}
+.password-field {
+  position: relative;
+  width: 100%;
+  margin-bottom: 16px;
+}
+.password-field input {
+  margin-bottom: 0;
+  padding-right: 34px;
+}
+.password-toggle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 0;
+  border-radius: 5px;
+}
+.password-toggle:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.compress-card {
+  width: 380px;
+}
+.field-label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0 0 6px;
+}
+.compress-level {
+  margin-bottom: 16px;
+}
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.checkbox-row input {
+  width: auto;
+  margin: 0;
+}
+/* macOS-style checkbox: native checkboxes render tiny and inconsistently
+   across platforms, so this replaces the browser control's appearance
+   entirely (rounded square, accent fill + white checkmark when checked)
+   rather than trying to reskin it. */
+.checkbox-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.28);
+  background: var(--win-bg);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.06);
+  position: relative;
+  cursor: default;
+}
+@media (prefers-color-scheme: dark) {
+  .checkbox-row input[type="checkbox"] {
+    border-color: rgba(255, 255, 255, 0.32);
+  }
+}
+.checkbox-row input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+.checkbox-row input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.checkbox-row input[type="checkbox"]:focus-visible {
+  box-shadow: 0 0 0 3px rgba(10, 108, 255, 0.3);
+}
+.readme-area {
+  width: 100%;
+  min-height: 70px;
+  font-family: var(--font);
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: var(--win-bg);
+  color: var(--text);
+  outline: none;
+  margin-bottom: 16px;
+  resize: vertical;
+}
+.advanced-toggle {
+  margin: -6px 0 10px;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+}
+.advanced-options {
+  background: var(--field-bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.advanced-options .checkbox-row:last-child {
+  margin-bottom: 0;
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 10px 22px;
+}
+.field-row input {
+  width: 60px;
+  text-align: right;
+}
+.advanced-hint {
+  font-size: 11px;
+  color: var(--text-2);
+  margin: -4px 0 10px 22px;
+}
+.sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ============================================================
+   Breadcrumb bar (path bar, Finder-style -- bottom of the window,
+   just above the statusbar, not under the toolbar)
+   ============================================================ */
+.breadcrumb-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 12px;
+  background: var(--win-bg);
+  border-top: 0.5px solid var(--toolbar-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+}
+.breadcrumb-bar::-webkit-scrollbar {
+  height: 0;
+}
+.crumb-group {
+  display: inline-flex;
+  align-items: center;
+}
+.breadcrumb-bar .crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  padding: 3px 7px;
+  border-radius: 5px;
+}
+.crumb-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.breadcrumb-bar .crumb.drop .crumb-icon {
+  color: #fff;
+}
+.breadcrumb-bar .crumb:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.breadcrumb-bar .crumb.drop {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+.crumb-home {
+  display: inline-flex;
+  color: var(--accent);
+}
+.breadcrumb-bar .crumb.drop .crumb-home {
+  color: #fff;
+}
+.crumb-sep {
+  color: var(--text-2);
+  opacity: 0.55;
+  font-size: 13px;
+  padding: 0 1px;
+}
+
+/* Mobile: the JS above already collapses everything but the last few
+   segments behind a leading "…", so this just makes sure a single very
+   long folder name can't still push the bar wider than the screen. */
+.is-mobile .breadcrumb-bar {
+  overflow-x: hidden;
+}
+.is-mobile .breadcrumb-crumbs {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+.is-mobile .breadcrumb-bar .crumb {
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.is-mobile .crumb-ellipsis {
+  max-width: none;
+  font-weight: 700;
+}
+
+/* ============================================================
+   Drop targets + marquee
+   ============================================================ */
+.entry.drop {
+  background: rgba(10, 108, 255, 0.16) !important;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.sidebar-item.drop {
+  background: rgba(10, 108, 255, 0.18);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.sidebar-item.dragging {
+  opacity: 0.4;
+}
+.sidebar-item.sub {
+  padding-left: 8px;
+}
+.sidebar-ico.folder-mini {
+  background: transparent;
+  padding: 2px;
+}
+.marquee {
+  position: fixed;
+  z-index: 500;
+  background: rgba(10, 108, 255, 0.18);
+  border: 1px solid rgba(10, 108, 255, 0.75);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* mixed-mode additions */
+.boot {
+  flex: 1;
+  background: var(--win-bg);
+}
+.sidebar-ico.place {
+  background: transparent;
+}
+.sidebar-item.vaultrow {
+  font-weight: 600;
+}
+.status-loc {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.search-field.disabled {
+  opacity: 0.5;
+}
+.search-field input:disabled {
+  cursor: default;
+}
+.sheet-lock {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  margin: 0 auto 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(160deg, var(--accent-grad-top), var(--accent-grad-bot));
+  box-shadow: 0 5px 13px rgba(10, 108, 255, 0.4);
+}
+.sheet-card {
+  text-align: center;
+}
+.sheet-card h3 {
+  text-align: center;
+}
+.sheet-card p {
+  text-align: center;
+}
+.sheet-card input + input {
+  margin-top: -4px;
+}
+
+/* scrollbars */
+::-webkit-scrollbar {
+  width: 13px;
+  height: 13px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.035);
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.38);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+  min-height: 40px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.52);
+  background-clip: content-box;
+}
+@media (prefers-color-scheme: dark) {
+  ::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.035);
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.38);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.52);
+    background-clip: content-box;
+  }
+}
+
+/* "Share" upload status -- top-center pill, transient like a toast */
+.share-toast {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(30, 30, 32, 0.92);
+  color: #fff;
+  font-size: 12.5px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  max-width: 420px;
+}
+.share-toast.error {
+  background: rgba(120, 20, 20, 0.94);
+}
+.share-toast.done {
+  background: rgba(20, 110, 60, 0.94);
+  animation: share-toast-pop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes share-toast-pop {
+  from {
+    transform: translateX(-50%) scale(0.85);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(-50%) scale(1);
+    opacity: 1;
+  }
+}
+.share-toast-check {
+  font-weight: 700;
+}
+.share-toast-url {
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-toast-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: share-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes share-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.share-toast-dismiss {
+  background: transparent;
+  border: none;
+  color: #fff;
+  opacity: 0.75;
+  padding: 0 0 0 4px;
+}
+.share-toast-dismiss:hover {
+  opacity: 1;
+}
+
+/* progress panel (Finder-style copy/compress progress, bottom-right) */
+/* Footer "Actions" indicator: a spinner + count chip in the status bar
+   that expands upward into a popover listing running tasks, each with a
+   progress bar, percentage, and a cancel X (VS Code style). */
+.actions-indicator {
+  position: relative;
+  margin-left: auto;
+  margin-right: 12px;
+  display: flex;
+  align-items: center;
+}
+.actions-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 9px;
+  border: none;
+  background: var(--field-bg);
+  border-radius: 10px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  max-width: 240px;
+}
+.actions-chip:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.actions-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--row-hover);
+  border-top-color: var(--accent);
+  animation: ve-actions-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes ve-actions-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.actions-popover {
+  position: absolute;
+  right: 0;
+  bottom: 26px;
+  width: 300px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--menu-bg);
+  border: 0.5px solid var(--menu-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.28);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 600;
+}
+.actions-popover-head {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  padding: 2px 4px 0;
+}
+.actions-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.actions-row.cancelling {
+  opacity: 0.5;
+}
+.actions-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.actions-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text);
+}
+.actions-pct {
+  font-size: 11px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.actions-cancel {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--row-hover);
+  color: var(--text-2);
+  font-size: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.actions-cancel:hover {
+  background: #ff3b30;
+  color: #fff;
+}
+.actions-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--row-hover);
+  overflow: hidden;
+}
+.actions-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 120ms linear;
+}
+.actions-bar.indet .actions-fill {
+  width: 40%;
+  animation: ve-actions-indet 1.1s ease-in-out infinite;
+}
+@keyframes ve-actions-indet {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
+/* system file-picker window (portal.rs) -- mirrors macOS's Save panel:
+   a collapsed name+location form (.compressed) that expands (.expanded)
+   into a full browser with a Favorites sidebar. */
+.picker-view {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 18px;
+  background: var(--win-bg);
+  color: var(--text);
+  border-radius: var(--window-radius);
+  border: 0.5px solid var(--window-border);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.picker-view.expanded {
+  padding: 12px 16px 16px;
+}
+.picker-field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  margin-bottom: 11px;
+}
+.picker-field-row label {
+  flex-shrink: 0;
+  width: 84px;
+  text-align: right;
+  color: var(--text-secondary, #8e8e93);
+}
+.picker-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 0.5px solid var(--toolbar-border);
+}
+.picker-path-input,
+.picker-filename {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 0.5px solid var(--toolbar-border);
+  background: var(--field-bg);
+  color: var(--text);
+  outline: none;
+  transition: box-shadow 0.1s ease, border-color 0.1s ease;
+}
+.picker-path-input:focus,
+.picker-filename:focus,
+.picker-inline-rename:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10, 108, 255, 0.22);
+}
+.picker-expand {
+  padding: 5px 9px;
+  line-height: 1;
+  font-size: 11px;
+}
+.picker-format-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  font-size: 13px;
+}
+.picker-format-caret {
+  font-size: 10px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.picker-body {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+}
+.picker-sidebar {
+  width: 140px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 4px 6px 4px 0;
+  border-right: 0.5px solid var(--toolbar-border);
+}
+.picker-sidebar-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, #8e8e93);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 4px 8px 6px;
+}
+.picker-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.picker-sidebar-item:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+}
+.picker-sidebar-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+.picker-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.picker-list {
+  flex: 1;
+  overflow-y: auto;
+  border: 0.5px solid var(--toolbar-border);
+  border-radius: 8px;
+  padding: 4px;
+}
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: default;
+}
+.picker-row:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+}
+.picker-row .entry-icon,
+.picker-row svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.picker-row.selected {
+  background: var(--accent);
+  color: #fff;
+}
+.picker-row.drag-over {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.picker-inline-rename {
+  flex: 1;
+  font: inherit;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 0.5px solid var(--toolbar-border);
+  background: var(--field-bg);
+  color: inherit;
+  outline: none;
+}
+.picker-view .sheet-actions-spacer {
+  flex: 1;
+}
+.picker-view .sheet-actions {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--toolbar-border);
+}
+
+/* quality slider (Convert To) */
+.quality-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin-bottom: 14px;
+}
+.quality-value {
+  width: 28px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--field-bg);
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+/* ---- My Computer ---- */
+.my-computer {
+  padding: 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+.drive-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 520px;
+}
+.drive-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--field-bg);
+  cursor: pointer;
+}
+.drive-card:hover {
+  background: var(--row-hover);
+}
+.drive-card.unmounted {
+  cursor: default;
+  opacity: 0.7;
+}
+.drive-ico {
+  flex-shrink: 0;
+  display: flex;
+}
+.drive-info {
+  flex: 1;
+  min-width: 0;
+}
+.drive-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.drive-sub {
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drive-bar {
+  margin: 6px 0 3px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--toolbar-border);
+  overflow: hidden;
+}
+.drive-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+/* ============================================================
+   Mobile (Android/iOS) -- the desktop chrome (docked sidebar,
+   26px-tall toolbar icons meant for a mouse pointer) doesn't work on
+   a phone-width touch screen, so `.is-mobile` (set on <html> once
+   is_mobile_platform() resolves) turns the sidebar into an off-canvas
+   drawer and enlarges every tappable target to a touch-friendly size.
+   ============================================================ */
+/* The Android/iOS status bar draws on top of the webview's edge-to-edge
+   content, not above it -- without this the titlebar's own buttons render
+   half-hidden behind (and un-tappable under) the system status bar. */
+.is-mobile .titlebar {
+  height: calc(40px + env(safe-area-inset-top, 24px));
+  min-height: calc(40px + env(safe-area-inset-top, 24px));
+  padding-top: env(safe-area-inset-top, 24px);
+  box-sizing: border-box;
+}
+.is-mobile .sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 80%;
+  max-width: 320px;
+  min-width: 0;
+  z-index: 500;
+  transform: translateX(-100%);
+  transition: transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+  padding-top: calc(env(safe-area-inset-top, 24px) + 6px);
+}
+.sidebar-backdrop {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.is-mobile .sidebar.open {
+  transform: translateX(0);
+}
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 490;
+}
+.is-mobile .sidebar-item {
+  min-height: 46px;
+  font-size: 15px;
+  gap: 10px;
+}
+.is-mobile .sidebar-ico {
+  width: 30px;
+  height: 30px;
+}
+.is-mobile .tool-btn {
+  height: 40px;
+  min-width: 40px;
+  font-size: 14px;
+}
+.is-mobile .titlebar-content {
+  gap: 4px;
+}
+/* Redundant on a phone-width toolbar -- the breadcrumb right below it
+   already says where we are, and the space is needed for the view
+   switcher + File/Folder/Paste buttons instead. */
+.is-mobile .toolbar-title {
+  display: none;
+}
+.is-mobile .entry.icon {
+  --icon-scale: 1.15;
+}
+.is-mobile .entry.list,
+.is-mobile .entry.list.compact {
+  min-height: 46px;
+}
+.is-mobile .entry-name {
+  font-size: 14.5px;
+}
+.is-mobile .search-field input {
+  font-size: 15px;
+}
+/* Context menus open via long-press on mobile (the browser already
+   fires a native `contextmenu` event on touch-and-hold) -- just make
+   the rows themselves big enough to hit reliably once it's open. */
+.is-mobile .context-item {
+  min-height: 42px;
+  font-size: 15px;
+}
+.is-mobile .sheet-card {
+  width: min(92vw, 420px);
+}
+.is-mobile .sheet-actions button,
+.is-mobile .btn-primary,
+.is-mobile .btn-plain {
+  min-height: 42px;
+  font-size: 15px;
+}

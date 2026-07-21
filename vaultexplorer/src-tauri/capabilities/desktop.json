@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Desktop-only permissions (native drag-out; not available on Android/iOS)",
+  "windows": ["main", "picker-*"],
+  "platforms": ["linux", "windows", "macOS"],
+  "permissions": ["drag:allow-start-drag"]
+}

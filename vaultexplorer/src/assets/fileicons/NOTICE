@@ -1,0 +1,20 @@
+File/folder tile icons in this directory are from the WhiteSur icon theme
+(macOS Big Sur style) by vinceliuice.
+
+Source:  https://github.com/vinceliuice/WhiteSur-icon-theme
+License: GNU General Public License v3.0 (GPL-3.0)
+
+Files used (renamed to the app's file-kind keys):
+  folder.svg   <- src/places/scalable/folder.svg
+  image.svg    <- src/mimes/scalable/image-x-generic.svg
+  video.svg    <- src/mimes/scalable/video-x-generic.svg
+  audio.svg    <- src/mimes/scalable/audio-x-generic.svg
+  pdf.svg      <- src/mimes/scalable/application-pdf.svg
+  archive.svg  <- src/mimes/scalable/package-x-generic.svg
+  text.svg     <- src/mimes/scalable/text-x-generic.svg
+  code.svg     <- src/mimes/scalable/application-script-blank.svg
+  generic.svg  <- src/mimes/scalable/application-blank.svg
+
+The SVGs are unmodified. As GPL-3.0 assets, redistributing this app with
+these icons bundled makes the icon set subject to GPL-3.0 terms; keep this
+NOTICE and the upstream license available if distributing.

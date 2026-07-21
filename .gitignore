@@ -1,0 +1,28 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Node
+node_modules/
+**/node_modules/
+
+# Frontend build output
+dist/
+vaultexplorer/dist/
+
+# Tauri generated (kept: icons, capabilities, tauri.conf.json)
+# (nothing else generated is committed)
+
+# Logs / OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Env / secrets
+.env
+.env.*

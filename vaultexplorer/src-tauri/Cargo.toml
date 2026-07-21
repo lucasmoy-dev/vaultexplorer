@@ -1,0 +1,66 @@
+[package]
+name = "vaultexplorer"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "vaultexplorer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+vaultcore = { path = "../../vaultcore" }
+zip = { version = "2", default-features = false, features = ["deflate", "aes-crypto"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "multipart", "rustls-tls"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "net", "macros"] }
+tiny_http = "0.12"
+keyring = { version = "4" }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+lofty = "0.24.0"
+libc = "0.2.186"
+argon2 = "0.5.3"
+kamadak-exif = "0.6.1"
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-clipboard-manager = "2.3.2"
+tauri-plugin-deep-link = "2.4.9"
+qrcode = "0.14.1"
+
+# Desktop-only integrations: every one of these either shells out to a
+# binary that simply isn't present on a mobile OS (git, rclone, syncthing,
+# unison, ffmpeg-adjacent tools, a terminal emulator, pkexec) or depends on
+# a Linux-desktop-specific mechanism with no mobile equivalent (FUSE
+# mounting, xdg-desktop-portal/D-Bus, GTK-native drag-out, the OS trash
+# can as a desktop concept). None of this is a choice to leave out --
+# there's nothing to shell out *to* on Android/iOS, so these can't be
+# made to work there regardless of how they're wired up; see the mobile
+# scoping note in `lib.rs`.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+fuser = "0.14"
+trash = "5.2.6"
+zbus = { version = "5.17.0", default-features = false, features = ["tokio"] }
+whisper-rs = "0.16.0"
+notify-debouncer-mini = "0.7.0"
+tauri-plugin-drag = "2"
+
+# "All files access" (MANAGE_EXTERNAL_STORAGE) has no Rust-side API --
+# granting/checking it means calling the plain Android SDK (Environment,
+# Settings, Intent) directly over JNI via the webview's jni_handle().
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
