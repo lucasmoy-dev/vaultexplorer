@@ -45,7 +45,7 @@ import {
   customIconUrl,
   symbolIconSvg,
 } from "./icons";
-import { Loc, Clipboard, View, ProgressOp, PendingAction, VaultCreateOptions } from "./types";
+import { Loc, Clipboard, View, ProgressOp, PendingAction, VaultCreateOptions, SensitiveTimeout } from "./types";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { kindLabel } from "./entryHelpers";
 import { EntryTile } from "./components/EntryTile";
@@ -61,6 +61,7 @@ import { DEFAULT_START_KEY, PHONE_STORAGE_PATH } from "./constants";
 import {
   ActionSheet,
   UnlockSheet,
+  SensitiveUnlockSheet,
   ReauthOverlay,
   ZipPasswordSheet,
   EncryptFileSheet,
@@ -194,6 +195,7 @@ function Explorer({ home }: { home: string }) {
     newFileNameTemplate: string;
     newFolderNameTemplate: string;
     theme: "light" | "dark" | "system";
+    sensitiveTimeout: SensitiveTimeout;
   }>(() => {
     const defaults = {
       showHiddenFiles: false,
@@ -202,6 +204,7 @@ function Explorer({ home }: { home: string }) {
       newFileNameTemplate: "{datetime}",
       newFolderNameTemplate: "untitled folder",
       theme: "system" as const,
+      sensitiveTimeout: 1200 as SensitiveTimeout,
     };
     try {
       const raw = localStorage.getItem("vaultexplorer:app-settings");
@@ -633,6 +636,12 @@ function Explorer({ home }: { home: string }) {
   useEffect(() => {
     let cancelled = false;
     let prev = new Set<string>();
+    // Drive's background auto-sync loop is entirely best-effort (same as
+    // git/local sync's loops) -- a pair stuck failing every tick (e.g.
+    // rclone's own "too many deletes" safety abort) would otherwise fail
+    // silently forever with nothing ever telling the user. Tracked per
+    // path so the same failure doesn't re-show the banner every poll.
+    const shownDriveErrors = new Map<string, string>();
     function poll() {
       Promise.all([
         api.gitSyncSyncingNow().catch(() => []),
@@ -657,6 +666,20 @@ function Explorer({ home }: { home: string }) {
           }, 2500);
         }
       });
+      for (const path of driveSyncedPaths) {
+        api
+          .driveSyncLastError(path)
+          .then((err) => {
+            if (cancelled) return;
+            if (err && shownDriveErrors.get(path) !== err) {
+              shownDriveErrors.set(path, err);
+              setError(`Drive sync failed for "${baseName(path)}": ${err}`);
+            } else if (!err) {
+              shownDriveErrors.delete(path);
+            }
+          })
+          .catch(() => {});
+      }
     }
     poll();
     const interval = setInterval(poll, 2500);
@@ -664,7 +687,7 @@ function Explorer({ home }: { home: string }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [driveSyncedPaths]);
   const [sortKey, setSortKey] = useState<"name" | "date" | "size" | "kind" | "created">("name");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const { selected, setSelected, lastClicked, setLastClicked, selectOnly, toggle, selectRange: selectRangeByNames } =
@@ -690,8 +713,24 @@ function Explorer({ home }: { home: string }) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchResults, setSearchResults] = useState<string[] | null>(null);
   const [error, setError] = useState("");
+  const [infoMsg, setInfoMsg] = useState("");
+  useEffect(() => {
+    if (!infoMsg) return;
+    const t = setTimeout(() => setInfoMsg(""), 2500);
+    return () => clearTimeout(t);
+  }, [infoMsg]);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [sheetError, setSheetError] = useState("");
+  const [sensitivePrompt, setSensitivePrompt] = useState<{
+    path: string;
+    proceed: () => void;
+    error: string;
+  } | null>(null);
+  const sensitiveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Raw set of paths explicitly marked sensitive in the current vault (as
+  // returned by the backend). Used for badges + the mark/unmark menu state;
+  // `isSensitivePath` expands it to inherited descendants.
+  const [sensitiveSet, setSensitiveSet] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<MenuState>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
@@ -736,6 +775,7 @@ function Explorer({ home }: { home: string }) {
   // it swaps the whole content area for a drive list instead of calling
   // `go()` -- picking a mounted drive there is what actually navigates.
   const [showMyComputer, setShowMyComputer] = useState(false);
+  const [favCollapsed, setFavCollapsed] = useState(false);
   const [drives, setDrives] = useState<import("./api").Drive[]>([]);
   const [drivesError, setDrivesError] = useState("");
   const [machineInfoOpen, setMachineInfoOpen] = useState(false);
@@ -1052,6 +1092,33 @@ function Explorer({ home }: { home: string }) {
         paste();
         return;
       }
+      // Plain arrows move the single selection (Finder-style). Works even
+      // with nothing selected yet -- the first press selects the anchor
+      // (last-clicked, else first current selection, else the first entry).
+      if (
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+        (view === "icon" || view === "list" || view === "listPreview")
+      ) {
+        const names = sortedEntries.map((en) => en.name);
+        if (names.length === 0) return;
+        e.preventDefault();
+        const direction =
+          e.key === "ArrowUp" ? "up" : e.key === "ArrowDown" ? "down" : e.key === "ArrowLeft" ? "left" : "right";
+        const from =
+          (lastClicked && names.includes(lastClicked) ? lastClicked : null) ??
+          [...selected].find((n) => names.includes(n)) ??
+          names[0];
+        // Nothing selected yet: first press just lands on the anchor.
+        const target = selected.size === 0 ? from : computeArrowTarget(direction, from) ?? from;
+        selectOnly(target);
+        arrowAnchorRef.current = target;
+        arrowFocusRef.current = target;
+        return;
+      }
       if (
         e.shiftKey &&
         !e.ctrlKey &&
@@ -1155,8 +1222,28 @@ function Explorer({ home }: { home: string }) {
     try {
       const list = await listDir(curDir, loc.kind);
       setEntries(list);
-      setSelected(new Set());
-      setLastClicked(null);
+      // Honor a pending "reveal + select" (e.g. Chrome's Downloads → "Show
+      // in folder") in the SAME load that would otherwise clear selection --
+      // applying it here instead of in a follow-up effect means the
+      // setSelected(new Set()) below can't clobber it in a race.
+      const reveal = pendingRevealSelectRef.current;
+      if (reveal && reveal.dir === curDir && list.some((e) => e.name === reveal.name)) {
+        setSelected(new Set([reveal.name]));
+        setLastClicked(reveal.name);
+        pendingRevealSelectRef.current = null;
+      } else {
+        // Preserve selection across SAME-folder reloads -- the instant
+        // "fs-changed" watch (and the 20s poll) call refresh() whenever the
+        // open folder changes on disk (e.g. Drive sync writing into it), and
+        // blindly clearing here wiped the user's selection out from under a
+        // click ("I select an icon and it deselects itself"). Keeping only
+        // names that still exist means navigating to a DIFFERENT folder
+        // still clears (those names aren't in the new list), while a
+        // background reload of the current folder leaves selection intact.
+        const names = new Set(list.map((e) => e.name));
+        setSelected((prev) => new Set([...prev].filter((n) => names.has(n))));
+        setLastClicked((lc) => (lc && names.has(lc) ? lc : null));
+      }
     } catch (e) {
       setError(String(e));
       setEntries([]);
@@ -1213,6 +1300,34 @@ function Explorer({ home }: { home: string }) {
     }, 20000);
     return () => clearInterval(interval);
   }, [loc.kind, curDir, refresh]);
+
+  // Instant version of the same idea: watch the real-fs folder currently
+  // open and refresh the moment something changes it from outside the app
+  // (a terminal `rm`, a browser download landing in it, git/Drive sync
+  // writing to it) instead of waiting for the 20s poll above -- that poll
+  // stays as a safety net for setups where the underlying watch mechanism
+  // doesn't work (some network mounts). Only one folder is ever watched
+  // (whatever's currently browsed); vault browsing doesn't need this since
+  // nothing writes into a vault's encrypted storage except this app.
+  const curDirRef = useRef(curDir);
+  curDirRef.current = curDir;
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<string>("fs-changed", (event) => {
+      if (event.payload === curDirRef.current) refresh();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [refresh]);
+  useEffect(() => {
+    api.fsWatchSet(loc.kind === "fs" ? curDir : null).catch(() => {});
+  }, [loc.kind, curDir]);
 
   // ---- navigation (handles crossing the fs/vault boundary) ----
   function commitLoc(target: Loc, push: boolean) {
@@ -1526,6 +1641,116 @@ function Explorer({ home }: { home: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [marquee !== null]);
 
+  const timeoutSecs = (): number | null =>
+    appSettings.sensitiveTimeout === "never" ? null : appSettings.sensitiveTimeout;
+
+  // Schedule the sensitive session to auto-relock when the window expires:
+  // re-lock in the backend and drop any open preview so a sensitive file
+  // stops being visible the moment the timer lapses ("walked away" safety).
+  function scheduleSensitiveRelock() {
+    if (sensitiveTimerRef.current) {
+      clearTimeout(sensitiveTimerRef.current);
+      sensitiveTimerRef.current = null;
+    }
+    const secs = timeoutSecs();
+    if (secs === null) return; // "never" -- no auto-relock
+    sensitiveTimerRef.current = setTimeout(() => {
+      sensitiveTimerRef.current = null;
+      api.vaultLockSensitive().catch(() => {});
+      setPreviewEntry((p) => {
+        if (!p) return p;
+        // Only close the preview if what's showing is itself sensitive.
+        return isSensitivePath(joinPath(p.dir, p.entry.name)) ? null : p;
+      });
+      setInfoMsg("Sesión de archivos sensibles cerrada");
+    }, secs * 1000);
+  }
+
+  // Gate opening/previewing a sensitive file behind a re-auth of the vault
+  // password. Runs `proceed` immediately when: not in a vault, the file
+  // isn't sensitive, or the sensitive session is already open. Otherwise it
+  // prompts for the vault password first.
+  async function withSensitive(fullPath: string, proceed: () => void) {
+    if (!inVault) {
+      proceed();
+      return;
+    }
+    let sensitive = false;
+    try {
+      sensitive = await api.vaultIsSensitive(fullPath);
+    } catch {
+      sensitive = false;
+    }
+    if (!sensitive) {
+      proceed();
+      return;
+    }
+    let unlocked = false;
+    try {
+      unlocked = await api.vaultSensitiveUnlocked();
+    } catch {
+      unlocked = false;
+    }
+    if (unlocked) {
+      proceed();
+      return;
+    }
+    setSensitivePrompt({ path: fullPath, proceed, error: "" });
+  }
+
+  async function submitSensitive(password: string) {
+    if (!sensitivePrompt) return;
+    try {
+      await api.vaultUnlockSensitive(password, timeoutSecs());
+      const proceed = sensitivePrompt.proceed;
+      setSensitivePrompt(null);
+      scheduleSensitiveRelock();
+      proceed();
+    } catch {
+      setSensitivePrompt((s) => (s ? { ...s, error: "Contraseña incorrecta" } : s));
+    }
+  }
+
+  const relKey = (rel: string) => rel.replace(/^\/+/, "").replace(/\/+$/, "");
+  // Sensitive directly on this exact path.
+  const isMarkedSensitive = (rel: string) => sensitiveSet.has(relKey(rel));
+  // Sensitive via a marked ANCESTOR folder (inherited -- can't be unmarked
+  // individually while the folder governs it).
+  function hasSensitiveAncestor(rel: string): boolean {
+    let p = relKey(rel);
+    const i0 = p.lastIndexOf("/");
+    if (i0 < 0) return false;
+    p = p.slice(0, i0);
+    while (true) {
+      if (sensitiveSet.has(p)) return true;
+      const i = p.lastIndexOf("/");
+      if (i < 0) return false;
+      p = p.slice(0, i);
+    }
+  }
+  const isSensitivePath = (rel: string) => isMarkedSensitive(rel) || hasSensitiveAncestor(rel);
+
+  async function toggleSensitive(rel: string, sensitive: boolean) {
+    try {
+      await api.vaultSetSensitive(rel, sensitive);
+      const list = await api.vaultListSensitive();
+      setSensitiveSet(new Set(list));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    if (!inVault) {
+      setSensitiveSet(new Set());
+      return;
+    }
+    api
+      .vaultListSensitive()
+      .then((l) => setSensitiveSet(new Set(l)))
+      .catch(() => setSensitiveSet(new Set()));
+  }, [inVault, curDir, loc.kind === "vault" ? loc.root : null]);
+
   // ---- open / activate an entry ----
   async function activate(dir: string, entry: Entry) {
     if (loc.kind === "vault") {
@@ -1551,11 +1776,22 @@ function Explorer({ home }: { home: string }) {
         setDecryptPrompt({ entry, error: "", mode: "open" });
         return;
       }
-      try {
-        const abs = await api.openPath(joinPath(dir, entry.name));
-        await osOpen(abs);
-      } catch (e) {
-        setError(String(e));
+      if (ARCHIVE_EXT_RE.test(entry.name)) {
+        // Browse a vault-internal archive like a folder, same as on fs.
+        const full = joinPath(dir, entry.name);
+        withSensitive(full, () => mountArchive(dir, entry));
+        return;
+      }
+      {
+        const full = joinPath(dir, entry.name);
+        withSensitive(full, async () => {
+          try {
+            const abs = await api.openPath(full);
+            await osOpen(abs);
+          } catch (e) {
+            setError(String(e));
+          }
+        });
       }
       return;
     }
@@ -1804,8 +2040,13 @@ function Explorer({ home }: { home: string }) {
   // would mean extracting decrypted bytes to a real scratch directory on
   // disk, the same constraint that keeps vault compression zip-only.
   async function mountArchive(dir: string, entry: Entry, password: string | null = null) {
-    const full = joinPath(dir, entry.name);
+    const rel = joinPath(dir, entry.name);
     try {
+      // Inside a vault the archive only exists decrypted through the FUSE
+      // mount -- resolve to that real path so it can be opened/browsed like
+      // any other archive. Repack-on-leave writes back through FUSE, so it
+      // re-encrypts into the vault.
+      const full = inVault ? await api.openPath(rel) : rel;
       const mountpoint = await api.archiveMount(full, password);
       setArchiveMountPrompt(null);
       go({ kind: "fs", path: mountpoint });
@@ -1892,7 +2133,10 @@ function Explorer({ home }: { home: string }) {
       // the vault's ciphertext transparently re-encrypts whatever the
       // nested vault writes underneath it.
       const realPath = inVault ? await api.openPath(relOrAbs) : relOrAbs;
-      await api.createVault(realPath, password);
+      // Convert-in-place: encrypt the folder's existing contents into the new
+      // vault (not just drop an empty .vault.meta), so a populated folder
+      // actually becomes an encrypted vault of those files.
+      await api.convertFolderToVault(realPath, password);
       setEncryptTarget(null);
       await refresh();
       selectOnly(entry.name);
@@ -2129,12 +2373,21 @@ function Explorer({ home }: { home: string }) {
   // its preview pane in sync with whatever single file is selected,
   // whether that's because the user just clicked one, switched into this
   // view while one was already selected, or a new note was just created.
+  const previewEntryRef = useRef(previewEntry);
+  previewEntryRef.current = previewEntry;
   useEffect(() => {
     if (view !== "listPreview" || selected.size !== 1) return;
     const name = [...selected][0];
     const entry = entries.find((en) => en.name === name);
-    if (!entry || entry.is_dir) return;
-    setPreviewEntry((prev) => (prev?.dir === curDir && prev.entry.name === name ? prev : { dir: curDir, entry }));
+    if (!entry) return;
+    const prev = previewEntryRef.current;
+    if (prev?.dir === curDir && prev.entry.name === name) return;
+    // Folders preview their listing (no decryption) -- no sensitive gate.
+    if (entry.is_dir) {
+      setPreviewEntry({ dir: curDir, entry });
+      return;
+    }
+    withSensitive(joinPath(curDir, name), () => setPreviewEntry({ dir: curDir, entry }));
   }, [view, selected, entries, curDir]);
 
   async function renamePreviewEntry(newName: string) {
@@ -2193,6 +2446,24 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
+  async function restoreAllFromTrash() {
+    try {
+      await api.trashRestoreAll();
+      if (loc.kind === "fs" && trashPath && loc.path === trashPath) refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function restoreFromTrash(names: string[]) {
+    try {
+      await api.trashRestore(names);
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function confirmIncomingDevice() {
     if (!incomingDevice) return;
     try {
@@ -2233,13 +2504,17 @@ function Explorer({ home }: { home: string }) {
     try {
       switch (pending.kind) {
         case "delete":
-          for (const name of pending.names) {
-            const full = joinPath(curDir, name);
-            const entry = entries.find((e) => e.name === name);
-            if (inVault) {
-              entry?.is_dir ? await api.deleteDir(full) : await api.deleteFile(full);
-            } else {
-              await api.fsDelete(full);
+          if (!inVault && trashPath && curDir === trashPath) {
+            await api.trashPurge(pending.names);
+          } else {
+            for (const name of pending.names) {
+              const full = joinPath(curDir, name);
+              const entry = entries.find((e) => e.name === name);
+              if (inVault) {
+                entry?.is_dir ? await api.deleteDir(full) : await api.deleteFile(full);
+              } else {
+                await api.fsDelete(full);
+              }
             }
           }
           break;
@@ -2248,10 +2523,6 @@ function Explorer({ home }: { home: string }) {
           await api.fsSecureDelete(paths, beginProgress("Secure Delete"));
           break;
         }
-        case "password":
-          if (value.trim() === "") return;
-          await api.setFilePassword(joinPath(curDir, pending.entry.name), value);
-          break;
         case "gitCommit":
           if (value.trim() === "" || !gitRoot) return;
           await api.gitCommitAll(gitRoot, value.trim());
@@ -2325,13 +2596,24 @@ function Explorer({ home }: { home: string }) {
   }
 
   async function submitNewVault(name: string, password: string, opts: VaultCreateOptions) {
-    if (loc.kind !== "fs") return;
-    const path = joinPath(loc.path, name);
     try {
-      await api.createVault(path, password);
-      setVaultSettings((prev) => ({ ...prev, [path]: opts }));
-      if (opts.autoUnlock) {
-        await api.setVaultAutoUnlock(path, password).catch(() => {});
+      let root: string;
+      if (loc.kind === "fs") {
+        root = joinPath(loc.path, name);
+        await api.createVault(root, password);
+      } else {
+        // Nested vault: make the folder inside this vault, then create the
+        // vault at its real FUSE path (see nested-vault handling).
+        const rel = joinPath(curDir, name);
+        await api.makeDir(rel);
+        root = await api.openPath(rel);
+        await api.createVault(root, password);
+      }
+      setVaultSettings((prev) => ({ ...prev, [root]: opts }));
+      // Auto-unlock persists by real fs path; a nested vault's FUSE path is
+      // per-session so it can't be keyed for startup auto-unlock.
+      if (loc.kind === "fs" && opts.autoUnlock) {
+        await api.setVaultAutoUnlock(root, password).catch(() => {});
       }
       setPending(null);
       setSheetError("");
@@ -2348,6 +2630,7 @@ function Explorer({ home }: { home: string }) {
     if (!selected.has(entry.name)) selectOnly(entry.name);
     const many = selected.size > 1 && selected.has(entry.name);
     const targetNames = many ? [...selected] : [entry.name];
+    const isInTrashView = !inVault && trashPath !== null && curDir === trashPath;
     const isEncryptedFile = !entry.is_dir && entry.name.toLowerCase().endsWith(ENCRYPTED_FILE_EXT);
     const isZip = !entry.is_dir && entry.name.toLowerCase().endsWith(".zip");
     const isShellScript = !entry.is_dir && entry.name.toLowerCase().endsWith(".sh");
@@ -2406,8 +2689,14 @@ function Explorer({ home }: { home: string }) {
     if (!many && !inVault && !entry.is_dir) {
       moreItems.push({ label: "Use as Template", onClick: () => useAsTemplate(entry) });
     }
-    if (!many && !inVault && entry.is_dir && !entry.is_vault && !mobile) {
-      items.push({ label: "Open in Terminal", onClick: () => openTerminalAt(path) });
+    if (!many && entry.is_dir && !entry.is_vault && !mobile) {
+      items.push({
+        label: "Open in Terminal",
+        onClick: async () => {
+          const p = inVault ? await api.openPath(path) : path;
+          openTerminalAt(p);
+        },
+      });
     }
     items.push(
       { type: "separator" },
@@ -2546,7 +2835,7 @@ function Explorer({ home }: { home: string }) {
             : { label: "Encrypt…", onClick: () => setEncryptTarget(entry) }
         );
       } else {
-        securityItems.push({ label: "Create Vault…", onClick: () => setEncryptTarget(entry) });
+        securityItems.push({ label: "Convert to Vault…", onClick: () => setEncryptTarget(entry) });
       }
     }
     const clearMetaTargets = entries
@@ -2631,14 +2920,40 @@ function Explorer({ home }: { home: string }) {
       }
     }
     items.push({ type: "submenu", label: "More", items: moreItems });
-    if (inVault && !entry.is_dir && !many) {
+    if (inVault && !many) {
+      const fullRel = joinPath(curDir, entry.name);
+      const inherited = hasSensitiveAncestor(fullRel);
+      const marked = isMarkedSensitive(fullRel);
       items.push(
         { type: "separator" },
-        { label: "File Password…", onClick: () => setPending({ kind: "password", entry }) }
+        inherited
+          ? {
+              label: "Sensitive (inherited from folder)",
+              disabled: true,
+              onClick: () => {},
+            }
+          : marked
+            ? { label: "Remove sensitive", onClick: () => toggleSensitive(fullRel, false) }
+            : {
+                label: entry.is_dir ? "Mark folder sensitive" : "Mark as sensitive",
+                onClick: () => toggleSensitive(fullRel, true),
+              }
       );
     }
     items.push({ type: "separator" }, getInfoItem, { type: "separator" });
-    if (!inVault && !mobile) {
+    if (isInTrashView) {
+      items.push(
+        {
+          label: many ? `Restore ${targetNames.length} Items` : "Restore",
+          onClick: () => restoreFromTrash(targetNames),
+        },
+        {
+          label: many ? `Delete ${targetNames.length} Items Permanently` : "Delete Permanently",
+          danger: true,
+          onClick: () => setPending({ kind: "delete", names: targetNames }),
+        }
+      );
+    } else if (!inVault && !mobile) {
       items.push({
         label: many ? `Move ${targetNames.length} Items to Trash` : "Move to Trash",
         shortcut: "⌫ / ⌃⌫ permanently",
@@ -2717,11 +3032,16 @@ function Explorer({ home }: { home: string }) {
         ],
       });
     }
-    if (!inVault) {
-      items.push({ label: "New Vault…", onClick: () => { setSheetError(""); setPending({ kind: "newVault" }); } });
-      if (!mobile) {
-        items.push({ label: "Open in Terminal", onClick: () => openTerminalAt(curDir) });
-      }
+    items.push({ label: "New Vault…", onClick: () => { setSheetError(""); setPending({ kind: "newVault" }); } });
+    if (!mobile) {
+      items.push({
+        label: "Open in Terminal",
+        onClick: async () => {
+          // In a vault, open the terminal at the decrypted FUSE mount path.
+          const p = inVault ? await api.openPath(curDir) : curDir;
+          openTerminalAt(p);
+        },
+      });
     }
     if (gitRoot) {
       items.push({
@@ -2740,7 +3060,7 @@ function Explorer({ home }: { home: string }) {
       { type: "separator" },
       { label: "Paste", shortcut: "⌘V", disabled: !clipboard || clipboard.kind !== loc.kind, onClick: paste }
     );
-    if (view === "icon") {
+    {
       items.push({ type: "separator" });
       const sortOptions: { key: typeof sortKey; label: string }[] = [
         { key: "name", label: "Name" },
@@ -2817,13 +3137,14 @@ function Explorer({ home }: { home: string }) {
     return out;
   }
   const crumbs = crumbsFor(loc);
-  // A phone-width breadcrumb bar can't fit a deep path -- collapse
-  // everything but the last few segments behind a leading "…" that jumps
-  // to the nearest hidden ancestor, same idea as Finder's path bar truncation.
-  const MAX_MOBILE_CRUMBS = 3;
-  const hiddenCrumbs =
-    mobile && crumbs.length > MAX_MOBILE_CRUMBS ? crumbs.slice(0, crumbs.length - MAX_MOBILE_CRUMBS) : [];
-  const visibleCrumbs = hiddenCrumbs.length ? crumbs.slice(crumbs.length - MAX_MOBILE_CRUMBS) : crumbs;
+  // A deep path can't fit the breadcrumb bar -- collapse everything but
+  // the last few segments (the ones actually useful to click back to)
+  // behind a leading "…" that jumps to the nearest hidden ancestor, same
+  // idea as Finder's path bar truncation. Phone width fits noticeably
+  // fewer than desktop.
+  const MAX_CRUMBS = mobile ? 3 : 5;
+  const hiddenCrumbs = crumbs.length > MAX_CRUMBS ? crumbs.slice(0, crumbs.length - MAX_CRUMBS) : [];
+  const visibleCrumbs = hiddenCrumbs.length ? crumbs.slice(crumbs.length - MAX_CRUMBS) : crumbs;
 
   // ---- column view chain ----
   // Capped at 3 columns: without this, a chain from the root/vault-root
@@ -2947,7 +3268,13 @@ function Explorer({ home }: { home: string }) {
         /* command not available (non-Android mobile) -- fall through */
       }
     }
-    go({ kind: "fs", path });
+    let isVault = false;
+    try {
+      isVault = await api.fsIsVault(path);
+    } catch {
+      /* ignore -- treat as a plain folder */
+    }
+    go(isVault ? { kind: "vault", root: path, rel: "" } : { kind: "fs", path });
   }
   const favorites = favPaths.map((path) => ({
     label: favLabel(path),
@@ -2961,35 +3288,28 @@ function Explorer({ home }: { home: string }) {
   // sync pairing) so the "this whole tree is under sync" fact is visible
   // on more than just the one root folder, matching the same convention
   // Dropbox/OneDrive/Google Drive Desktop use.
+  // Walks up from `path` (through every parent directory, not just an
+  // exact match) looking for a synced root -- a file several folders deep
+  // inside a paired tree is still "inside a synced folder" and should
+  // still show its badge, not just direct children of the paired root.
+  function syncRootFor(path: string): { badge: "git" | "drive" | "local"; root: string } | null {
+    let p = path;
+    while (p) {
+      if (gitSyncedPaths.has(p)) return { badge: "git", root: p };
+      if (driveSyncedPaths.has(p)) return { badge: "drive", root: p };
+      if (localSyncedPaths.has(p)) return { badge: "local", root: p };
+      const parent = parentPath(p);
+      if (parent === p) return null;
+      p = parent;
+    }
+    return null;
+  }
+
   function syncInfoFor(entry: Entry): { badge: "git" | "drive" | "local" | null; state: "syncing" | "synced" | null } {
     const path = joinPath(curDir, entry.name);
-    let badge: "git" | "drive" | "local" | null = null;
-    let root = "";
-    if (entry.is_dir) {
-      if (gitSyncedPaths.has(path)) {
-        badge = "git";
-        root = path;
-      } else if (driveSyncedPaths.has(path)) {
-        badge = "drive";
-        root = path;
-      } else if (localSyncedPaths.has(path)) {
-        badge = "local";
-        root = path;
-      }
-    }
-    if (!badge) {
-      if (gitSyncedPaths.has(curDir)) {
-        badge = "git";
-        root = curDir;
-      } else if (driveSyncedPaths.has(curDir)) {
-        badge = "drive";
-        root = curDir;
-      } else if (localSyncedPaths.has(curDir)) {
-        badge = "local";
-        root = curDir;
-      }
-    }
-    if (!badge) return { badge: null, state: null };
+    const hit = (entry.is_dir ? syncRootFor(path) : null) ?? syncRootFor(curDir);
+    if (!hit) return { badge: null, state: null };
+    const { badge, root } = hit;
     if (syncingPaths.has(root) || syncingPaths.has(path)) return { badge, state: "syncing" };
     if (justSyncedPaths.has(root) || justSyncedPaths.has(path)) return { badge, state: "synced" };
     return { badge, state: null };
@@ -3055,6 +3375,7 @@ function Explorer({ home }: { home: string }) {
               customIcon={!inVault ? customIcons[joinPath(curDir, entry.name)] : undefined}
               hideExtensions={appSettings.hideExtensions}
               pinned={pinnedPaths.has(joinPath(curDir, entry.name))}
+              sensitive={inVault && isSensitivePath(joinPath(curDir, entry.name))}
               syncBadge={syncInfo.badge ?? undefined}
               syncState={syncInfo.state ?? undefined}
               editing={renaming?.name === entry.name}
@@ -3064,7 +3385,9 @@ function Explorer({ home }: { home: string }) {
               onEditCancel={() => setRenaming(null)}
               onClick={(e) => {
                 onEntryClick(e, entry);
-                if (view === "listPreview" && !entry.is_dir) setPreviewEntry({ dir: curDir, entry });
+                if (view === "listPreview" && !entry.is_dir) {
+                  withSensitive(joinPath(curDir, entry.name), () => setPreviewEntry({ dir: curDir, entry }));
+                }
                 // Touch has no double-click -- a single tap both selects and
                 // opens, same as every mobile file browser; long-press still
                 // does the desktop's right-click (context menu) job.
@@ -3171,7 +3494,7 @@ function Explorer({ home }: { home: string }) {
         <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
       )}
       <aside
-        className={`sidebar ${mobile && sidebarOpen ? "open" : ""}`}
+        className={`sidebar ${mobile && sidebarOpen ? "open" : ""} ${favCollapsed ? "sidebar-compact" : ""}`}
         data-tauri-drag-region
         onClickCapture={() => {
           if (mobile) setSidebarOpen(false);
@@ -3183,7 +3506,7 @@ function Explorer({ home }: { home: string }) {
           </div>
         )}
         <div
-          className={`sidebar-section ${dropTarget === "fav-add" ? "drop" : ""}`}
+          className={`sidebar-section sidebar-section-collapsible ${dropTarget === "fav-add" ? "drop" : ""}`}
           onDragOver={(e) => {
             e.preventDefault();
             setDropTarget("fav-add");
@@ -3200,10 +3523,19 @@ function Explorer({ home }: { home: string }) {
             }
           }}
         >
-          Favorites
+          {!favCollapsed && "Favorites"}
+          <button
+            type="button"
+            className="sidebar-section-collapse-btn"
+            title={favCollapsed ? "Expand Favorites" : "Collapse Favorites"}
+            onClick={() => setFavCollapsed((v) => !v)}
+          >
+            {favCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+          </button>
         </div>
         <div
-          className={`sidebar-item ${showMyComputer ? "active" : ""}`}
+          className={`sidebar-item ${showMyComputer ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
+          title={favCollapsed ? "My Computer" : undefined}
           onClick={openMyComputer}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -3217,7 +3549,7 @@ function Explorer({ home }: { home: string }) {
           <span className="sidebar-ico place">
             <ComputerGlyph size={27} />
           </span>
-          My Computer
+          {!favCollapsed && "My Computer"}
         </div>
         {favorites.map((f, i) => {
           const active = !showMyComputer && loc.kind === "fs" && loc.path === f.path;
@@ -3227,7 +3559,8 @@ function Explorer({ home }: { home: string }) {
               data-path={f.path}
               className={`sidebar-item ${active ? "active" : ""} ${
                 dropTarget === "fav:" + f.path ? "drop" : ""
-              } ${draggingFavIdx === i ? "dragging" : ""}`}
+              } ${draggingFavIdx === i ? "dragging" : ""} ${favCollapsed ? "icon-only" : ""}`}
+              title={favCollapsed ? `${f.label}\n${f.path}` : f.path}
               onClick={() => openFavorite(f.path)}
               draggable
               onDragStart={(e) => {
@@ -3338,6 +3671,8 @@ function Explorer({ home }: { home: string }) {
                   >
                     {justSyncedPaths.has(f.path) ? (
                       <CheckGlyph size={11} />
+                    ) : syncingPaths.has(f.path) ? (
+                      <RefreshGlyph size={11} />
                     ) : gitSyncedPaths.has(f.path) ? (
                       <GitBranchGlyph size={11} />
                     ) : driveSyncedPaths.has(f.path) ? (
@@ -3348,28 +3683,33 @@ function Explorer({ home }: { home: string }) {
                   </span>
                 )}
               </span>
-              {f.label}
+              {!favCollapsed && f.label}
             </div>
           );
         })}
 
         {trashPath && (
           <div
-            className={`sidebar-item ${!showMyComputer && loc.kind === "fs" && loc.path === trashPath ? "active" : ""}`}
+            className={`sidebar-item ${!showMyComputer && loc.kind === "fs" && loc.path === trashPath ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
+            title={favCollapsed ? "Trash" : undefined}
             onClick={() => go({ kind: "fs", path: trashPath })}
             onContextMenu={(e) => {
               e.preventDefault();
               setMenu({
                 x: e.clientX,
                 y: e.clientY,
-                items: [{ label: "Empty Trash", danger: true, onClick: emptyTrashNow }],
+                items: [
+                  { label: "Restore All", onClick: restoreAllFromTrash },
+                  { type: "separator" },
+                  { label: "Empty Trash", danger: true, onClick: emptyTrashNow },
+                ],
               });
             }}
           >
             <span className="sidebar-ico place">
               <TrashGlyph size={22} />
             </span>
-            Trash
+            {!favCollapsed && "Trash"}
           </div>
         )}
 
@@ -3379,14 +3719,15 @@ function Explorer({ home }: { home: string }) {
             right-click to lock. */}
         {unlockedRoots.size > 0 && (
           <>
-            <div className="sidebar-section">Unlocked</div>
+            {!favCollapsed && <div className="sidebar-section">Unlocked</div>}
             {[...unlockedRoots].map((root) => {
               const active = loc.kind === "vault" && loc.root === root;
               const kept = keepUnlockedRoots.has(root);
               return (
                 <div
                   key={root}
-                  className={`sidebar-item vaultrow ${active ? "active" : ""}`}
+                  className={`sidebar-item vaultrow ${active ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
+                  title={favCollapsed ? baseName(root) : undefined}
                   onClick={() => go({ kind: "vault", root, rel: "" })}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -3400,7 +3741,7 @@ function Explorer({ home }: { home: string }) {
                   <span className="sidebar-ico vault-open">
                     <LockOpenGlyph size={19} />
                   </span>
-                  {baseName(root)}
+                  {!favCollapsed && baseName(root)}
                   {kept && <span className="vault-kept" title="Kept unlocked" />}
                 </div>
               );
@@ -3520,6 +3861,11 @@ function Explorer({ home }: { home: string }) {
             {error} <span className="error-x">✕</span>
           </div>
         )}
+        {infoMsg && (
+          <div className="info-bar" onClick={() => setInfoMsg("")}>
+            {infoMsg} <span className="error-x">✕</span>
+          </div>
+        )}
 
         <div
           className="content"
@@ -3552,7 +3898,7 @@ function Explorer({ home }: { home: string }) {
               onActivate={activate}
               onMenu={entryMenu}
               previewEntry={previewEntry}
-              onSelectFile={(dir, entry) => setPreviewEntry({ dir, entry })}
+              onSelectFile={(dir, entry) => withSensitive(joinPath(dir, entry.name), () => setPreviewEntry({ dir, entry }))}
               cutPaths={clipboard?.mode === "cut" && clipboard.kind === loc.kind ? clipboard.paths : undefined}
             />
           ) : view === "listPreview" ? (
@@ -3697,6 +4043,14 @@ function Explorer({ home }: { home: string }) {
             setSheetError("");
           }}
           onSubmit={submitUnlock}
+        />
+      )}
+      {sensitivePrompt && (
+        <SensitiveUnlockSheet
+          name={baseName(sensitivePrompt.path)}
+          error={sensitivePrompt.error}
+          onCancel={() => setSensitivePrompt(null)}
+          onSubmit={submitSensitive}
         />
       )}
       {pending && pending.kind === "newVault" && (
@@ -4004,6 +4358,7 @@ export default function App() {
         initialName={params.get("name")}
         initialFilters={initialFilters}
         initialFolder={params.get("folder")}
+        directory={params.get("directory") === "true"}
       />
     );
   }

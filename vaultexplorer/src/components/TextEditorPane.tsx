@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Entry, api, joinPath, parentPath } from "../api";
-import { kindOf } from "../icons";
+import { kindOf, FileIcon } from "../icons";
 import { renderMarkdownToHtml, serializePreviewToMarkdown } from "../markdown";
 import { useAutoSaveText } from "../hooks/useAutoSaveText";
 import { EditableFileName, PreviewColumn } from "./PreviewColumn";
@@ -101,6 +101,11 @@ export function MarkdownEditorPane({
       if (img.src) return;
       const rel = img.getAttribute("data-md-src");
       if (!rel) return;
+      // Base64 data: URIs are self-contained -- use directly, no file read.
+      if (rel.startsWith("data:")) {
+        img.src = rel;
+        return;
+      }
       const call = inVault ? api.vaultThumbnail(joinPath(dir, rel), 2000) : api.fsThumbnail(joinPath(dir, rel), 2000);
       call.then((uri) => {
         img.src = uri;
@@ -132,34 +137,220 @@ export function MarkdownEditorPane({
     onPreviewInput();
   }
 
-  // Real fs only: a vault file has nowhere to write a plaintext sibling
-  // image file into without breaking the vault's own invariant.
+  // Embed images as base64 data: URIs directly in the Markdown (`![](data:
+  // …)`), rather than writing a sibling file -- self-contained, and works
+  // inside a vault too (no plaintext file leaks next to the encrypted note).
+  function fileToDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result as string);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(file);
+    });
+  }
+  async function insertImageFile(file: File) {
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      insertImageAtCaret(dataUrl, dataUrl);
+    } catch (err) {
+      setPasteError(String(err));
+    }
+  }
   async function onPreviewPaste(e: React.ClipboardEvent) {
-    if (inVault) return;
     const item = [...e.clipboardData.items].find((it) => it.type.startsWith("image/"));
     if (!item) return;
     const file = item.getAsFile();
     if (!file) return;
     e.preventDefault();
-    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-    const dir = parentPath(fullPath);
-    try {
-      const relName = await api.fsSavePastedImage(dir, bytes);
-      const dataUrl = await api.fsThumbnail(joinPath(dir, relName), 2000);
-      insertImageAtCaret(relName, dataUrl);
-    } catch (err) {
-      setPasteError(String(err));
+    await insertImageFile(file);
+  }
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
+  // ---- Task-list helpers (checkbox items, nesting, keyboard, drag) ----
+
+  function findTaskLi(node: Node | null): HTMLLIElement | null {
+    let n: Node | null = node;
+    while (n && n !== previewRef.current) {
+      if (n.nodeType === Node.ELEMENT_NODE && (n as HTMLElement).matches?.("li.md-task")) {
+        return n as HTMLLIElement;
+      }
+      n = n.parentNode;
+    }
+    return null;
+  }
+  function caretToEnd(el: HTMLElement) {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(false);
+    const s = window.getSelection();
+    s?.removeAllRanges();
+    s?.addRange(r);
+  }
+  function makeTaskLi(): HTMLLIElement {
+    const li = document.createElement("li");
+    li.className = "md-task";
+    li.setAttribute("data-task", "1");
+    li.setAttribute("data-checked", "false");
+    li.setAttribute("draggable", "true");
+    const chk = document.createElement("span");
+    chk.className = "md-task-check";
+    chk.contentEditable = "false";
+    const txt = document.createElement("span");
+    txt.className = "md-task-text";
+    li.append(chk, txt);
+    return li;
+  }
+  const taskText = (li: HTMLLIElement) => li.querySelector<HTMLElement>(":scope > .md-task-text");
+  const isNestedLi = (li: HTMLLIElement) =>
+    li.parentElement?.parentElement?.tagName === "LI";
+
+  function indentTask(li: HTMLLIElement) {
+    const prev = li.previousElementSibling as HTMLElement | null;
+    if (!prev || prev.tagName !== "LI") return; // first item can't indent
+    let sub = prev.querySelector<HTMLUListElement>(":scope > ul");
+    if (!sub) {
+      sub = document.createElement("ul");
+      sub.className = "md-tasklist";
+      prev.appendChild(sub);
+    }
+    sub.appendChild(li);
+    const t = taskText(li);
+    if (t) caretToEnd(t);
+    onPreviewInput();
+  }
+  function outdentTask(li: HTMLLIElement) {
+    const ul = li.parentElement as HTMLElement | null;
+    const parentLi = ul?.parentElement as HTMLElement | null;
+    if (!parentLi || parentLi.tagName !== "LI") return; // already top level
+    parentLi.after(li);
+    if (ul && ul.children.length === 0) ul.remove();
+    const t = taskText(li);
+    if (t) caretToEnd(t);
+    onPreviewInput();
+  }
+  function newTaskAfter(li: HTMLLIElement) {
+    const t = taskText(li);
+    if (t && (t.textContent ?? "").trim() === "") {
+      // Enter on an empty item: outdent if nested, else break out of the list.
+      if (isNestedLi(li)) {
+        outdentTask(li);
+        return;
+      }
+      const ul = li.parentElement as HTMLElement;
+      const p = document.createElement("div");
+      p.innerHTML = "<br>";
+      ul.after(p);
+      li.remove();
+      if (ul.children.length === 0) ul.remove();
+      caretToEnd(p);
+      onPreviewInput();
+      return;
+    }
+    const nli = makeTaskLi();
+    li.after(nli);
+    const nt = taskText(nli);
+    if (nt) caretToEnd(nt);
+    onPreviewInput();
+  }
+
+  function onPreviewKeyDown(e: React.KeyboardEvent) {
+    const li = findTaskLi(window.getSelection()?.anchorNode ?? null);
+    if (li) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        newTaskAfter(li);
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        e.shiftKey ? outdentTask(li) : indentTask(li);
+        return;
+      }
+      // Shift+Enter falls through to the soft-line-break below.
+    }
+    // A plain Enter should behave like any ordinary text box (one new line),
+    // not contentEditable's default of starting a whole new block element
+    // (which serializes back as a blank-line-separated paragraph, i.e.
+    // visibly "double spaced"). Shift+Enter inside a task also lands here.
+    if (e.key === "Enter") {
+      e.preventDefault();
+      document.execCommand("insertLineBreak");
+      onPreviewInput();
     }
   }
 
-  // A plain Enter should behave like any ordinary text box (one new
-  // line), not the browser's contentEditable default of starting a whole
-  // new block element -- which serializePreviewToMarkdown renders back as
-  // a blank-line-separated paragraph, i.e. visibly "double spaced".
-  function onPreviewKeyDown(e: React.KeyboardEvent) {
-    if (e.key !== "Enter") return;
+  // Toggle a task's checkbox on click of its marker: flips data-checked +
+  // the `done` class (strikethrough + dimmed via CSS) and saves.
+  function onPreviewClick(e: React.MouseEvent) {
+    const t = e.target as HTMLElement;
+    if (!t.classList?.contains("md-task-check")) return;
+    const li = t.closest<HTMLLIElement>("li.md-task");
+    if (!li) return;
+    const checked = li.getAttribute("data-checked") === "true";
+    li.setAttribute("data-checked", String(!checked));
+    li.classList.toggle("done", !checked);
+    onPreviewInput();
+  }
+
+  // Drag-to-reorder (Google-Keep style): drop above/below the hovered item
+  // based on the cursor's position within it; the dragged item keeps its
+  // own subtree. Nesting is still done with Tab / Shift+Tab.
+  const draggedLiRef = useRef<HTMLLIElement | null>(null);
+  function onPreviewDragStart(e: React.DragEvent) {
+    const li = findTaskLi(e.target as Node);
+    if (!li) return;
+    draggedLiRef.current = li;
+    e.dataTransfer.effectAllowed = "move";
+    // WebKitGTK needs dataTransfer populated for drop to fire later.
+    e.dataTransfer.setData("text/plain", "");
+    li.classList.add("dragging");
+  }
+  function onPreviewDragOver(e: React.DragEvent) {
+    if (!draggedLiRef.current) return;
+    const over = findTaskLi(e.target as Node);
+    if (over && over !== draggedLiRef.current) e.preventDefault(); // allow drop
+  }
+  function onPreviewDrop(e: React.DragEvent) {
+    const dragged = draggedLiRef.current;
+    draggedLiRef.current = null;
+    if (dragged) dragged.classList.remove("dragging");
+    if (!dragged) return;
+    const over = findTaskLi(e.target as Node);
+    if (!over || over === dragged || dragged.contains(over)) return;
     e.preventDefault();
-    document.execCommand("insertLineBreak");
+    const rect = over.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    if (after) over.after(dragged);
+    else over.before(dragged);
+    onPreviewInput();
+  }
+  function onPreviewDragEnd() {
+    draggedLiRef.current?.classList.remove("dragging");
+    draggedLiRef.current = null;
+  }
+
+  // Insert an empty task list (one item) at the caret and focus it.
+  function insertTaskList() {
+    const preview = previewRef.current;
+    if (!preview) return;
+    preview.focus();
+    const ul = document.createElement("ul");
+    ul.className = "md-tasklist";
+    const li = makeTaskLi();
+    ul.appendChild(li);
+    const sel = window.getSelection();
+    const range =
+      sel && sel.rangeCount > 0 && preview.contains(sel.getRangeAt(0).commonAncestorContainer)
+        ? sel.getRangeAt(0)
+        : null;
+    if (range) {
+      range.collapse(false);
+      range.insertNode(ul);
+    } else {
+      preview.appendChild(ul);
+    }
+    const t = taskText(li);
+    if (t) caretToEnd(t);
     onPreviewInput();
   }
 
@@ -347,6 +538,33 @@ export function MarkdownEditorPane({
             >
               H
             </button>
+            <button
+              className="btn-plain small"
+              title="Checklist"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => (mode === "preview" ? insertTaskList() : prefixLines("- [ ] "))}
+            >
+              ☑
+            </button>
+            <button
+              className="btn-plain small"
+              title="Insert image"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => imageInputRef.current?.click()}
+            >
+              🖼
+            </button>
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) insertImageFile(f);
+                e.target.value = "";
+              }}
+            />
           </div>
           {mode === "preview" ? (
             <div
@@ -357,6 +575,11 @@ export function MarkdownEditorPane({
               onInput={onPreviewInput}
               onKeyDown={onPreviewKeyDown}
               onPaste={onPreviewPaste}
+              onClick={onPreviewClick}
+              onDragStart={onPreviewDragStart}
+              onDragOver={onPreviewDragOver}
+              onDrop={onPreviewDrop}
+              onDragEnd={onPreviewDragEnd}
             />
           ) : (
             <textarea
@@ -369,6 +592,48 @@ export function MarkdownEditorPane({
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// Folder preview: a folder has no "content" to render, so show its listing
+// (name + item count + a scrollable peek at what's inside), same in a vault
+// or on the real fs. Uses list_dir/fs_list -- no decryption involved.
+function FolderPreview({
+  entry,
+  fullPath,
+  inVault,
+  onRename,
+}: {
+  entry: Entry;
+  fullPath: string;
+  inVault: boolean;
+  onRename?: (newName: string) => void;
+}) {
+  const [items, setItems] = useState<Entry[] | null>(null);
+  useEffect(() => {
+    const call = inVault ? api.listDir(fullPath) : api.fsList(fullPath, false);
+    call.then(setItems).catch(() => setItems([]));
+  }, [fullPath, inVault]);
+  const sorted = (items ?? [])
+    .slice()
+    .sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name) : a.is_dir ? -1 : 1));
+  return (
+    <div className="preview-pane text-editor-pane">
+      <div className="preview-name-row">
+        <EditableFileName name={entry.name} onRename={onRename} />
+      </div>
+      <p className="hint" style={{ marginTop: 2 }}>
+        {items === null ? "…" : `${items.length} item${items.length === 1 ? "" : "s"}`}
+      </p>
+      <div className="folder-preview-list">
+        {sorted.map((e) => (
+          <div className="folder-preview-item" key={e.name}>
+            <FileIcon entry={e} />
+            <span>{e.name}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -395,6 +660,9 @@ export function FilePreviewPane({
   const fullPath = joinPath(dir, entry.name);
   const ext = entry.name.toLowerCase().split(".").pop() ?? "";
 
+  if (entry.is_dir) {
+    return <FolderPreview key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} onRename={onRename} />;
+  }
   if (ext === "md") {
     return <MarkdownEditorPane key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} onRename={onRename} />;
   }

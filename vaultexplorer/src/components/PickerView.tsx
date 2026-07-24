@@ -42,6 +42,7 @@ export function PickerView({
   initialName,
   initialFilters,
   initialFolder,
+  directory = false,
 }: {
   mode: "open" | "save";
   reqId: string;
@@ -49,6 +50,7 @@ export function PickerView({
   initialName: string | null;
   initialFilters: FilterGroup[];
   initialFolder: string | null;
+  directory?: boolean;
 }) {
   const [home, setHome] = useState<string | null>(null);
   const [mobile, setMobile] = useState(false);
@@ -247,15 +249,44 @@ export function PickerView({
     if (mode === "save") {
       const name = saveName.trim();
       if (!name) return;
-      const exists = entries.some((e) => e.name === name && !e.is_dir);
-      if (exists && !window.confirm(`"${name}" already exists. Replace it?`)) return;
-      await api.portalResolve(reqId, [`file://${joinPath(dir, name)}`]);
+      // Honor a path typed into the "Where" field directly, so it wins over
+      // the last-browsed folder even when the user never pressed Enter.
+      const typed = pathInput.trim();
+      const targetDir = typed || dir;
+      if (!targetDir) return;
+      if (targetDir === dir) {
+        const exists = entries.some((e) => e.name === name && !e.is_dir);
+        if (exists && !window.confirm(`"${name}" already exists. Replace it?`)) return;
+      } else {
+        // Typed a different folder -- make sure it actually exists before
+        // handing the caller a path it can't write to.
+        try {
+          await api.fsList(targetDir, false);
+        } catch {
+          setError(`Can't find folder: ${targetDir}`);
+          return;
+        }
+      }
+      await api.portalResolve(reqId, [`file://${joinPath(targetDir, name)}`]);
       getCurrentWebviewWindow().close();
       return;
     }
-    const paths = [...selected]
-      .filter((n) => !entries.find((e) => e.name === n)?.is_dir)
-      .map((n) => joinPath(dir, n));
+    // "Open Folder" (directory picker): return the selected folder(s), or the
+    // directory currently being browsed if nothing is selected -- matching the
+    // native GTK folder chooser, where landing in a folder and hitting Open
+    // picks that folder. File-open mode keeps the opposite filter (folders are
+    // navigation targets there, never results).
+    let paths: string[];
+    if (directory) {
+      paths = [...selected]
+        .filter((n) => entries.find((e) => e.name === n)?.is_dir)
+        .map((n) => joinPath(dir, n));
+      if (paths.length === 0) paths = [dir];
+    } else {
+      paths = [...selected]
+        .filter((n) => !entries.find((e) => e.name === n)?.is_dir)
+        .map((n) => joinPath(dir, n));
+    }
     if (paths.length === 0) return;
     const uris = paths.map((p) => `file://${p}`);
     await api.portalResolve(reqId, uris);
@@ -383,7 +414,15 @@ export function PickerView({
         if (e.key === "Enter") navigateTo(pathInput.trim() || "/");
         if (e.key === "Escape" && dir) setPathInput(dir);
       }}
-      onBlur={() => dir && setPathInput(dir)}
+      // Commit a typed path when focus leaves (e.g. clicking Save) instead of
+      // silently reverting it to the previous folder -- reverting on blur was
+      // why typing a destination and clicking Save saved to the OLD folder.
+      // Save's confirm() reads `pathInput` directly, so it honors the typed
+      // path even if this navigate hasn't resolved yet.
+      onBlur={() => {
+        const p = pathInput.trim();
+        if (p && p !== dir) navigateTo(p);
+      }}
     />
   );
 
@@ -486,7 +525,7 @@ export function PickerView({
         </button>
         <button
           className="btn-primary"
-          disabled={mode === "open" ? selected.size === 0 : saveName.trim() === ""}
+          disabled={mode === "open" ? !directory && selected.size === 0 : saveName.trim() === ""}
           onClick={confirm}
         >
           {mode === "open" ? "Open" : "Save"}

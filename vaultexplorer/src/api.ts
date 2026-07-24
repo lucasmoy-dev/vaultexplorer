@@ -20,6 +20,8 @@ export const api = {
   vaultExists: (path: string) => invoke<boolean>("vault_exists", { path }),
   createVault: (path: string, password: string) =>
     invoke<void>("create_vault", { path, password }),
+  convertFolderToVault: (path: string, password: string) =>
+    invoke<void>("convert_folder_to_vault", { path, password }),
   unlockVault: (path: string, password: string) =>
     invoke<void>("unlock_vault", { path, password }),
   lockVault: (root: string) => invoke<void>("lock_vault", { root }),
@@ -42,8 +44,17 @@ export const api = {
     invoke<void>("import_file", { srcPath, destRel }),
   exportFile: (relPath: string, destFsPath: string) =>
     invoke<void>("export_file", { relPath, destFsPath }),
-  setFilePassword: (relPath: string, filePassword: string) =>
-    invoke<void>("set_file_password", { relPath, filePassword }),
+  // sensitive files (per-file / per-folder re-auth gate)
+  vaultSetSensitive: (relPath: string, sensitive: boolean) =>
+    invoke<void>("vault_set_sensitive", { relPath, sensitive }),
+  vaultIsSensitive: (relPath: string) => invoke<boolean>("vault_is_sensitive", { relPath }),
+  vaultListSensitive: () => invoke<string[]>("vault_list_sensitive"),
+  vaultUnlockSensitive: (password: string, timeoutSecs: number | null) =>
+    invoke<void>("vault_unlock_sensitive", { password, timeoutSecs }),
+  vaultSensitiveUnlocked: () => invoke<boolean>("vault_sensitive_unlocked"),
+  vaultLockSensitive: () => invoke<void>("vault_lock_sensitive"),
+  changeVaultPassword: (root: string, oldPassword: string, newPassword: string) =>
+    invoke<void>("change_vault_password", { root, oldPassword, newPassword }),
   openPath: (relPath: string) => invoke<string>("open_path", { relPath }),
   compressEntries: (
     dir: string,
@@ -69,6 +80,7 @@ export const api = {
   openInEditor: (path: string) => invoke<void>("open_in_editor", { path }),
   fsList: (path: string, showHidden: boolean) =>
     invoke<Entry[]>("fs_list", { path, showHidden }),
+  fsIsVault: (path: string) => invoke<boolean>("fs_is_vault", { path }),
   fsSetReadonly: (path: string, readonly: boolean) =>
     invoke<void>("fs_set_readonly", { path, readonly }),
   fsIsReadonly: (path: string) => invoke<boolean>("fs_is_readonly", { path }),
@@ -90,6 +102,9 @@ export const api = {
   fsTrash: (path: string) => invoke<void>("fs_trash", { path }),
   trashDir: () => invoke<string>("trash_dir"),
   emptyTrash: () => invoke<void>("empty_trash"),
+  trashRestoreAll: () => invoke<void>("trash_restore_all"),
+  trashRestore: (names: string[]) => invoke<void>("trash_restore", { names }),
+  trashPurge: (names: string[]) => invoke<void>("trash_purge", { names }),
   templatesDir: () => invoke<string>("templates_dir"),
   gitRepoRoot: (path: string) => invoke<string | null>("git_repo_root", { path }),
   gitStatus: (root: string) => invoke<GitFileStatus[]>("git_status", { root }),
@@ -244,6 +259,9 @@ export const api = {
   driveRemovePair: (localPath: string) => invoke<void>("drive_remove_pair", { localPath }),
   driveSyncNow: (localPath: string) => invoke<SyncReport>("drive_sync_now", { localPath }),
   driveSyncingNow: () => invoke<string[]>("drive_syncing_now"),
+  driveSyncIsActive: (localPath: string) => invoke<boolean>("drive_sync_is_active", { localPath }),
+  driveSyncLastError: (localPath: string) => invoke<string | null>("drive_sync_last_error", { localPath }),
+  fsWatchSet: (path: string | null) => invoke<void>("fs_watch_set", { path }),
   gitSyncListPairs: () => invoke<GitSyncPair[]>("git_sync_list_pairs"),
   gitSyncIsActive: (localPath: string) => invoke<boolean>("git_sync_is_active", { localPath }),
   gitSyncSyncingNow: () => invoke<string[]>("git_sync_syncing_now"),

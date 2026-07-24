@@ -32,6 +32,15 @@ pub enum VaultError {
     #[error("no such file or directory in the vault")]
     PathNotFound,
 
+    #[error("this file has its own password set -- unlock it first")]
+    FileLocked,
+
+    #[error("this file is marked sensitive -- re-enter the vault password to view it")]
+    SensitiveLocked,
+
+    #[error("can't unmark: a parent folder is marked sensitive")]
+    SensitiveInherited,
+
     #[error("archive error: {0}")]
     Zip(#[from] zip::result::ZipError),
 }

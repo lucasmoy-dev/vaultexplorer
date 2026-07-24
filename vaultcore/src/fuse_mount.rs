@@ -17,7 +17,7 @@
 use crate::vault::{Stat, Vault};
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
-    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
+    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
     FUSE_ROOT_ID,
 };
 use std::collections::HashMap;
@@ -315,7 +315,73 @@ impl Filesystem for VaultFs {
         }
     }
 
+    // Without this, the kernel returns ENOSYS for any truncate / chmod /
+    // utimes -- which breaks external editors that save by truncating the
+    // file to zero and rewriting it (or opening with O_TRUNC), the classic
+    // "Unable to save" from Photoshop/GIMP/etc editing a vault file through
+    // the mount. Only `size` (truncate) is materially honored; mode/owner/
+    // timestamps are accepted as no-ops (this fs doesn't store them) so the
+    // save flow completes instead of erroring.
+    #[allow(clippy::too_many_arguments)]
+    fn setattr(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<TimeOrNow>,
+        _mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        fh: Option<u64>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<u32>,
+        reply: ReplyAttr,
+    ) {
+        let path = match self.inodes.lock().unwrap().path_for(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+        if let Some(sz) = size {
+            let sz = sz as usize;
+            let mut handles = self.handles.lock().unwrap();
+            let open = fh.and_then(|h| handles.get_mut(&h));
+            if let Some(f) = open {
+                // Truncate the in-memory buffer; writeback re-encrypts on flush.
+                f.buffer.resize(sz, 0);
+                f.dirty = true;
+            } else {
+                drop(handles);
+                let mut buf = self.vault.decrypt_file(&path).unwrap_or_default();
+                buf.resize(sz, 0);
+                if self.vault.write_file(&path, &buf).is_err() {
+                    reply.error(libc::EIO);
+                    return;
+                }
+            }
+            reply.attr(&TTL, &self.attr_for(ino, &Stat { is_dir: false, len: sz as u64 }));
+            return;
+        }
+        // No size change: accept (mode/owner/time are not stored) and reply
+        // with the current attributes.
+        match self.vault.stat(&path) {
+            Ok(stat) => reply.attr(&TTL, &self.attr_for(ino, &stat)),
+            Err(_) => reply.error(libc::ENOENT),
+        }
+    }
+
     fn flush(&mut self, _req: &Request, _ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
+        self.writeback(fh);
+        reply.ok();
+    }
+
+    fn fsync(&mut self, _req: &Request, _ino: u64, fh: u64, _datasync: bool, reply: ReplyEmpty) {
         self.writeback(fh);
         reply.ok();
     }

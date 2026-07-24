@@ -2,9 +2,31 @@
    VaultExplorer — macOS Finder look
    ============================================================ */
 
+/* Inter -- the closest freely-licensable substitute for Apple's San
+   Francisco (SF Pro), self-hosted so it renders identically everywhere
+   rather than depending on system fonts. On real macOS `-apple-system`
+   still wins (SF is native); on Linux/WebKitGTK, where every Apple face
+   misses, this is what the stack lands on instead of generic Noto Sans.
+   Variable font: one file covers weights 100-900. OFL, see
+   public/fonts/Inter-LICENSE.txt. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/InterVariable.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/InterVariable-Italic.woff2") format("woff2");
+}
+
 :root {
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
-    "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
+    "Inter", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
   --emoji-font: "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji",
     "Twemoji Mozilla", sans-serif;
 
@@ -520,6 +542,31 @@ button:disabled {
      shows up to reach them, which reads as items (or "the scrollbar")
      randomly disappearing. */
   overflow-y: auto;
+  transition: width 0.15s ease, min-width 0.15s ease;
+}
+/* Collapsed Favorites shrinks the whole rail, not just that one section --
+   My Computer/Trash/Unlocked-vault rows all go icon-only alongside it, so
+   a sidebar still 196px wide with nothing but centered icons in it would
+   just read as broken, oversized whitespace. */
+.sidebar.sidebar-compact {
+  width: 72px;
+  min-width: 72px;
+  padding: 0 4px 6px;
+  overflow-x: hidden;
+}
+/* Collapsed rail is narrow -- the default traffic-lights spacing (13px lead
+   + 9px gaps ≈ 76px) pushed the green (maximize) light past the clipped
+   edge, so it vanished. Tighten lead + gaps so all three still fit. */
+.sidebar-compact .traffic-lights {
+  padding-left: 6px;
+  gap: 5px;
+}
+.sidebar-compact .sidebar-top {
+  margin: 0 -4px 2px;
+  padding-left: 0;
+}
+.sidebar.sidebar-compact .sidebar-section-collapsible {
+  justify-content: center;
 }
 .sidebar-section {
   font-size: 11px;
@@ -532,6 +579,37 @@ button:disabled {
   background: rgba(10, 108, 255, 0.18);
   box-shadow: inset 0 0 0 2px var(--accent);
   color: var(--text);
+}
+.sidebar-section-collapsible {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sidebar-section-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 2px;
+  border-radius: 4px;
+  color: var(--sidebar-section);
+  cursor: pointer;
+}
+.sidebar-section-collapse-btn:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.sidebar-item.icon-only {
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  margin: 0 auto;
+}
+.sidebar-item.icon-only .sidebar-ico {
+  width: 28px;
+  height: 28px;
 }
 .sidebar-emoji {
   font-size: 20px;
@@ -553,6 +631,7 @@ button:disabled {
   color: var(--sidebar-text);
   padding: 2px 8px;
   border-radius: 6px;
+  cursor: pointer;
 }
 .sidebar-item:hover {
   background: var(--row-hover);
@@ -568,6 +647,13 @@ button:disabled {
 .sidebar-item.active .sidebar-ico {
   color: var(--accent-grad-top);
 }
+/* `.symbol-icon` (Tabler icons -- Downloads/Desktop/etc.'s default icon,
+   and anything set via "Change Icon…") hardcodes its own `color` for its
+   other reuse (the icon-choice picker), which otherwise blocks the active
+   row's blue from ever reaching the nested SVG's `currentColor` stroke. */
+.sidebar-item.active .sidebar-ico .symbol-icon {
+  color: var(--accent-grad-top);
+}
 .sidebar-ico {
   width: 34px;
   height: 34px;
@@ -581,8 +667,8 @@ button:disabled {
 }
 .sync-badge {
   position: absolute;
-  right: -3px;
-  bottom: -3px;
+  right: 5px;
+  bottom: 5px;
   display: flex;
   border-radius: 50%;
   background: var(--win-bg);
@@ -808,6 +894,15 @@ button:disabled {
 .error-x {
   opacity: 0.6;
 }
+.info-bar {
+  background: #eafff0;
+  color: #147a35;
+  font-size: 12.5px;
+  padding: 7px 14px;
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 0.5px solid rgba(20, 122, 53, 0.2);
+}
 
 /* ---- content ---- */
 .content {
@@ -840,9 +935,17 @@ button:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: flex-start;
   gap: 5px;
   padding: 8px 6px 10px;
   border-radius: 8px;
+  /* Let each tile fill its whole grid cell (default item-stretch) instead
+     of shrinking to its content (align-self:start). Shrinking left "dead
+     zones" below shorter (1-line-name) tiles that belong to the grid
+     container, not the tile -- clicks there hit background and cleared the
+     selection (via onContentMouseDown), which made grid selection feel
+     flaky / self-deselecting. Filling the cell makes the whole cell a click
+     target for its file; content still sits at the top (justify-content). */
 }
 .entry-icon {
   position: relative;
@@ -925,6 +1028,24 @@ button:disabled {
   display: flex;
   filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.45));
 }
+/* Sensitive marker -- bottom-left, distinct from the pin (top-left) and
+   sync (top-right) badges. A filled accent lock so it reads at a glance. */
+.entry-sensitive-badge {
+  position: absolute;
+  left: calc(-3px * var(--icon-scale, 1));
+  bottom: calc(-2px * var(--icon-scale, 1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 1.5px var(--win-bg);
+}
+.entry-sensitive-badge svg {
+  stroke: #fff;
+}
 .entry-sync-badge {
   /* Top-right rather than the color-tag dot's bottom-right corner (which
      it shares its base class with) -- easier to spot at a glance instead
@@ -948,13 +1069,14 @@ button:disabled {
    attributes, so this can override the size prop the glyph components
    were given. */
 .entry.icon .entry-pin-badge svg,
+.entry.icon .entry-sensitive-badge svg,
 .entry.icon .entry-sync-badge svg {
   width: calc(11px * var(--icon-scale, 1));
   height: calc(11px * var(--icon-scale, 1));
 }
 .entry.icon .entry-sync-badge svg {
-  width: calc(20px * var(--icon-scale, 1));
-  height: calc(20px * var(--icon-scale, 1));
+  width: calc(18px * var(--icon-scale, 1));
+  height: calc(18px * var(--icon-scale, 1));
 }
 .entry.icon .entry-icon {
   width: calc(64px * var(--icon-scale, 1));
@@ -985,12 +1107,19 @@ button:disabled {
 .entry.icon .entry-name-edit {
   width: auto;
   min-width: 92px;
-  max-width: 220px;
+  max-width: 132px;
   text-align: center;
+  /* Show the whole (wrapped) filename while renaming instead of clamping
+     to a couple of lines -- the textarea auto-grows its height in JS
+     (see EntryTile), so lift the shared height cap here. */
+  max-height: none;
+  overflow-y: hidden;
 }
 .entry.list .entry-name-edit {
-  flex: 1;
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 120px;
+  max-width: 280px;
+  max-height: 1.6em;
 }
 .entry-name-edit {
   font: inherit;
@@ -1001,6 +1130,12 @@ button:disabled {
   border-radius: 4px;
   padding: 1px 4px;
   outline: none;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+  max-height: 3.4em;
+  overflow-y: auto;
 }
 /* The auto-selected filename stem on entering rename -- lighter than the
    browser's default (fully-saturated) selection blue, which read heavy
@@ -1008,6 +1143,77 @@ button:disabled {
 .entry-name-edit::selection {
   background: rgba(10, 108, 255, 0.28);
   color: inherit;
+}
+/* Settings sheet: tab bar + native-looking select */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+}
+.settings-tab {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-2, #888);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.settings-tab.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.settings-select {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--win-bg);
+  border: 1px solid var(--toolbar-border, rgba(127, 127, 127, 0.3));
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  outline: none;
+  cursor: pointer;
+}
+.settings-select:focus {
+  border-color: var(--accent);
+}
+/* Folder preview (listPreview view) */
+.folder-preview-list {
+  margin-top: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.folder-preview-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 5px;
+  font-size: 13px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.folder-preview-item:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.1));
+}
+.folder-preview-item .fileicon-img,
+.folder-preview-item svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.folder-preview-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* list view */
@@ -1238,14 +1444,16 @@ button:disabled {
   min-height: 0;
 }
 .list-preview-split .entries-wrap {
-  flex: 1 1 340px;
-  min-width: 220px;
-  max-width: 420px;
+  flex: 0 0 200px;
+  width: 200px;
+  min-width: 200px;
+  max-width: 200px;
   overflow-y: auto;
 }
 .preview-pane {
   flex: 1 1 auto;
-  min-width: 480px;
+  min-width: 380px;
+  min-height: 0;
   border-left: 0.5px solid var(--toolbar-border);
   background: var(--sidebar-bg);
   display: flex;
@@ -1373,6 +1581,68 @@ button:disabled {
   overflow: hidden;
   vertical-align: middle;
   border-radius: 4px;
+}
+/* ---- Task lists (GFM checkboxes) ---- */
+.markdown-rendered ul.md-tasklist {
+  list-style: none;
+  padding-left: 8px;
+}
+.markdown-rendered ul.md-tasklist ul.md-tasklist {
+  padding-left: 22px; /* nesting indent */
+}
+li.md-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 1px 0;
+}
+li.md-task > .md-task-check {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1.5px solid var(--toolbar-border, #b0b0b0);
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  background: var(--win-bg);
+  transition: background 0.1s, border-color 0.1s;
+}
+li.md-task[data-checked="true"] > .md-task-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+li.md-task[data-checked="true"] > .md-task-check::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+li.md-task > .md-task-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  outline: none;
+}
+/* A whole nested sublist must take the full row, not sit inline after the
+   checkbox+text (the flex row wraps, so give it 100% width). */
+li.md-task > ul.md-tasklist {
+  flex: 1 0 100%;
+}
+li.md-task.done > .md-task-text {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+li.md-task.dragging {
+  opacity: 0.4;
+}
+li.md-task[draggable="true"] {
+  cursor: grab;
 }
 .markdown-rendered h1,
 .markdown-rendered h2,
@@ -2525,7 +2795,8 @@ button:disabled {
   background: var(--hover-bg, rgba(127, 127, 127, 0.12));
 }
 .picker-row .entry-icon,
-.picker-row svg {
+.picker-row svg,
+.picker-row .fileicon-img {
   width: 18px;
   height: 18px;
   flex-shrink: 0;

@@ -5,16 +5,43 @@ use crate::header::WrappedKey;
 use crate::name::{self, NameKey};
 use crate::pq::{HybridWrap, RecipientPublicKey, RecipientSecretKey};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufReader, BufWriter, Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const VAULT_META_FILENAME: &str = ".vault.meta";
+/// Encrypted manifest (in the vault root) of which plaintext paths are
+/// marked "sensitive". Fixed plaintext name like `.vault.meta`; skipped by
+/// directory listings. Its contents are AEAD-encrypted under the master key.
+const FLAGS_FILENAME: &str = ".vault.flags";
 const FEK_WRAP_AAD: &[u8] = b"vaultcore-fek-wrap";
 const MASTER_KEY_WRAP_AAD: &[u8] = b"vaultcore-master-key-wrap";
+const FLAGS_AAD: &[u8] = b"vaultcore-flags";
+
+/// Reserved on-disk filenames in a vault that are metadata, not encrypted
+/// content -- listings and walks skip these.
+fn is_reserved_name(name: &std::ffi::OsStr) -> bool {
+    name == VAULT_META_FILENAME || name == FLAGS_FILENAME
+}
+
+/// Normalize a plaintext relative path to a canonical `a/b/c` string (only
+/// the normal components, forward slashes) -- the key form used in the
+/// sensitive-flags manifest so lookups and ancestor walks are consistent.
+fn norm_rel(rel: &Path) -> String {
+    rel.components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
 
 #[derive(Serialize, Deserialize)]
 struct VaultMeta {
@@ -62,6 +89,26 @@ pub struct Vault {
     root: PathBuf,
     master_key: Key32,
     name_key: NameKey,
+    /// State of the "sensitive files" re-auth session for this vault.
+    /// Files (or whole folders) marked sensitive (see `.vault.flags`) can
+    /// only be decrypted while this session is active -- the user re-enters
+    /// the vault password to open a time-boxed window, after which sensitive
+    /// content locks again. `Arc<Mutex<_>>` (not a bare field) since a FUSE
+    /// mount clones the whole `Vault` to run on its own thread, and both
+    /// must observe the same session state.
+    sensitive: Arc<Mutex<SensitiveState>>,
+}
+
+/// The sensitive-files re-auth session state (see [`Vault::unlock_sensitive`]).
+#[derive(Clone, Copy)]
+enum SensitiveState {
+    /// Locked: any sensitive file refuses to decrypt until re-authed.
+    Locked,
+    /// Unlocked until this instant, then auto-relocks.
+    Until(Instant),
+    /// Unlocked with no expiry (the "never" timeout option) until the vault
+    /// itself is locked / the app exits.
+    Forever,
 }
 
 /// Whether `path` looks like plain text worth decrypting for a content
@@ -138,6 +185,7 @@ impl Vault {
             root,
             master_key,
             name_key,
+            sensitive: Arc::new(Mutex::new(SensitiveState::Locked)),
         })
     }
 
@@ -168,6 +216,7 @@ impl Vault {
             root,
             master_key,
             name_key,
+            sensitive: Arc::new(Mutex::new(SensitiveState::Locked)),
         })
     }
 
@@ -237,14 +286,153 @@ impl Vault {
     /// key) fully into memory. This is the primitive a FUSE/loopback layer
     /// would call on read: plaintext only ever exists transiently in RAM,
     /// never written back to disk unencrypted.
+    ///
+    /// Every content-reading command in the app (preview, thumbnail,
+    /// export, share, Get Info, ...) funnels through this one function,
+    /// which is what makes the per-file password gate below actually
+    /// hold everywhere rather than just wherever a particular UI surface
+    /// remembered to check it.
     pub fn decrypt_file(&self, rel_path: impl AsRef<Path>) -> Result<Vec<u8>> {
         let src = self.encrypted_path(rel_path.as_ref())?;
         let mut reader = BufReader::new(fs::File::open(&src)?);
         let meta = file::read_meta(&mut reader)?;
+        if self.is_sensitive(rel_path.as_ref()) && !self.sensitive_unlocked() {
+            return Err(VaultError::SensitiveLocked);
+        }
         let fek = self.unwrap_fek_with_master_key(&meta.wrapped_keys)?;
         let mut out = Vec::with_capacity(meta.plaintext_len as usize);
         file::decrypt_stream(&mut reader, &mut out, &fek, &meta)?;
         Ok(out)
+    }
+
+    // ---- Sensitive files (per-file / per-folder re-auth gate) ----
+
+    fn flags_path(&self) -> PathBuf {
+        self.root.join(FLAGS_FILENAME)
+    }
+
+    /// Load the set of plaintext paths explicitly marked sensitive. Stored
+    /// AEAD-encrypted (master key) as `[12-byte nonce][ciphertext]` so the
+    /// manifest itself leaks nothing when the vault is locked. Missing or
+    /// unreadable file -> empty set.
+    fn load_flags(&self) -> HashSet<String> {
+        let Ok(data) = fs::read(self.flags_path()) else {
+            return HashSet::new();
+        };
+        if data.len() < 12 {
+            return HashSet::new();
+        }
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&data[..12]);
+        let Ok(plain) = aead_decrypt(&self.master_key, &nonce, FLAGS_AAD, &data[12..]) else {
+            return HashSet::new();
+        };
+        bincode::deserialize(&plain).unwrap_or_default()
+    }
+
+    fn save_flags(&self, set: &HashSet<String>) -> Result<()> {
+        let plain = bincode::serialize(set)?;
+        let (nonce, ct) = aead_encrypt(&self.master_key, FLAGS_AAD, &plain)?;
+        let mut out = Vec::with_capacity(12 + ct.len());
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ct);
+        fs::write(self.flags_path(), out)?;
+        Ok(())
+    }
+
+    /// Whether `rel_path` is sensitive -- either marked directly, or living
+    /// under a folder that's marked (folder sensitivity is inherited by all
+    /// descendants, including files created later).
+    pub fn is_sensitive(&self, rel_path: impl AsRef<Path>) -> bool {
+        let set = self.load_flags();
+        if set.is_empty() {
+            return false;
+        }
+        let rel = norm_rel(rel_path.as_ref());
+        let mut p = rel.as_str();
+        loop {
+            if set.contains(p) {
+                return true;
+            }
+            match p.rfind('/') {
+                Some(i) => p = &p[..i],
+                None => return false,
+            }
+        }
+    }
+
+    /// The set of paths marked sensitive (raw, not expanded to descendants).
+    pub fn list_sensitive(&self) -> Result<Vec<String>> {
+        let mut v: Vec<String> = self.load_flags().into_iter().collect();
+        v.sort();
+        Ok(v)
+    }
+
+    /// Mark / unmark `rel_path` (a file or folder) sensitive. Unmarking is
+    /// refused when a *parent* folder is sensitive -- the child inherits it
+    /// and can't opt out while the folder governs it.
+    pub fn set_sensitive(&self, rel_path: impl AsRef<Path>, sensitive: bool) -> Result<()> {
+        let rel = norm_rel(rel_path.as_ref());
+        let mut set = self.load_flags();
+        if sensitive {
+            set.insert(rel);
+        } else {
+            // Refuse if any strict ancestor folder is marked.
+            if let Some(i) = rel.rfind('/') {
+                let mut anc = &rel[..i];
+                loop {
+                    if set.contains(anc) {
+                        return Err(VaultError::SensitiveInherited);
+                    }
+                    match anc.rfind('/') {
+                        Some(j) => anc = &anc[..j],
+                        None => break,
+                    }
+                }
+            }
+            set.remove(&rel);
+        }
+        self.save_flags(&set)
+    }
+
+    /// Start (or extend) the sensitive re-auth session by verifying the
+    /// vault password again. `timeout = None` means no expiry ("never").
+    pub fn unlock_sensitive(&self, password: &[u8], timeout: Option<Duration>) -> Result<()> {
+        // Re-verify against the on-disk vault password, independent of the
+        // fact that this vault is already unlocked in memory.
+        let meta: VaultMeta =
+            bincode::deserialize(&fs::read(self.root.join(VAULT_META_FILENAME))?)?;
+        let password_key = derive_key_from_password(password, &meta.salt)?;
+        let master_bytes = aead_decrypt(
+            &password_key,
+            &meta.nonce,
+            MASTER_KEY_WRAP_AAD,
+            &meta.wrapped_master_key,
+        )
+        .map_err(|_| VaultError::InvalidPassword)?;
+        if master_bytes != self.master_key.0 {
+            return Err(VaultError::InvalidPassword);
+        }
+        let state = match timeout {
+            Some(d) => SensitiveState::Until(Instant::now() + d),
+            None => SensitiveState::Forever,
+        };
+        *self.sensitive.lock().unwrap() = state;
+        Ok(())
+    }
+
+    /// Whether the sensitive re-auth session is currently active.
+    pub fn sensitive_unlocked(&self) -> bool {
+        match *self.sensitive.lock().unwrap() {
+            SensitiveState::Locked => false,
+            SensitiveState::Forever => true,
+            SensitiveState::Until(t) => Instant::now() < t,
+        }
+    }
+
+    /// End the sensitive session immediately (manual re-lock / timeout).
+    pub fn lock_sensitive(&self) {
+        *self.sensitive.lock().unwrap() = SensitiveState::Locked;
     }
 
     /// (Re-)encrypt `plaintext` as `rel_path`'s content. If the file
@@ -316,7 +504,7 @@ impl Vault {
         let mut out = Vec::new();
         for entry in fs::read_dir(&enc_dir)? {
             let entry = entry?;
-            if entry.file_name() == VAULT_META_FILENAME {
+            if is_reserved_name(&entry.file_name()) {
                 continue;
             }
             let encoded = entry
@@ -340,7 +528,23 @@ impl Vault {
                 let mut reader = BufReader::new(fs::File::open(&path)?);
                 file::read_meta(&mut reader)?.plaintext_len
             };
-            let is_vault = is_dir && path.join(VAULT_META_FILENAME).exists();
+            // A subdir is a nested vault if it contains a `.vault.meta`.
+            // Inside a vault every name is encrypted, so the literal filename
+            // never appears on disk -- instead derive the encrypted on-disk
+            // name of `.vault.meta` for this subdir (AES-SIV is deterministic:
+            // same key + AAD + name => same ciphertext, and that's exactly the
+            // name the parent wrote it under) and test for that. AAD is the
+            // subdir's own plaintext path, matching `encrypted_path`.
+            let is_vault = is_dir && {
+                let child_plain = if aad.is_empty() {
+                    plain_name.clone()
+                } else {
+                    format!("{}/{}", aad, plain_name)
+                };
+                name::encrypt_name(&self.name_key, child_plain.as_bytes(), VAULT_META_FILENAME)
+                    .map(|enc| path.join(enc).exists())
+                    .unwrap_or(false)
+            };
             out.push(DirEntry {
                 name: plain_name,
                 is_dir,
@@ -359,10 +563,33 @@ impl Vault {
         Ok(())
     }
 
-    /// Remove an empty directory at `rel_path`.
+    /// Absorb an existing plaintext file/dir sitting at `src` (an absolute
+    /// on-disk path) INTO this vault at plaintext `rel`, then remove the
+    /// plaintext original. Used by "Convert to Vault" to encrypt a folder's
+    /// pre-existing contents in place. The encrypted output has an encrypted
+    /// name (see `encrypted_path`), so it never collides with the plaintext
+    /// `src` it's reading, even when both live under the vault root.
+    pub fn absorb(&self, src: &Path, rel: &Path) -> Result<()> {
+        if src.is_dir() {
+            self.create_dir(rel)?;
+            for entry in fs::read_dir(src)? {
+                let entry = entry?;
+                self.absorb(&entry.path(), &rel.join(entry.file_name()))?;
+            }
+            // Children have each been encrypted + their plaintext removed;
+            // the plaintext dir is now empty.
+            fs::remove_dir_all(src)?;
+        } else {
+            self.encrypt_file(src, rel)?;
+            fs::remove_file(src)?;
+        }
+        Ok(())
+    }
+
+    /// Remove a directory at `rel_path` and everything under it.
     pub fn remove_dir(&self, rel_path: impl AsRef<Path>) -> Result<()> {
         let path = self.encrypted_path(rel_path.as_ref())?;
-        fs::remove_dir(path)?;
+        fs::remove_dir_all(path)?;
         Ok(())
     }
 
@@ -371,28 +598,6 @@ impl Vault {
         let path = self.encrypted_path(rel_path.as_ref())?;
         fs::remove_file(path)?;
         Ok(())
-    }
-
-    /// Grant a second, independent way to unlock `rel_path`: a standalone
-    /// password that doesn't require this vault's master key at all. Useful
-    /// for handing a single file to someone without exposing the whole
-    /// vault. Chunk ciphertext is untouched -- only the header is rewritten.
-    pub fn add_file_password(&self, rel_path: impl AsRef<Path>, file_password: &[u8]) -> Result<()> {
-        let path = self.encrypted_path(rel_path.as_ref())?;
-        let mut reader = BufReader::new(fs::File::open(&path)?);
-        let mut meta = file::read_meta(&mut reader)?;
-        let fek = self.unwrap_fek_with_master_key(&meta.wrapped_keys)?;
-
-        let salt = random_salt();
-        let password_key = derive_key_from_password(file_password, &salt)?;
-        let (nonce, wrapped_fek) = aead_encrypt(&password_key, FEK_WRAP_AAD, &fek.0)?;
-        meta.wrapped_keys.push(WrappedKey::Password {
-            salt,
-            nonce,
-            wrapped_fek,
-        });
-
-        rewrite_header(&path, &meta, &mut reader)
     }
 
     /// Grant a hybrid X25519 + ML-KEM768 recipient access to `rel_path`,
@@ -630,7 +835,7 @@ impl Vault {
     fn walk_decrypt(&self, enc_dir: &Path, plain_prefix: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         for entry in fs::read_dir(enc_dir)? {
             let entry = entry?;
-            if entry.file_name() == VAULT_META_FILENAME {
+            if is_reserved_name(&entry.file_name()) {
                 continue;
             }
             let encoded = entry
@@ -699,6 +904,41 @@ fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(out)
+}
+
+/// Change a vault's password in O(1), without re-encrypting any file.
+/// The vault's random master key is preserved -- only the small
+/// `.vault.meta` is rewritten, re-wrapping that same master key under a key
+/// derived from `new_password` (fresh salt). Every file's FEK stays wrapped
+/// under the unchanged master key, so all children remain decryptable with
+/// the new password immediately. `old_password` is verified first.
+pub fn change_password(
+    root: impl AsRef<Path>,
+    old_password: &[u8],
+    new_password: &[u8],
+) -> Result<()> {
+    let meta_path = root.as_ref().join(VAULT_META_FILENAME);
+    let meta: VaultMeta = bincode::deserialize(&fs::read(&meta_path)?)?;
+    let old_key = derive_key_from_password(old_password, &meta.salt)?;
+    let master_bytes = Zeroizing::new(
+        aead_decrypt(
+            &old_key,
+            &meta.nonce,
+            MASTER_KEY_WRAP_AAD,
+            &meta.wrapped_master_key,
+        )
+        .map_err(|_| VaultError::InvalidPassword)?,
+    );
+    let salt = random_salt();
+    let new_key = derive_key_from_password(new_password, &salt)?;
+    let (nonce, wrapped_master_key) = aead_encrypt(&new_key, MASTER_KEY_WRAP_AAD, &master_bytes)?;
+    let new_meta = VaultMeta {
+        salt,
+        nonce,
+        wrapped_master_key,
+    };
+    fs::write(&meta_path, bincode::serialize(&new_meta)?)?;
+    Ok(())
 }
 
 /// Encrypt `plaintext` into standalone vault-format bytes, unlockable by

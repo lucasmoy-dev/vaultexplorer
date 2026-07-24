@@ -16,6 +16,8 @@ mod freeze;
 mod git;
 mod git_sync;
 #[cfg(desktop)]
+mod fs_watch;
+#[cfg(desktop)]
 mod local_sync;
 mod info;
 mod machine;
@@ -151,6 +153,35 @@ fn vault_exists(path: String) -> bool {
 #[tauri::command]
 fn create_vault(state: State<AppState>, path: String, password: String) -> Result<(), String> {
     let vault = Vault::create(&path, password.as_bytes()).str_err()?;
+    state.vaults.lock_safe().insert(
+        path.clone(),
+        VaultSession {
+            vault,
+            mount: Mutex::new(None),
+        },
+    );
+    *state.active.lock_safe() = Some(path);
+    Ok(())
+}
+
+/// Turn an existing (populated) folder into a vault, encrypting its current
+/// contents in place -- "Convert to Vault". Snapshots the folder's entries
+/// first, writes the vault meta, then absorbs each pre-existing entry into
+/// the vault (encrypting + removing the plaintext original).
+#[tauri::command]
+fn convert_folder_to_vault(state: State<AppState>, path: String, password: String) -> Result<(), String> {
+    let root = std::path::PathBuf::from(&path);
+    let names: Vec<std::ffi::OsString> = std::fs::read_dir(&root)
+        .str_err()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .collect();
+    let vault = Vault::create(&path, password.as_bytes()).str_err()?;
+    for name in names {
+        vault
+            .absorb(&root.join(&name), std::path::Path::new(&name))
+            .str_err()?;
+    }
     state.vaults.lock_safe().insert(
         path.clone(),
         VaultSession {
@@ -367,6 +398,49 @@ fn empty_trash() -> Result<(), String> {
     trash::os_limited::purge_all(items).str_err()
 }
 
+/// Put everything back where it came from.
+#[cfg(desktop)]
+#[tauri::command]
+fn trash_restore_all() -> Result<(), String> {
+    let items = trash::os_limited::list().str_err()?;
+    trash::os_limited::restore_all(items).str_err()
+}
+
+/// Match trash items by their current filename under
+/// `~/.local/share/Trash/files` (what the UI shows when browsing the
+/// trash folder) -- that's the trashinfo filename's stem, not the
+/// original name, since freedesktop appends a numeric suffix (`foo.2`)
+/// on name collisions and this must match the actual on-disk entry.
+#[cfg(desktop)]
+fn match_trash_items(names: Vec<String>) -> Result<Vec<trash::TrashItem>, String> {
+    let wanted: std::collections::HashSet<String> = names.into_iter().collect();
+    let items = trash::os_limited::list().str_err()?;
+    Ok(items
+        .into_iter()
+        .filter(|item| {
+            Path::new(&item.id)
+                .file_stem()
+                .map(|stem| wanted.contains(&stem.to_string_lossy().into_owned()))
+                .unwrap_or(false)
+        })
+        .collect())
+}
+
+/// Restore specific items out of the trash back to their original location.
+#[cfg(desktop)]
+#[tauri::command]
+fn trash_restore(names: Vec<String>) -> Result<(), String> {
+    trash::os_limited::restore_all(match_trash_items(names)?).str_err()
+}
+
+/// Permanently purge specific items out of the trash (rather than the
+/// whole trash via `empty_trash`).
+#[cfg(desktop)]
+#[tauri::command]
+fn trash_purge(names: Vec<String>) -> Result<(), String> {
+    trash::os_limited::purge_all(match_trash_items(names)?).str_err()
+}
+
 /// Where "Use as Template" stashes a copy of the source file, and where
 /// "New From Template" copies back from. A stash rather than a path
 /// reference so renaming/deleting the original later can't break a
@@ -505,15 +579,56 @@ fn fs_set_tag(dir: String, name: String, color: Option<String>) -> Result<(), St
     std::fs::write(&path, json).str_err()
 }
 
+// ---- Sensitive files (per-file / per-folder re-auth gate) ----
+
 #[tauri::command]
-fn set_file_password(
+fn vault_set_sensitive(state: State<AppState>, rel_path: String, sensitive: bool) -> Result<(), String> {
+    with_vault(&state, |v| v.set_sensitive(&rel_path, sensitive))
+}
+
+#[tauri::command]
+fn vault_is_sensitive(state: State<AppState>, rel_path: String) -> Result<bool, String> {
+    with_vault(&state, |v| Ok(v.is_sensitive(&rel_path)))
+}
+
+#[tauri::command]
+fn vault_list_sensitive(state: State<AppState>) -> Result<Vec<String>, String> {
+    with_vault(&state, |v| v.list_sensitive())
+}
+
+#[tauri::command]
+fn vault_unlock_sensitive(
     state: State<AppState>,
-    rel_path: String,
-    file_password: String,
+    password: String,
+    timeout_secs: Option<u64>,
 ) -> Result<(), String> {
     with_vault(&state, |v| {
-        v.add_file_password(&rel_path, file_password.as_bytes())
+        v.unlock_sensitive(
+            password.as_bytes(),
+            timeout_secs.map(std::time::Duration::from_secs),
+        )
     })
+}
+
+#[tauri::command]
+fn vault_sensitive_unlocked(state: State<AppState>) -> Result<bool, String> {
+    with_vault(&state, |v| Ok(v.sensitive_unlocked()))
+}
+
+#[tauri::command]
+fn vault_lock_sensitive(state: State<AppState>) -> Result<(), String> {
+    with_vault(&state, |v| {
+        v.lock_sensitive();
+        Ok(())
+    })
+}
+
+/// Change a vault's password (O(1) re-wrap of the master key; no file is
+/// re-encrypted). Verifies `old_password` first. The in-memory unlocked
+/// session stays valid since the master key is unchanged.
+#[tauri::command]
+fn change_vault_password(root: String, old_password: String, new_password: String) -> Result<(), String> {
+    vaultcore::change_password(&root, old_password.as_bytes(), new_password.as_bytes()).str_err()
 }
 
 /// Ensure the vault is mounted via FUSE, then return the *absolute*
@@ -632,6 +747,14 @@ fn browse_root_dir(app: tauri::AppHandle) -> String {
     }
     #[allow(unreachable_code)]
     "/".to_string()
+}
+
+/// Whether `path` is itself a vault root, for callers that only have the
+/// path in hand (e.g. opening a Favorites entry) rather than a `fs_list`
+/// row with `is_vault` already attached.
+#[tauri::command]
+fn fs_is_vault(path: String) -> bool {
+    Path::new(&path).join(".vault.meta").exists()
 }
 
 /// List a real OS directory. Hidden entries (dotfiles) are skipped. A
@@ -818,10 +941,24 @@ pub fn run() {
         .manage(filemanager1::FileManagerState::default())
         .manage(FreezeState::default())
         .manage(local_sync::LocalSyncState::default())
+        .manage(sync::DriveSyncState::default())
+        .manage(fs_watch::FsWatchState::default())
         .plugin(tauri_plugin_drag::init());
 
     builder
         .setup(|app| {
+            // `--portal-activated` is our own marker (see portal.rs): xdg-desktop-
+            // portal D-Bus-activates this binary purely to service one Save/Open
+            // dialog for some *other* app. Such a launch must stay a lean picker
+            // server -- it must NOT show the main window, re-run pkexec-gated
+            // registration self-heal, or (crucially) start the background sync
+            // daemons below. A lingering activated instance running the Drive
+            // watch loop alongside the user's real instance meant two concurrent
+            // `rclone bisync` runs on the same remote -> the "prior lock file
+            // found" bisync failure. Hoisted here so every startup side-effect
+            // can gate on it, on both desktop and mobile (always false on mobile,
+            // which has no portal).
+            let portal_activated = std::env::args().any(|a| a == "--portal-activated");
             // Best-effort, idempotent: registers this app as the handler
             // for `vaultexplorer://` links (used by the P2P sync "share a
             // link" flow) every launch, the same defensive-registration
@@ -848,8 +985,8 @@ pub fn run() {
                 // which is exactly the "save-as asks for the admin password
                 // every time" bug. Registration is a user-initiated,
                 // real-launch concern; the activated process only needs to
-                // serve the request (start_service, below).
-                let portal_activated = std::env::args().any(|a| a == "--portal-activated");
+                // serve the request (start_service, below). `portal_activated`
+                // is computed once at the top of this setup closure.
                 if portal::is_enabled() {
                     // Re-write the D-Bus service file on a normal launch (not
                     // an activation), not just when the user first flips the
@@ -919,6 +1056,13 @@ pub fn run() {
                         let _ = main.show();
                     }
                 }
+                // A `--portal-activated` launch is a transient picker server for
+                // another app's dialog; it must not resurrect the user's frozen
+                // mounts or start any background sync watcher (see the hoisted
+                // `portal_activated` comment -- double Drive loops = double
+                // `rclone bisync` = the "prior lock file found" failure). Those
+                // are the real launch's job.
+                if !portal_activated {
                 // Re-mount every frozen folder fresh, from a discarded shadow
                 // -- this *is* the "back to how it was after a restart"
                 // guarantee (see freeze.rs): only holds while VaultExplorer's
@@ -949,13 +1093,24 @@ pub fn run() {
                 for pair in local_sync::list_pairs() {
                     local_sync::start_loop(&local_sync_state, pair.folder_a, pair.folder_b);
                 }
+                // ...and every Drive pair's own watch loop, same reason:
+                // otherwise a pair only auto-synced until the app was next
+                // closed.
+                let drive_sync_state = app.state::<sync::DriveSyncState>();
+                for pair in sync::list_pairs() {
+                    sync::start_loop(&drive_sync_state, pair);
+                }
+                } // end if !portal_activated
             }
             // Resume every git-synced folder's background poll loop too --
             // git itself works fine cross-platform (just `std::process::
-            // Command`), so this one isn't desktop-gated.
-            let git_sync_state = app.state::<git_sync::GitSyncState>();
-            for pair in git_sync::list_pairs() {
-                git_sync::start_loop(&git_sync_state, pair.local_path);
+            // Command`), so this one isn't desktop-gated. Still skipped for a
+            // portal-activated picker server -- same reason as the loops above.
+            if !portal_activated {
+                let git_sync_state = app.state::<git_sync::GitSyncState>();
+                for pair in git_sync::list_pairs() {
+                    git_sync::start_loop(&git_sync_state, pair.local_path);
+                }
             }
             Ok(())
         })
@@ -967,6 +1122,7 @@ pub fn run() {
             ops::cancel_operation,
             vault_exists,
             create_vault,
+            convert_folder_to_vault,
             unlock_vault,
             lock_vault,
             set_active_vault,
@@ -1012,7 +1168,13 @@ pub fn run() {
             transcribe::transcribe_download_model,
             #[cfg(desktop)]
             transcribe::transcribe_run,
-            set_file_password,
+            vault_set_sensitive,
+            vault_is_sensitive,
+            vault_list_sensitive,
+            vault_unlock_sensitive,
+            vault_sensitive_unlocked,
+            vault_lock_sensitive,
+            change_vault_password,
             #[cfg(desktop)]
             open_path,
             #[cfg(desktop)]
@@ -1027,6 +1189,7 @@ pub fn run() {
             #[cfg(target_os = "android")]
             android::android_request_storage_access,
             fs_list,
+            fs_is_vault,
             fs_set_readonly,
             fs_is_readonly,
             fs_search,
@@ -1047,6 +1210,12 @@ pub fn run() {
             trash_dir,
             #[cfg(desktop)]
             empty_trash,
+            #[cfg(desktop)]
+            trash_restore_all,
+            #[cfg(desktop)]
+            trash_restore,
+            #[cfg(desktop)]
+            trash_purge,
             templates_dir,
             git::git_repo_root,
             git::git_status,
@@ -1108,6 +1277,11 @@ pub fn run() {
             sync::drive_remove_pair,
             sync::drive_sync_now,
             sync::drive_syncing_now,
+            sync::drive_sync_last_error,
+            #[cfg(desktop)]
+            sync::drive_sync_is_active,
+            #[cfg(desktop)]
+            fs_watch::fs_watch_set,
             git_sync::git_sync_list_pairs,
             git_sync::git_sync_is_active,
             git_sync::git_sync_syncing_now,

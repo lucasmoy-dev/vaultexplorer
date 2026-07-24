@@ -146,6 +146,7 @@ async fn run_picker(
     suggested_name: Option<&str>,
     filters: &[FilterGroup],
     initial_folder: Option<&str>,
+    directory: bool,
 ) -> Vec<String> {
     let id = new_request_id();
     let (tx, rx) = oneshot::channel();
@@ -153,6 +154,9 @@ async fn run_picker(
 
     let label = format!("picker-{id}");
     let mut url = format!("index.html?picker={mode}&reqid={id}&multiple={multiple}");
+    if directory {
+        url.push_str("&directory=true");
+    }
     if let Some(name) = suggested_name {
         url.push_str("&name=");
         url.push_str(&url_encode(name));
@@ -249,7 +253,16 @@ impl FileChooserIface {
             .and_then(|v| bool::try_from(v.clone()).ok())
             .unwrap_or(false);
         let folder = options.get("current_folder").and_then(parse_current_folder);
-        let uris = run_picker(&self.app, &self.pending, "open", multiple, None, &[], folder.as_deref()).await;
+        // The FileChooser "Open Folder" request is a plain OpenFile with the
+        // `directory` boolean option set -- without reading it here every
+        // folder-open arrives indistinguishable from a file-open, so the
+        // picker rendered folders uncapped and its confirm handler stripped
+        // directories out of the result (a dead "Open" button).
+        let directory = options
+            .get("directory")
+            .and_then(|v| bool::try_from(v.clone()).ok())
+            .unwrap_or(false);
+        let uris = run_picker(&self.app, &self.pending, "open", multiple, None, &[], folder.as_deref(), directory).await;
         uris_result(uris)
     }
 
@@ -270,7 +283,7 @@ impl FileChooserIface {
             .and_then(|v| String::try_from(v.clone()).ok());
         let filters = options.get("filters").map(parse_filters).unwrap_or_default();
         let folder = options.get("current_folder").and_then(parse_current_folder);
-        let uris = run_picker(&self.app, &self.pending, "save", false, name.as_deref(), &filters, folder.as_deref()).await;
+        let uris = run_picker(&self.app, &self.pending, "save", false, name.as_deref(), &filters, folder.as_deref(), false).await;
         uris_result(uris)
     }
 
@@ -287,7 +300,7 @@ impl FileChooserIface {
             .and_then(|v| String::try_from(v.clone()).ok());
         let filters = options.get("filters").map(parse_filters).unwrap_or_default();
         let folder = options.get("current_folder").and_then(parse_current_folder);
-        let uris = run_picker(&self.app, &self.pending, "save", true, name.as_deref(), &filters, folder.as_deref()).await;
+        let uris = run_picker(&self.app, &self.pending, "save", true, name.as_deref(), &filters, folder.as_deref(), false).await;
         uris_result(uris)
     }
 }

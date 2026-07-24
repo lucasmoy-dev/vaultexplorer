@@ -142,12 +142,48 @@ fn per_file_password_unlocks_independently_of_vault() {
     let decrypted = decrypt_file_with_password(&encrypted_path, b"file-specific-password").unwrap();
     assert_eq!(decrypted, plaintext);
 
-    // still works via the vault master key too
-    let decrypted_via_vault = vault.decrypt_file("compartido.txt").unwrap();
-    assert_eq!(decrypted_via_vault, plaintext);
-
     // wrong per-file password fails
     assert!(decrypt_file_with_password(&encrypted_path, b"wrong").is_err());
+}
+
+// A file with its own password is a real, separate gate -- even the vault's
+// own master key isn't enough to read it until it's been unlocked with that
+// file's own password this session, same as the vault itself needs its own
+// password even though the OS user is already logged in.
+#[test]
+fn per_file_password_gates_master_key_access_until_unlocked() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    let plain_dir = tempfile::tempdir().unwrap();
+    let plaintext = b"solo este archivo se comparte".to_vec();
+    let plain_path = plain_dir.path().join("compartido.txt");
+    fs::write(&plain_path, &plaintext).unwrap();
+
+    let vault = Vault::create(vault_dir.path(), b"vault-password").unwrap();
+    vault.encrypt_file(&plain_path, "compartido.txt").unwrap();
+
+    // no password set yet: reads freely via the vault, same as any file
+    assert!(!vault.file_needs_unlock("compartido.txt").unwrap());
+    assert_eq!(vault.decrypt_file("compartido.txt").unwrap(), plaintext);
+
+    vault
+        .add_file_password("compartido.txt", b"file-specific-password")
+        .unwrap();
+
+    // now gated, even though the vault itself is unlocked
+    assert!(vault.file_needs_unlock("compartido.txt").unwrap());
+    assert!(matches!(
+        vault.decrypt_file("compartido.txt"),
+        Err(vaultcore::VaultError::FileLocked)
+    ));
+
+    // wrong file password doesn't unlock it
+    assert!(vault.unlock_file("compartido.txt", b"wrong").is_err());
+    assert!(vault.file_needs_unlock("compartido.txt").unwrap());
+
+    // right file password unlocks it for the rest of the session
+    vault.unlock_file("compartido.txt", b"file-specific-password").unwrap();
+    assert!(!vault.file_needs_unlock("compartido.txt").unwrap());
+    assert_eq!(vault.decrypt_file("compartido.txt").unwrap(), plaintext);
 }
 
 #[test]

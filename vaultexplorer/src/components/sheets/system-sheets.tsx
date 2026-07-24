@@ -2,6 +2,17 @@ import { useEffect, useState } from "react";
 import { api, formatSize } from "../../api";
 import { ComputerGlyph } from "../../icons";
 import { RecoverySheet, UnfreezeSheet } from "./vault-sheets";
+import { SensitiveTimeout } from "../../types";
+
+const SENSITIVE_TIMEOUTS: { value: SensitiveTimeout; label: string }[] = [
+  { value: 300, label: "5 minutes" },
+  { value: 1200, label: "20 minutes" },
+  { value: 3600, label: "1 hour" },
+  { value: 7200, label: "2 hours" },
+  { value: 18000, label: "5 hours" },
+  { value: 86400, label: "24 hours" },
+  { value: "never", label: "Never" },
+];
 
 export function ManageTemplatesSheet({
   templates,
@@ -287,6 +298,7 @@ export function SettingsSheet({
     newFileNameTemplate: string;
     newFolderNameTemplate: string;
     theme: "light" | "dark" | "system";
+    sensitiveTimeout: SensitiveTimeout;
   };
   mobile: boolean;
   onChange: (next: {
@@ -296,9 +308,11 @@ export function SettingsSheet({
     newFileNameTemplate: string;
     newFolderNameTemplate: string;
     theme: "light" | "dark" | "system";
+    sensitiveTimeout: SensitiveTimeout;
   }) => void;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<"general" | "security" | "system">("general");
   const [portalEnabled, setPortalEnabled] = useState(false);
   const [portalBusy, setPortalBusy] = useState(false);
   const [portalError, setPortalError] = useState("");
@@ -336,35 +350,94 @@ export function SettingsSheet({
     <div className="sheet-overlay" onMouseDown={onClose}>
       <div className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
         <h3>Preferences</h3>
-        <label className="field-label">Appearance</label>
-        <div className="segmented compress-level" style={{ marginBottom: 16 }}>
-          {(["light", "dark", "system"] as const).map((t) => (
+        <div className="settings-tabs">
+          {(["general", "security", ...(mobile ? [] : (["system"] as const))] as const).map((t) => (
             <button
               key={t}
-              className={`seg seg-text ${settings.theme === t ? "on" : ""}`}
-              onClick={() => onChange({ ...settings, theme: t })}
+              className={`settings-tab ${tab === t ? "on" : ""}`}
+              onClick={() => setTab(t)}
             >
-              {t === "light" ? "Light" : t === "dark" ? "Dark" : "System"}
+              {t === "general" ? "General" : t === "security" ? "Security" : "System"}
             </button>
           ))}
         </div>
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={settings.showHiddenFiles}
-            onChange={(e) => onChange({ ...settings, showHiddenFiles: e.target.checked })}
-          />
-          Show hidden files
-        </label>
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={settings.hideExtensions}
-            onChange={(e) => onChange({ ...settings, hideExtensions: e.target.checked })}
-          />
-          Hide file extensions
-        </label>
-        {!mobile && (
+
+        {tab === "general" && (
+          <>
+            <label className="field-label">Appearance</label>
+            <div className="segmented compress-level" style={{ marginBottom: 16 }}>
+              {(["light", "dark", "system"] as const).map((t) => (
+                <button
+                  key={t}
+                  className={`seg seg-text ${settings.theme === t ? "on" : ""}`}
+                  onClick={() => onChange({ ...settings, theme: t })}
+                >
+                  {t === "light" ? "Light" : t === "dark" ? "Dark" : "System"}
+                </button>
+              ))}
+            </div>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={settings.showHiddenFiles}
+                onChange={(e) => onChange({ ...settings, showHiddenFiles: e.target.checked })}
+              />
+              Show hidden files
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={settings.hideExtensions}
+                onChange={(e) => onChange({ ...settings, hideExtensions: e.target.checked })}
+              />
+              Hide file extensions
+            </label>
+            <label className="field-label">Default name for new files</label>
+            <input
+              value={settings.newFileNameTemplate}
+              placeholder="untitled document"
+              onChange={(e) => onChange({ ...settings, newFileNameTemplate: e.target.value })}
+            />
+            <label className="field-label">Default name for new folders</label>
+            <input
+              value={settings.newFolderNameTemplate}
+              placeholder="untitled folder"
+              onChange={(e) => onChange({ ...settings, newFolderNameTemplate: e.target.value })}
+            />
+            <p className="hint" style={{ marginTop: -8 }}>
+              Use <code>{"{date}"}</code>, <code>{"{time}"}</code>, or <code>{"{datetime}"}</code> to
+              include the current date/time, e.g. <code>{"{datetime}"}</code> → “2026-11-30 16.16hs”.
+            </p>
+          </>
+        )}
+
+        {tab === "security" && (
+          <>
+            <label className="field-label">Sensitive files timeout</label>
+            <select
+              className="settings-select"
+              value={String(settings.sensitiveTimeout)}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const next: SensitiveTimeout =
+                  raw === "never" ? "never" : (Number(raw) as SensitiveTimeout);
+                onChange({ ...settings, sensitiveTimeout: next });
+              }}
+            >
+              {SENSITIVE_TIMEOUTS.map((o) => (
+                <option key={String(o.value)} value={String(o.value)}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="hint" style={{ marginTop: 6 }}>
+              After viewing a file marked sensitive, it re-locks after this long and asks for the
+              vault password again.
+            </p>
+          </>
+        )}
+
+        {tab === "system" && !mobile && (
           <>
             <label className="field-label">Terminal app (for "Open in Terminal")</label>
             <input
@@ -381,27 +454,7 @@ export function SettingsSheet({
               <option value="alacritty" />
               <option value="kitty" />
             </datalist>
-          </>
-        )}
-        <label className="field-label">Default name for new files</label>
-        <input
-          value={settings.newFileNameTemplate}
-          placeholder="untitled document"
-          onChange={(e) => onChange({ ...settings, newFileNameTemplate: e.target.value })}
-        />
-        <label className="field-label">Default name for new folders</label>
-        <input
-          value={settings.newFolderNameTemplate}
-          placeholder="untitled folder"
-          onChange={(e) => onChange({ ...settings, newFolderNameTemplate: e.target.value })}
-        />
-        <p className="hint" style={{ marginTop: -8 }}>
-          Use <code>{"{date}"}</code>, <code>{"{time}"}</code>, or <code>{"{datetime}"}</code> to
-          include the current date/time, e.g. <code>{"{datetime}"}</code> → “2026-11-30 16.16hs”.
-        </p>
-        {!mobile && (
-          <>
-            <label className="checkbox-row">
+            <label className="checkbox-row" style={{ marginTop: 12 }}>
               <input
                 type="checkbox"
                 checked={portalEnabled}
@@ -415,31 +468,34 @@ export function SettingsSheet({
               apps that opt in) — not every app's native dialog.
             </p>
             {portalError && <p className="error">{portalError}</p>}
-          </>
-        )}
-        <div className="sheet-actions" style={{ marginBottom: 4 }}>
-          {mobile ? null : recoveryAvailable ? (
-            <button className="btn-plain" onClick={() => setRecoveryOpen(true)}>
-              Recover Deleted Files…
-            </button>
-          ) : (
-            <span style={{ fontSize: 12, color: "var(--text-2)" }}>
-              Install <code>testdisk</code> (<code>sudo apt install testdisk</code>) to enable file
-              recovery.
-            </span>
-          )}
-        </div>
-        {frozen.length > 0 && (
-          <div className="info-rows" style={{ marginBottom: 10 }}>
-            {frozen.map((f) => (
-              <div className="info-row" key={f.original_path}>
-                <span className="info-path">{f.original_path}</span>
-                <button className="btn-plain small" onClick={() => setUnfreezePath(f.original_path)}>
-                  Unfreeze…
+            <div className="sheet-actions" style={{ marginBottom: 4 }}>
+              {recoveryAvailable ? (
+                <button className="btn-plain" onClick={() => setRecoveryOpen(true)}>
+                  Recover Deleted Files…
                 </button>
+              ) : (
+                <span style={{ fontSize: 12, color: "var(--text-2)" }}>
+                  Install <code>testdisk</code> (<code>sudo apt install testdisk</code>) to enable
+                  file recovery.
+                </span>
+              )}
+            </div>
+            {frozen.length > 0 && (
+              <div className="info-rows" style={{ marginBottom: 10 }}>
+                {frozen.map((f) => (
+                  <div className="info-row" key={f.original_path}>
+                    <span className="info-path">{f.original_path}</span>
+                    <button
+                      className="btn-plain small"
+                      onClick={() => setUnfreezePath(f.original_path)}
+                    >
+                      Unfreeze…
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )}
+          </>
         )}
         <div className="sheet-actions">
           <button className="btn-primary" onClick={onClose}>

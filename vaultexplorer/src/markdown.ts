@@ -33,6 +33,13 @@ function inline(s: string): string {
   // file) by the editor pane itself, not here.
   out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+=(\d+)x)?\)/g, (_m, alt, src, width) => {
     const style = width ? ` style="width:${width}px"` : "";
+    // A base64 data: URI is self-contained -- render its `src` directly so
+    // it shows without the async Tauri resolve step used for file refs (the
+    // editor's resolver skips imgs that already have a `src`). data-md-src
+    // still carries it so serialization round-trips it back to `![](...)`.
+    if (src.startsWith("data:")) {
+      return `<img class="md-img" src="${src}" data-md-src="${src}" alt="${alt}"${style}>`;
+    }
     return `<img class="md-img" data-md-src="${src}" alt="${alt}"${style}>`;
   });
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
@@ -42,11 +49,72 @@ function inline(s: string): string {
   return out;
 }
 
+// One parsed list item. `task` is null for a plain bullet/number, or a
+// boolean (checked) for a GFM `- [ ]` / `- [x]` task item. Nesting is by
+// indentation (two spaces per level on serialize).
+type ListItem = { ordered: boolean; task: boolean | null; text: string; children: ListItem[] };
+
+const LIST_LINE = /^(\s*)([-*]|\d+\.)\s+(.*)$/;
+
+// Build a forest of list items from a run of list lines, using an indent
+// stack so arbitrary nesting depth works (Tab / Shift+Tab in the editor).
+function parseListBlock(lines: string[]): ListItem[] {
+  const roots: ListItem[] = [];
+  const stack: { indent: number; item: ListItem }[] = [];
+  for (const line of lines) {
+    const m = line.match(LIST_LINE);
+    if (!m) continue;
+    const indent = m[1].replace(/\t/g, "  ").length;
+    const ordered = /\d+\./.test(m[2]);
+    let text = m[3];
+    let task: boolean | null = null;
+    const tm = text.match(/^\[([ xX])\]\s+(.*)$/);
+    if (tm) {
+      task = tm[1].toLowerCase() === "x";
+      text = tm[2];
+    }
+    const item: ListItem = { ordered, task, text, children: [] };
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    if (stack.length) stack[stack.length - 1].item.children.push(item);
+    else roots.push(item);
+    stack.push({ indent, item });
+  }
+  return roots;
+}
+
+function renderListItem(it: ListItem): string {
+  const kids = it.children.length ? renderListForest(it.children) : "";
+  if (it.task !== null) {
+    const checked = it.task;
+    // A styled span (contenteditable=false) instead of a real <input>: a
+    // form control inside a contentEditable region misbehaves (caret traps,
+    // inconsistent click toggling). The editor toggles `data-checked` on
+    // click. `md-task-text` keeps the label a single editable run.
+    return (
+      `<li class="md-task${checked ? " done" : ""}" data-task="1" data-checked="${checked}" draggable="true">` +
+      `<span class="md-task-check" contenteditable="false"></span>` +
+      `<span class="md-task-text">${inline(it.text)}</span>` +
+      kids +
+      `</li>`
+    );
+  }
+  return `<li>${inline(it.text)}${kids}</li>`;
+}
+
+function renderListForest(items: ListItem[]): string {
+  if (!items.length) return "";
+  const isTaskList = items.some((i) => i.task !== null);
+  const ordered = !isTaskList && items[0].ordered;
+  const tag = ordered ? "ol" : "ul";
+  const cls = isTaskList ? ' class="md-tasklist"' : "";
+  return `<${tag}${cls}>${items.map(renderListItem).join("")}</${tag}>`;
+}
+
 export function renderMarkdownToHtml(src: string): string {
   const lines = src.replace(/\r\n/g, "\n").split("\n");
   const html: string[] = [];
-  let inList: "ul" | "ol" | null = null;
   let paragraph: string[] = [];
+  let listRun: string[] = [];
 
   function flushParagraph() {
     if (paragraph.length) {
@@ -54,49 +122,33 @@ export function renderMarkdownToHtml(src: string): string {
       paragraph = [];
     }
   }
-  function closeList() {
-    if (inList) {
-      html.push(`</${inList}>`);
-      inList = null;
+  function flushList() {
+    if (listRun.length) {
+      html.push(renderListForest(parseListBlock(listRun)));
+      listRun = [];
     }
   }
 
   for (const line of lines) {
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
-    const ul = line.match(/^[-*]\s+(.*)$/);
-    const ol = line.match(/^\d+\.\s+(.*)$/);
-
-    if (heading) {
+    if (LIST_LINE.test(line)) {
       flushParagraph();
-      closeList();
+      listRun.push(line);
+    } else if (heading) {
+      flushParagraph();
+      flushList();
       const level = heading[1].length;
       html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
-    } else if (ul) {
-      flushParagraph();
-      if (inList !== "ul") {
-        closeList();
-        html.push("<ul>");
-        inList = "ul";
-      }
-      html.push(`<li>${inline(ul[1])}</li>`);
-    } else if (ol) {
-      flushParagraph();
-      if (inList !== "ol") {
-        closeList();
-        html.push("<ol>");
-        inList = "ol";
-      }
-      html.push(`<li>${inline(ol[1])}</li>`);
     } else if (line.trim() === "") {
       flushParagraph();
-      closeList();
+      flushList();
     } else {
-      closeList();
+      flushList();
       paragraph.push(line);
     }
   }
   flushParagraph();
-  closeList();
+  flushList();
   return html.join("\n");
 }
 
@@ -152,18 +204,13 @@ function htmlNodeToMarkdown(node: Node): string {
     case "H6":
       return `#### ${children}\n\n`;
     case "UL":
-      return (
-        Array.from(el.children)
-          .map((li) => `- ${htmlNodeToMarkdown(li)}`)
-          .join("\n") + "\n\n"
-      );
     case "OL":
-      return (
-        Array.from(el.children)
-          .map((li, i) => `${i + 1}. ${htmlNodeToMarkdown(li)}`)
-          .join("\n") + "\n\n"
-      );
+      // Nested lists are handled recursively inside serializeList, so this
+      // top-level case only ever runs for a root list.
+      return "\n" + serializeList(el, 0) + "\n\n";
     case "LI":
+      // A stray LI outside serializeList (shouldn't normally happen) --
+      // fall back to its inline content.
       return children;
     case "BR":
       return "\n";
@@ -173,6 +220,36 @@ function htmlNodeToMarkdown(node: Node): string {
     default:
       return children;
   }
+}
+
+// Serialize a <ul>/<ol> (and any nested lists) back to Markdown, two spaces
+// of indent per nesting level. Task items round-trip as `- [ ]` / `- [x]`,
+// their checked state read from the `data-checked` the editor toggles.
+function serializeList(list: HTMLElement, depth: number): string {
+  const ordered = list.tagName === "OL";
+  const items = Array.from(list.children).filter((c) => c.tagName === "LI") as HTMLElement[];
+  const indent = "  ".repeat(depth);
+  return items
+    .map((li, i) => {
+      let text = "";
+      let nested = "";
+      for (const c of Array.from(li.childNodes)) {
+        if (c.nodeType === Node.ELEMENT_NODE) {
+          const cel = c as HTMLElement;
+          if (cel.tagName === "UL" || cel.tagName === "OL") {
+            nested += "\n" + serializeList(cel, depth + 1);
+            continue;
+          }
+          if (cel.classList?.contains("md-task-check")) continue; // marker, not text
+        }
+        text += htmlNodeToMarkdown(c);
+      }
+      const isTask = li.getAttribute("data-task") === "1";
+      const bullet = ordered ? `${i + 1}.` : "-";
+      const check = isTask ? (li.getAttribute("data-checked") === "true" ? "[x] " : "[ ] ") : "";
+      return `${indent}${bullet} ${check}${text.trim()}${nested}`;
+    })
+    .join("\n");
 }
 
 export function serializePreviewToMarkdown(root: HTMLElement): string {

@@ -48,14 +48,12 @@ export function ActionSheet({
   const titles: Record<string, string> = {
     delete: "Delete",
     secureDelete: "Secure Delete",
-    password: "File password",
     gitCommit: "Commit All Changes",
     freeze: "Freeze Folder",
   };
   const confirmLabels: Record<string, string> = {
     delete: "Delete",
     secureDelete: "Secure Delete",
-    password: "Save",
     gitCommit: "Commit",
     freeze: "Freeze",
   };
@@ -81,10 +79,10 @@ export function ActionSheet({
             Are you sure you want to delete <strong>{deleteLabel}</strong>? This action cannot be
             undone.
           </p>
-        ) : action.kind === "password" || action.kind === "freeze" ? (
+        ) : action.kind === "freeze" ? (
           <PasswordInput
             autoFocus
-            placeholder={action.kind === "freeze" ? "Choose a freeze password" : undefined}
+            placeholder="Choose a freeze password"
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {
@@ -161,6 +159,57 @@ export function UnlockSheet({
             Cancel
           </button>
           <button className="btn-primary" onClick={() => onSubmit(pw, keep)}>
+            Unlock
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/// A file (or a file under a folder) marked "sensitive" re-locks after the
+/// configured window even while its vault stays unlocked. Shown before
+/// opening/previewing such a file to re-verify the vault password and open
+/// the time-boxed sensitive session.
+export function SensitiveUnlockSheet({
+  name,
+  error,
+  onCancel,
+  onSubmit,
+}: {
+  name: string;
+  error: string;
+  onCancel: () => void;
+  onSubmit: (password: string) => void;
+}) {
+  const [pw, setPw] = useState("");
+  const cardRef = useShakeOnError<HTMLDivElement>(error);
+  return (
+    <div className="sheet-overlay" onMouseDown={onCancel}>
+      <div ref={cardRef} className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="sheet-lock">
+          <LockGlyph size={22} />
+        </div>
+        <h3>Sensitive file</h3>
+        <p>
+          “{name}” is marked sensitive. Re-enter this vault's password to view it for the
+          configured window.
+        </p>
+        <PasswordInput
+          autoFocus
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onSubmit(pw);
+            if (e.key === "Escape") onCancel();
+          }}
+        />
+        {error && <p className="error">{error}</p>}
+        <div className="sheet-actions">
+          <button className="btn-plain" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn-primary" onClick={() => onSubmit(pw)}>
             Unlock
           </button>
         </div>

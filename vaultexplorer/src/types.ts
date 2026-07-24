@@ -20,11 +20,14 @@ export type ProgressOp = {
 export type PendingAction =
   | { kind: "delete"; names: string[] }
   | { kind: "secureDelete"; names: string[] }
-  | { kind: "password"; entry: Entry }
   | { kind: "gitCommit" }
   | { kind: "freeze"; entry: Entry }
   | { kind: "unlock"; path: string; name: string }
   | { kind: "newVault" };
+
+// Timeout options (seconds) for the sensitive-files re-auth window; "never"
+// keeps it open until the vault is locked / the app closes.
+export type SensitiveTimeout = 300 | 1200 | 3600 | 7200 | 18000 | 86400 | "never";
 
 export interface VaultCreateOptions {
   sensitive: boolean;
