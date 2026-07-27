@@ -1,4 +1,5 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Entry, ENCRYPTED_FILE_EXT } from "./api";
 // File/folder tile artwork: WhiteSur (macOS Big Sur style) icon theme,
 // GPL-3.0 -- see assets/fileicons/NOTICE. Vite resolves each `.svg` import
@@ -103,7 +104,8 @@ type Kind =
   | "pdf"
   | "archive"
   | "code"
-  | "text";
+  | "text"
+  | "office";
 
 // An encrypted `.vlt` file should look like whatever it *was* before
 // encryption, not a generic blank sheet -- strip the suffix before ever
@@ -112,6 +114,12 @@ function displayName(entry: Entry): string {
   const n = entry.name.toLowerCase();
   return n.endsWith(ENCRYPTED_FILE_EXT) ? n.slice(0, -ENCRYPTED_FILE_EXT.length) : n;
 }
+
+// Word/Excel/PowerPoint-family extensions -- no bundled artwork for these;
+// FileIcon resolves whatever app the desktop has registered to open them
+// instead (see useOfficeIcon below), matching Nautilus/Files' own
+// behavior for file types they don't ship a fixed icon for.
+const OFFICE_EXT_RE = /\.(docx?|odt|xlsx?|ods|pptx?|odp)$/;
 
 export function kindOf(entry: Entry): Kind {
   if (entry.is_dir) return "folder";
@@ -124,7 +132,13 @@ export function kindOf(entry: Entry): Kind {
   if (/\.(rs|ts|tsx|js|jsx|py|go|c|cpp|h|java|rb|sh|json|toml|yaml|yml|css|html)$/.test(l))
     return "code";
   if (/\.(txt|md|rtf|log)$/.test(l)) return "text";
+  if (OFFICE_EXT_RE.test(l)) return "office";
   return "generic";
+}
+
+function extOf(entry: Entry): string {
+  const l = displayName(entry);
+  return l.slice(l.lastIndexOf(".") + 1);
 }
 
 const KIND_ICON: Record<Kind, string> = {
@@ -137,7 +151,44 @@ const KIND_ICON: Record<Kind, string> = {
   code: codeIcon,
   text: textIcon,
   generic: genericIcon,
+  // Fallback while the real app icon resolves (or if none was found).
+  office: genericIcon,
 };
+
+// Icon of whichever app the desktop has registered to open `ext`, fetched
+// from the Rust `app_icon_for_ext` command (xdg-mime + .desktop + GTK icon
+// theme) and cached per-extension for the session -- every tile with the
+// same extension shares one lookup instead of one invoke() per file.
+const officeIconCache = new Map<string, string | null>();
+const officeIconInflight = new Map<string, Promise<string | null>>();
+
+function useOfficeIcon(ext: string | null): string | null {
+  const [icon, setIcon] = useState<string | null>(() =>
+    ext ? officeIconCache.get(ext) ?? null : null
+  );
+  useEffect(() => {
+    if (!ext) return;
+    if (officeIconCache.has(ext)) {
+      setIcon(officeIconCache.get(ext) ?? null);
+      return;
+    }
+    let cancelled = false;
+    let pending = officeIconInflight.get(ext);
+    if (!pending) {
+      pending = invoke<string | null>("app_icon_for_ext", { ext }).catch(() => null);
+      officeIconInflight.set(ext, pending);
+    }
+    pending.then((result) => {
+      officeIconCache.set(ext, result);
+      officeIconInflight.delete(ext);
+      if (!cancelled) setIcon(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ext]);
+  return icon;
+}
 
 export function FileIcon({
   entry,
@@ -149,6 +200,10 @@ export function FileIcon({
   customIcon?: string;
 }) {
   void tagHex; // tag tint isn't applied to the bundled WhiteSur artwork
+  const kind = kindOf(entry);
+  // Called unconditionally (before the customIcon early return) so hook
+  // order stays stable across renders regardless of customIcon presence.
+  const officeIcon = useOfficeIcon(kind === "office" ? extOf(entry) : null);
   if (customIcon) {
     const wsUrl = customIconUrl(customIcon);
     if (wsUrl) {
@@ -160,8 +215,7 @@ export function FileIcon({
     }
     return <span className="custom-icon-emoji">{customIcon}</span>;
   }
-  const kind = kindOf(entry);
-  const src = KIND_ICON[kind];
+  const src = kind === "office" ? officeIcon ?? KIND_ICON.office : KIND_ICON[kind];
   // Vault folders reuse the plain folder art with a small padlock overlaid,
   // rather than shipping a separate locked-folder asset.
   if (kind === "folder" && entry.is_vault) {

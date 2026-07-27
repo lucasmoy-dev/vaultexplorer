@@ -57,6 +57,10 @@ zbus = { version = "5.17.0", default-features = false, features = ["tokio"] }
 whisper-rs = "0.16.0"
 notify-debouncer-mini = "0.7.0"
 tauri-plugin-drag = "2"
+# Same gtk-rs version tauri's own linux runtime already links in (see
+# Cargo.lock) -- pinning it as a direct dep just gives app_icon.rs a name
+# to `use gtk::...` under, not a second GTK copy.
+gtk = "0.18.2"
 
 # "All files access" (MANAGE_EXTERNAL_STORAGE) has no Rust-side API --
 # granting/checking it means calling the plain Android SDK (Environment,

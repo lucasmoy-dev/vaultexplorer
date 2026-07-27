@@ -49,6 +49,8 @@
   --menu-border: rgba(0, 0, 0, 0.12);
   --sheet-bg: #ececec;
   --field-bg: rgba(0, 0, 0, 0.05);
+  --code-bg: rgba(0, 0, 0, 0.1);
+  --code-border: rgba(0, 0, 0, 0.13);
   --window-border: rgba(0, 0, 0, 0.18);
   --window-radius: 11px;
   --row-alt: rgba(0, 0, 0, 0.035);
@@ -73,6 +75,8 @@
     --menu-border: rgba(255, 255, 255, 0.12);
     --sheet-bg: #2c2c2e;
     --field-bg: rgba(255, 255, 255, 0.09);
+    --code-bg: rgba(255, 255, 255, 0.15);
+    --code-border: rgba(255, 255, 255, 0.16);
     --window-border: rgba(255, 255, 255, 0.14);
     --row-alt: rgba(255, 255, 255, 0.045);
     --selection-bg: #2f6fc7;
@@ -108,6 +112,8 @@
   --menu-border: rgba(0, 0, 0, 0.12);
   --sheet-bg: #ececec;
   --field-bg: rgba(0, 0, 0, 0.05);
+  --code-bg: rgba(0, 0, 0, 0.1);
+  --code-border: rgba(0, 0, 0, 0.13);
   --window-border: rgba(0, 0, 0, 0.18);
   --row-alt: rgba(0, 0, 0, 0.035);
   --selection-bg: #3b82e0;
@@ -129,6 +135,8 @@
   --menu-border: rgba(255, 255, 255, 0.12);
   --sheet-bg: #2c2c2e;
   --field-bg: rgba(255, 255, 255, 0.09);
+  --code-bg: rgba(255, 255, 255, 0.15);
+  --code-border: rgba(255, 255, 255, 0.16);
   --window-border: rgba(255, 255, 255, 0.14);
   --row-alt: rgba(255, 255, 255, 0.045);
   --selection-bg: #2f6fc7;
@@ -1398,10 +1406,20 @@ button:disabled {
   padding: 16px 14px;
   overflow-y: auto;
   background: var(--sidebar-bg);
+  /* The thumb below is the one flexible child (flex: 1 1 auto) -- name and
+     info-rows report their own natural height as non-growing siblings, so
+     the thumb only ever claims whatever's actually left over, never
+     pushing the metadata below off-screen. Works in both places this is
+     used: a Miller column gets its height from `.columns`' row-flex
+     stretch; the List-with-Preview pane gets it from the `flex: 1 1 auto`
+     added to `.preview-pane .preview-column` further down. */
+  display: flex;
+  flex-direction: column;
 }
 .preview-thumb {
   width: 100%;
-  aspect-ratio: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1410,8 +1428,14 @@ button:disabled {
   border-radius: 6px;
 }
 .preview-thumb img {
-  max-width: 100%;
-  max-height: 100%;
+  /* object-fit: contain against a box that's 100% on BOTH axes (rather
+     than height: auto) is what makes a landscape image reach full width
+     (bounded by the thumb's available height, which is generous) while a
+     portrait image instead gets bounded by that available height -- i.e.
+     however much room `.preview-column`'s flex layout left after name and
+     info-rows above -- instead of forcing a scroll to see them. */
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   border-radius: 6px;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
@@ -1424,6 +1448,7 @@ button:disabled {
   height: 144px;
 }
 .preview-name {
+  flex: 0 0 auto;
   text-align: center;
   font-size: 13px;
   font-weight: 600;
@@ -1431,6 +1456,7 @@ button:disabled {
   word-break: break-word;
 }
 .preview-column .info-rows {
+  flex: 0 0 auto;
   margin-bottom: 0;
 }
 .preview-column .info-row {
@@ -1464,6 +1490,8 @@ button:disabled {
 .preview-pane .preview-column {
   width: auto;
   min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 0;
   border-right: none;
   background: transparent;
@@ -1572,7 +1600,10 @@ button:disabled {
 .markdown-editable:focus {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-.md-img {
+/* The resize grip lives on this wrapper, not the <img> -- WebKitGTK (this
+   app's Linux webview) doesn't support CSS `resize` on replaced elements
+   like img/video, only on ordinary block containers. */
+.md-img-wrap {
   display: inline-block;
   max-width: 100%;
   width: 320px;
@@ -1580,6 +1611,14 @@ button:disabled {
   resize: both;
   overflow: hidden;
   vertical-align: middle;
+  border-radius: 4px;
+  line-height: 0;
+}
+.md-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   border-radius: 4px;
 }
 /* ---- Task lists (GFM checkboxes) ---- */
@@ -1672,13 +1711,37 @@ li.md-task[draggable="true"] {
 }
 .markdown-rendered code {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  background: var(--field-bg);
+  /* --field-bg (used for plain input fields) is too faint a tint to read
+     as a highlight against the pane's own background -- inline code needs
+     its own, more visible one plus a hairline border for definition. */
+  background: var(--code-bg);
+  border: 0.5px solid var(--code-border);
   border-radius: 4px;
   padding: 1px 5px;
   font-size: 0.92em;
 }
 .markdown-rendered a {
   color: var(--accent);
+}
+
+/* ---- GFM tables ---- */
+.markdown-rendered table.md-table {
+  border-collapse: collapse;
+  margin: 0 0 0.8em;
+  font-size: 0.95em;
+  max-width: 100%;
+}
+.markdown-rendered table.md-table th,
+.markdown-rendered table.md-table td {
+  border: 0.5px solid var(--toolbar-border);
+  padding: 5px 10px;
+}
+.markdown-rendered table.md-table th {
+  background: var(--field-bg);
+  font-weight: 600;
+}
+.markdown-rendered table.md-table tbody tr:nth-child(even) {
+  background: var(--row-alt);
 }
 
 /* ---- search results ---- */
@@ -1931,6 +1994,16 @@ li.md-task[draggable="true"] {
 }
 .icon-picker-card {
   width: 380px;
+}
+.image-picker-card {
+  width: 480px;
+  height: 460px;
+  display: flex;
+  flex-direction: column;
+}
+.image-picker-card .picker-list {
+  flex: 1;
+  min-height: 0;
 }
 .icon-grid {
   display: grid;

@@ -36,6 +36,111 @@ export function TextEditorPane({
   );
 }
 
+// Lets the user pick an image via VaultExplorer's own browsing, not the
+// OS-native file dialog -- the native picker can't see into a vault at all
+// (there's no real fs path to hand it), so "Insert image" used to be unable
+// to reach anything actually stored in the vault. Defaults to browsing the
+// vault when the note itself is in one, with a toggle to browse the real
+// filesystem instead (e.g. to pull in a photo from outside the vault).
+function ImagePickerModal({
+  startDir,
+  startInVault,
+  canBrowseVault,
+  onCancel,
+  onPick,
+}: {
+  startDir: string;
+  startInVault: boolean;
+  canBrowseVault: boolean;
+  onCancel: () => void;
+  onPick: (entry: Entry, dir: string, source: boolean) => void;
+}) {
+  const [source, setSource] = useState(startInVault); // true = vault, false = fs
+  const [dir, setDir] = useState(startDir);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setSelected(null);
+    setError("");
+    const call = source ? api.listDir(dir) : api.fsList(dir, false);
+    call
+      .then((list) =>
+        setEntries([...list].sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name) : a.is_dir ? -1 : 1)))
+      )
+      .catch((e) => setError(String(e)));
+  }, [dir, source]);
+
+  function switchSource(toVault: boolean) {
+    if (toVault === source) return;
+    setSource(toVault);
+    if (toVault) {
+      setDir(startInVault ? startDir : "");
+    } else {
+      api.homeDir().then(setDir).catch(() => setDir("/"));
+    }
+  }
+
+  const atRoot = source ? dir === "" : dir === "/";
+  const selectedEntry = entries.find((e) => e.name === selected) ?? null;
+  const canInsert = !!selectedEntry && !selectedEntry.is_dir && kindOf(selectedEntry) === "image";
+
+  function open(entry: Entry) {
+    if (entry.is_dir) setDir(joinPath(dir, entry.name));
+    else if (kindOf(entry) === "image") onPick(entry, dir, source);
+  }
+
+  return (
+    <div className="sheet-overlay" onMouseDown={onCancel}>
+      <div className="sheet-card image-picker-card" onMouseDown={(e) => e.stopPropagation()}>
+        <h3>Insert Image</h3>
+        {canBrowseVault && (
+          <div className="segmented" style={{ marginBottom: 10 }}>
+            <button className={`seg seg-text ${source ? "on" : ""}`} onClick={() => switchSource(true)}>
+              Vault
+            </button>
+            <button className={`seg seg-text ${!source ? "on" : ""}`} onClick={() => switchSource(false)}>
+              Computer
+            </button>
+          </div>
+        )}
+        <div className="picker-toolbar">
+          <button className="btn-plain" disabled={atRoot} onClick={() => setDir(parentPath(dir) || (source ? "" : "/"))}>
+            Up
+          </button>
+          <span className="picker-path-input" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {source ? dir || "/" : dir}
+          </span>
+        </div>
+        {error && <p className="error">{error}</p>}
+        <div className="picker-list">
+          {entries.map((e) => (
+            <div
+              key={e.name}
+              className={`picker-row ${selected === e.name ? "selected" : ""}`}
+              style={!e.is_dir && kindOf(e) !== "image" ? { opacity: 0.4 } : undefined}
+              onClick={() => setSelected(e.name)}
+              onDoubleClick={() => open(e)}
+            >
+              <FileIcon entry={e} />
+              <span>{e.name}</span>
+            </div>
+          ))}
+        </div>
+        <div className="sheet-actions">
+          <button className="btn-plain" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn-primary" disabled={!canInsert} onClick={() => selectedEntry && onPick(selectedEntry, dir, source)}>
+            Insert
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MarkdownEditorPane({
   entry,
   fullPath,
@@ -70,15 +175,17 @@ export function MarkdownEditorPane({
     setContent(serializePreviewToMarkdown(previewRef.current));
   }
 
-  // Tracks a live resize (see the `.md-img` CSS `resize: both`) back into
-  // the attribute htmlNodeToMarkdown reads, and re-serializes so the new
-  // size actually gets saved -- a native CSS resize handle has no "resize
-  // finished" event of its own to hook into instead.
+  // Tracks a live resize (see the `.md-img-wrap` CSS `resize: both`) back
+  // into the attribute htmlNodeToMarkdown reads, and re-serializes so the
+  // new size actually gets saved -- a native CSS resize handle has no
+  // "resize finished" event of its own to hook into instead. Observes the
+  // wrapper span, not the <img> -- that's the element the resize handle
+  // actually lives on.
   const imageResizeObserverRef = useRef<ResizeObserver | null>(null);
   useEffect(() => {
     imageResizeObserverRef.current = new ResizeObserver((observed) => {
       for (const o of observed) {
-        (o.target as HTMLImageElement).setAttribute("data-md-width", String(Math.round(o.contentRect.width)));
+        (o.target as HTMLElement).setAttribute("data-md-width", String(Math.round(o.contentRect.width)));
       }
       onPreviewInput();
     });
@@ -97,7 +204,9 @@ export function MarkdownEditorPane({
     if (mode !== "preview" || !preview) return;
     const dir = parentPath(fullPath);
     preview.querySelectorAll<HTMLImageElement>("img[data-md-src]").forEach((img) => {
-      imageResizeObserverRef.current?.observe(img);
+      if (img.parentElement?.classList.contains("md-img-wrap")) {
+        imageResizeObserverRef.current?.observe(img.parentElement);
+      }
       if (img.src) return;
       const rel = img.getAttribute("data-md-src");
       if (!rel) return;
@@ -118,11 +227,14 @@ export function MarkdownEditorPane({
   function insertImageAtCaret(relSrc: string, dataUrl: string) {
     const preview = previewRef.current;
     if (!preview) return;
+    const wrap = document.createElement("span");
+    wrap.className = "md-img-wrap";
     const img = document.createElement("img");
     img.className = "md-img";
     img.setAttribute("data-md-src", relSrc);
     img.src = dataUrl;
-    imageResizeObserverRef.current?.observe(img);
+    wrap.appendChild(img);
+    imageResizeObserverRef.current?.observe(wrap);
     const sel = window.getSelection();
     const range =
       sel && sel.rangeCount > 0 && preview.contains(sel.getRangeAt(0).commonAncestorContainer)
@@ -130,9 +242,9 @@ export function MarkdownEditorPane({
         : null;
     if (range) {
       range.collapse(false);
-      range.insertNode(img);
+      range.insertNode(wrap);
     } else {
-      preview.appendChild(img);
+      preview.appendChild(wrap);
     }
     onPreviewInput();
   }
@@ -164,7 +276,17 @@ export function MarkdownEditorPane({
     e.preventDefault();
     await insertImageFile(file);
   }
-  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [showImagePicker, setShowImagePicker] = useState(false);
+  async function insertPickedImage(picked: Entry, dir: string, pickedInVault: boolean) {
+    setShowImagePicker(false);
+    try {
+      const path = joinPath(dir, picked.name);
+      const dataUrl = pickedInVault ? await api.vaultThumbnail(path, 2000) : await api.fsThumbnail(path, 2000);
+      insertImageAtCaret(dataUrl, dataUrl);
+    } catch (err) {
+      setPasteError(String(err));
+    }
+  }
 
   // ---- Task-list helpers (checkbox items, nesting, keyboard, drag) ----
 
@@ -228,6 +350,111 @@ export function MarkdownEditorPane({
     if (t) caretToEnd(t);
     onPreviewInput();
   }
+  // True when the caret sits exactly at the start of a task's text (or the
+  // text is empty) -- i.e. nothing between the start of `.md-task-text` and
+  // the caret.
+  function caretAtStartOfTaskText(li: HTMLLIElement): boolean {
+    const t = taskText(li);
+    if (!t) return true;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return false;
+    const r = sel.getRangeAt(0);
+    if (!r.collapsed) return false;
+    const probe = document.createRange();
+    probe.selectNodeContents(t);
+    try {
+      probe.setEnd(r.startContainer, r.startOffset);
+    } catch {
+      return false; // caret isn't inside this task's text at all
+    }
+    return probe.toString().length === 0;
+  }
+  function caretAtEndOfTaskText(li: HTMLLIElement): boolean {
+    const t = taskText(li);
+    if (!t) return true;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return false;
+    const r = sel.getRangeAt(0);
+    if (!r.collapsed) return false;
+    const probe = document.createRange();
+    probe.selectNodeContents(t);
+    try {
+      probe.setStart(r.startContainer, r.startOffset);
+    } catch {
+      return false;
+    }
+    return probe.toString().length === 0;
+  }
+
+  // Backspace at the start of a task merges its text (and any nested
+  // sublist) into the end of the previous same-level task, then removes it
+  // -- native contentEditable's own merge-two-blocks behavior would instead
+  // drag this item's checkbox marker into the previous row too, since it has
+  // no idea `.md-task-check` is a marker and not content. Returns whether a
+  // merge happened (false when there's no previous sibling to merge into).
+  function mergeTaskWithPrevious(li: HTMLLIElement): boolean {
+    const prev = li.previousElementSibling as HTMLElement | null;
+    if (!prev || !prev.matches("li.md-task")) return false;
+    const prevText = taskText(prev as HTMLLIElement);
+    const curText = taskText(li);
+    const joinOffset = prevText?.textContent?.length ?? 0;
+    if (prevText && curText) {
+      while (curText.firstChild) prevText.appendChild(curText.firstChild);
+      prevText.normalize();
+    }
+    const curSub = li.querySelector(":scope > ul.md-tasklist");
+    if (curSub) {
+      const prevSub = prev.querySelector(":scope > ul.md-tasklist");
+      if (prevSub) {
+        while (curSub.firstChild) prevSub.appendChild(curSub.firstChild);
+      } else {
+        prev.appendChild(curSub);
+      }
+    }
+    li.remove();
+    if (prevText) {
+      const node = prevText.firstChild;
+      const r = document.createRange();
+      if (node) r.setStart(node, Math.min(joinOffset, node.textContent?.length ?? 0));
+      else r.selectNodeContents(prevText);
+      r.collapse(true);
+      const s = window.getSelection();
+      s?.removeAllRanges();
+      s?.addRange(r);
+    }
+    onPreviewInput();
+    return true;
+  }
+
+  // Delete at the end of a task pulls the *next* same-level task's text up
+  // into this one and removes it -- the simple sibling case only (a next
+  // task with its own children is left to native behavior rather than risk
+  // mangling a subtree).
+  function mergeNextTaskInto(li: HTMLLIElement): boolean {
+    const next = li.nextElementSibling as HTMLElement | null;
+    if (!next || !next.matches("li.md-task")) return false;
+    if (next.querySelector(":scope > ul.md-tasklist")) return false;
+    const curText = taskText(li);
+    const nextText = taskText(next as HTMLLIElement);
+    if (curText && nextText) {
+      const node = curText.lastChild;
+      const joinOffset = node?.textContent?.length ?? curText.textContent?.length ?? 0;
+      while (nextText.firstChild) curText.appendChild(nextText.firstChild);
+      curText.normalize();
+      const r = document.createRange();
+      const target = curText.firstChild;
+      if (target) r.setStart(target, Math.min(joinOffset, target.textContent?.length ?? 0));
+      else r.selectNodeContents(curText);
+      r.collapse(true);
+      const s = window.getSelection();
+      s?.removeAllRanges();
+      s?.addRange(r);
+    }
+    next.remove();
+    onPreviewInput();
+    return true;
+  }
+
   function newTaskAfter(li: HTMLLIElement) {
     const t = taskText(li);
     if (t && (t.textContent ?? "").trim() === "") {
@@ -264,6 +491,16 @@ export function MarkdownEditorPane({
       if (e.key === "Tab") {
         e.preventDefault();
         e.shiftKey ? outdentTask(li) : indentTask(li);
+        return;
+      }
+      if (e.key === "Backspace" && caretAtStartOfTaskText(li)) {
+        e.preventDefault();
+        if (!mergeTaskWithPrevious(li) && isNestedLi(li)) outdentTask(li);
+        return;
+      }
+      if (e.key === "Delete" && caretAtEndOfTaskText(li)) {
+        e.preventDefault();
+        mergeNextTaskInto(li);
         return;
       }
       // Shift+Enter falls through to the soft-line-break below.
@@ -550,21 +787,10 @@ export function MarkdownEditorPane({
               className="btn-plain small"
               title="Insert image"
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => imageInputRef.current?.click()}
+              onClick={() => setShowImagePicker(true)}
             >
               🖼
             </button>
-            <input
-              ref={imageInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) insertImageFile(f);
-                e.target.value = "";
-              }}
-            />
           </div>
           {mode === "preview" ? (
             <div
@@ -591,6 +817,15 @@ export function MarkdownEditorPane({
             />
           )}
         </>
+      )}
+      {showImagePicker && (
+        <ImagePickerModal
+          startDir={parentPath(fullPath)}
+          startInVault={inVault}
+          canBrowseVault={inVault}
+          onCancel={() => setShowImagePicker(false)}
+          onPick={insertPickedImage}
+        />
       )}
     </div>
   );
@@ -669,7 +904,15 @@ export function FilePreviewPane({
   if (kindOf(entry) === "text") {
     return <TextEditorPane key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} onRename={onRename} />;
   }
+  // Unlike the other branches above, PreviewColumn is also used as-is by
+  // ColumnView's genuine Miller columns, where its `.column` class's fixed
+  // 390px width is correct (every column there is fixed-width). Wrapping
+  // it in `.preview-pane` here is what makes *this* call site (List with
+  // Preview's right-hand pane) stretch to fill the remaining width instead
+  // of inheriting that same fixed 390px meant for a different layout.
   return (
-    <PreviewColumn key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} root={root} onRename={onRename} />
+    <div className="preview-pane">
+      <PreviewColumn key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} root={root} onRename={onRename} />
+    </div>
   );
 }

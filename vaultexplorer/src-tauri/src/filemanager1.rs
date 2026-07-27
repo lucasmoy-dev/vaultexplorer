@@ -76,6 +76,13 @@ impl FileManager1Iface {
             let _ = main.show();
             let _ = main.unminimize();
             let _ = main.set_focus();
+            // Most WMs (KDE/GNOME, X11 or Wayland) refuse to hand focus to
+            // a window that wasn't already focused -- ICCCM/EWMH focus-
+            // stealing prevention, same restriction noted for the portal
+            // picker. set_focus() above is a no-op there. Urgency hint
+            // (taskbar/dock flash) isn't blocked the same way, so it's the
+            // fallback that actually gets noticed.
+            let _ = main.request_user_attention(Some(tauri::UserAttentionType::Critical));
         }
         let _ = self.app.emit("show-in-folder", ShowInFolderPayload { path, select });
     }

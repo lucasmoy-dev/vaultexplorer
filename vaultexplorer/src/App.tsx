@@ -966,6 +966,13 @@ function Explorer({ home }: { home: string }) {
     if (entries.some((e) => e.name === pending.name)) {
       selectOnly(pending.name);
       pendingRevealSelectRef.current = null;
+      // Tile isn't in the DOM yet the same tick entries lands -- wait a
+      // frame so the scroll targets the actual rendered position.
+      requestAnimationFrame(() => {
+        document
+          .querySelector(`.entries [data-name="${CSS.escape(pending.name)}"]`)
+          ?.scrollIntoView({ block: "center" });
+      });
     }
   }, [entries, curDir, selectOnly]);
 
@@ -2650,12 +2657,18 @@ function Explorer({ home }: { home: string }) {
             }),
     };
 
-    // Everything reached less often than Open/Rename/Copy/Trash lives in
-    // one "More" submenu (Duplicate, Create Shortcut, Use as Template,
-    // Cut, Convert To, Resize, Security, Tag Color) instead of flooding
+    // Everything reached less often than Open/Rename/Duplicate/Cut-Copy/
+    // Trash lives in one "More" submenu (Create Shortcut, Use as Template,
+    // Pin, Convert To, Resize, Security, Tag Color) instead of flooding
     // the top-level menu with every action this app can do to a file.
     const moreItems: MenuItem[] = [];
 
+    const duplicateItem: MenuItem = {
+      label: "Duplicate",
+      shortcut: "⌘D",
+      disabled: many,
+      onClick: () => duplicate(entry),
+    };
     const runnableShellScript = !many && !inVault && isShellScript;
     const items: MenuItem[] = runnableShellScript
       ? [
@@ -2667,6 +2680,7 @@ function Explorer({ home }: { home: string }) {
             disabled: many,
             onClick: () => setRenaming({ name: entry.name, value: entry.name }),
           },
+          duplicateItem,
         ]
       : [
           {
@@ -2681,8 +2695,8 @@ function Explorer({ home }: { home: string }) {
             disabled: many,
             onClick: () => setRenaming({ name: entry.name, value: entry.name }),
           },
+          duplicateItem,
         ];
-    moreItems.push({ label: "Duplicate", shortcut: "⌘D", disabled: many, onClick: () => duplicate(entry) });
     if (!many && !inVault) {
       moreItems.push({ label: "Create Shortcut", onClick: () => createShortcut(entry) });
     }
@@ -2690,16 +2704,20 @@ function Explorer({ home }: { home: string }) {
       moreItems.push({ label: "Use as Template", onClick: () => useAsTemplate(entry) });
     }
     if (!many && entry.is_dir && !entry.is_vault && !mobile) {
-      items.push({
-        label: "Open in Terminal",
-        onClick: async () => {
-          const p = inVault ? await api.openPath(path) : path;
-          openTerminalAt(p);
-        },
-      });
+      items.push(
+        { type: "separator" },
+        {
+          label: "Open in Terminal",
+          onClick: async () => {
+            const p = inVault ? await api.openPath(path) : path;
+            openTerminalAt(p);
+          },
+        }
+      );
     }
     items.push(
       { type: "separator" },
+      { label: "Cut", shortcut: "⌘X", onClick: () => cutSel(entry) },
       { label: "Copy", shortcut: "⌘C", onClick: () => copySel(entry) },
       { label: "Copy Absolute Path", onClick: () => copyEntryPaths(targetNames) },
       { type: "separator" }
@@ -2707,7 +2725,6 @@ function Explorer({ home }: { home: string }) {
     if (!many && !entry.is_dir) {
       items.push({ label: "Share…", onClick: () => shareFile(entry) }, { type: "separator" });
     }
-    moreItems.push({ label: "Cut", shortcut: "⌘X", onClick: () => cutSel(entry) });
     if (!many) {
       moreItems.push({
         label: pinnedPaths.has(path) ? "Unpin" : "Pin",

@@ -380,6 +380,7 @@ export function PickerView({
                 // triggers (input unmounts as `renaming` clears) must not
                 // fire a second, stale commitRename() off the old closure.
                 if (ev.key === "Enter") {
+                  ev.stopPropagation();
                   skipBlurCommitRef.current = true;
                   commitRename();
                 }
@@ -411,8 +412,18 @@ export function PickerView({
       value={pathInput}
       onChange={(e) => setPathInput(e.target.value)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") navigateTo(pathInput.trim() || "/");
-        if (e.key === "Escape" && dir) setPathInput(dir);
+        // Stop both branches here from also bubbling up to the root
+        // handler below -- Enter here means "navigate to this path", not
+        // "confirm the whole dialog", and Escape here means "revert the
+        // typed path", not "cancel the picker".
+        if (e.key === "Enter") {
+          e.stopPropagation();
+          navigateTo(pathInput.trim() || "/");
+        }
+        if (e.key === "Escape" && dir) {
+          e.stopPropagation();
+          setPathInput(dir);
+        }
       }}
       // Commit a typed path when focus leaves (e.g. clicking Save) instead of
       // silently reverting it to the previous folder -- reverting on blur was
@@ -433,6 +444,20 @@ export function PickerView({
   // picker out from under them.
   function onKeyDownRoot(e: React.KeyboardEvent) {
     if (e.key === "Escape" && !menu && !renaming) cancel();
+    // Save's own Enter-to-confirm lives on the filename field itself (see
+    // onFilenameKeyDown) since that's the one place typing and confirming
+    // are the same gesture. Open has no equivalent single field -- this is
+    // the fallback for "select something, hit Enter" there, matching every
+    // native Open dialog. Both the path bar and inline-rename stop this
+    // event from bubbling this far for their own Enter handling, so it only
+    // ever fires here from stray keys elsewhere in the picker.
+    if (e.key === "Enter" && !menu && !renaming && mode === "open") confirm();
+  }
+  function onFilenameKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (saveName.trim() !== "") confirm();
   }
 
   if (mode === "save" && !expanded) {
@@ -444,6 +469,7 @@ export function PickerView({
             className="picker-filename"
             value={saveName}
             onChange={(e) => setSaveName(e.target.value)}
+            onKeyDown={onFilenameKeyDown}
             onMouseDown={(e) => {
               e.preventDefault();
               e.currentTarget.focus();
@@ -484,6 +510,7 @@ export function PickerView({
             className="picker-filename"
             value={saveName}
             onChange={(e) => setSaveName(e.target.value)}
+            onKeyDown={onFilenameKeyDown}
             onMouseDown={(e) => {
               e.preventDefault();
               e.currentTarget.focus();

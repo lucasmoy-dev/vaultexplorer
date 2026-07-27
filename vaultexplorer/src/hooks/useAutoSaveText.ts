@@ -70,6 +70,12 @@ export function useAutoSaveText(
         .catch((e) => {
           setError(String(e));
           setSaving(false);
+        })
+        .finally(() => {
+          // Otherwise this stays truthy forever after the first edit, and
+          // the focus-triggered re-read above (gated on "no save pending")
+          // stops working for the rest of this pane's life.
+          saveTimer.current = null;
         });
     }, 500);
   }

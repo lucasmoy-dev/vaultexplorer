@@ -1,4 +1,6 @@
 mod android;
+#[cfg(desktop)]
+mod app_icon;
 mod archive;
 mod archive_browse;
 mod clipboard;
@@ -1147,6 +1149,8 @@ pub fn run() {
             clipboard::vault_copy_image_to_clipboard,
             thumbnail::fs_thumbnail,
             thumbnail::vault_thumbnail,
+            #[cfg(desktop)]
+            app_icon::app_icon_for_ext,
             metadata::fs_clear_metadata,
             metadata::vault_clear_metadata,
             info::fs_file_info,

@@ -185,7 +185,7 @@ async fn run_picker(
     // exactly this (called here from a tokio task driven by the D-Bus
     // dispatch, not the main thread).
     let build_result = tauri::async_runtime::spawn_blocking(move || {
-        WebviewWindowBuilder::new(&app, &label_for_build, WebviewUrl::App(url.into()))
+        let result = WebviewWindowBuilder::new(&app, &label_for_build, WebviewUrl::App(url.into()))
             .title(title)
             .inner_size(w, h)
             .center()
@@ -202,7 +202,21 @@ async fn run_picker(
             .decorations(false)
             .transparent(true)
             .background_color(tauri::window::Color(0, 0, 0, 0))
-            .build()
+            .focused(true)
+            .build();
+        if let Ok(window) = &result {
+            // `.focused(true)` above only sets the *initial* GTK show hint --
+            // the window manager still applies its own focus-stealing
+            // prevention since this fires from a background D-Bus dispatch,
+            // not a direct user click, which is why it was landing as a
+            // "wants attention" notification instead of actually raising.
+            // An explicit present/activate call after the window exists
+            // (gtk_window_present under the hood) asks again as a real
+            // window operation, which the WM is far more willing to honor.
+            let _ = window.set_focus();
+            let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+        }
+        result
     })
     .await;
     match build_result {
