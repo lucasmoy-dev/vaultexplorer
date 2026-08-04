@@ -557,6 +557,16 @@ export function SettingsScreen({
                     {contactsMsg}
                   </p>
                 )}
+                <label className="field-label" style={{ marginTop: 14 }}>
+                  Cloud & folder sync
+                </label>
+                <p className="hint" style={{ marginTop: -2 }}>
+                  Not available on mobile yet -- desktop's sync (Drive/OneDrive/Dropbox, Syncthing,
+                  Git, plain folder-to-folder) all shell out to a binary Android can't run.
+                  Bringing it here needs its own design, not a straight port -- likely linking a
+                  folder your phone's Drive/OneDrive app already syncs, rather than this app
+                  syncing directly.
+                </p>
               </>
             )}
           </>
