@@ -2,6 +2,8 @@ import { useState } from "react";
 import { openPath as osOpen } from "@tauri-apps/plugin-opener";
 import { api, YoutubeResult, ImageResult } from "../api";
 import { ChevronLeft, SearchGlyph } from "../icons";
+import folderVideosIcon from "../assets/foldericons/folder-videos.svg";
+import folderImagesIcon from "../assets/foldericons/folder-images.svg";
 
 type Mode = "root" | "videos" | "images";
 
@@ -49,11 +51,15 @@ export function InternetView() {
       <div className="internet-view">
         <div className="entries icon">
           <div className="entry icon" onDoubleClick={() => enterFolder("videos")}>
-            <span className="entry-icon">📹</span>
+            <span className="entry-icon">
+              <img className="fileicon-img" src={folderVideosIcon} alt="" draggable={false} />
+            </span>
             <span className="entry-name">Videos</span>
           </div>
           <div className="entry icon" onDoubleClick={() => enterFolder("images")}>
-            <span className="entry-icon">🖼️</span>
+            <span className="entry-icon">
+              <img className="fileicon-img" src={folderImagesIcon} alt="" draggable={false} />
+            </span>
             <span className="entry-name">Images</span>
           </div>
         </div>

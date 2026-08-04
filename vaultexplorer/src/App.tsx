@@ -1158,6 +1158,18 @@ function Explorer({ home }: { home: string }) {
   );
 
   const contentRef = useRef<HTMLDivElement>(null);
+  const breadcrumbRef = useRef<HTMLDivElement>(null);
+  // Pull-to-refresh (mobile only): pullDist is how far the touch has
+  // dragged down past the top of an already-scrolled-to-top list, purely
+  // for the indicator's height/rotation while dragging. pullStartY is
+  // null whenever no pull is in progress -- including mid-scroll, so a
+  // drag that starts lower in the list and only reaches scrollTop 0
+  // later doesn't retroactively count.
+  const [pullDist, setPullDist] = useState(0);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
+  const pullStartY = useRef<number | null>(null);
+  const PULL_THRESHOLD = 64;
+  const PULL_MAX = 100;
   const dragPaths = useRef<string[]>([]);
   const dragFavIndex = useRef<number | null>(null);
   const [draggingFavIdx, setDraggingFavIdx] = useState<number | null>(null);
@@ -1746,6 +1758,44 @@ function Explorer({ home }: { home: string }) {
     refresh();
   }, [refresh]);
 
+  // Pull-to-refresh: only starts tracking a drag when the list is already
+  // scrolled to the very top (scrollTop <= 0) -- otherwise this is just a
+  // normal scroll gesture and must not fight it. Disabled outside the
+  // regular list (My Computer / Internet aren't backed by `refresh()`) and
+  // on desktop, where there's no touchscreen for this to apply to.
+  const pullEligible = mobile && !showMyComputer && !showInternet && searchResults === null;
+  function onContentTouchStart(e: React.TouchEvent) {
+    if (!pullEligible || pullRefreshing) return;
+    const el = contentRef.current;
+    if (el && el.scrollTop <= 0) pullStartY.current = e.touches[0].clientY;
+  }
+  function onContentTouchMove(e: React.TouchEvent) {
+    if (pullStartY.current == null) return;
+    const delta = e.touches[0].clientY - pullStartY.current;
+    if (delta <= 0) {
+      // scrolled back up past the start point -- abandon, let it scroll
+      pullStartY.current = null;
+      setPullDist(0);
+      return;
+    }
+    setPullDist(Math.min(delta, PULL_MAX));
+  }
+  async function onContentTouchEnd() {
+    if (pullStartY.current == null) return;
+    pullStartY.current = null;
+    if (pullDist >= PULL_THRESHOLD) {
+      setPullRefreshing(true);
+      try {
+        await refresh();
+      } finally {
+        setPullRefreshing(false);
+        setPullDist(0);
+      }
+    } else {
+      setPullDist(0);
+    }
+  }
+
   // Periodic background refresh while a real-fs folder stays open, so
   // changes from an external source (git auto-sync's own ~25s poll loop,
   // Drive sync, another program) actually show up instead of requiring a
@@ -1899,7 +1949,15 @@ function Explorer({ home }: { home: string }) {
     if (loc.path === "/") return;
     go({ kind: "fs", path: parentPath(loc.path) });
   }
-  const canGoUp = loc.kind === "vault" || loc.path !== "/";
+  // On mobile the app only ever has (or can get) access under
+  // PHONE_STORAGE_PATH -- everything above that (/storage/emulated,
+  // /storage, /data, /...) is OS-sandboxed away from this app regardless
+  // of the "All files access" grant, so letting "up" go further just
+  // walks into a raw "Permission denied (os error 13)" with nothing to
+  // see. Treat phone storage as mobile's root, same as it's already
+  // labeled ("Phone Storage") and prefixed-checked elsewhere.
+  const canGoUp =
+    loc.kind === "vault" || (loc.path !== "/" && !(mobile && loc.path === PHONE_STORAGE_PATH));
   // Android's physical back button and the gesture-nav back-swipe are the
   // same OS event, and Tauri's own `app` plugin already exposes it as
   // `onBackButtonPress` for exactly this -- subscribing to it is also what
@@ -4159,6 +4217,26 @@ function Explorer({ home }: { home: string }) {
   function crumbsFor(l: Loc): Crumb[] {
     const out: Crumb[] = [];
     if (l.kind === "fs") {
+      // On mobile, everything above PHONE_STORAGE_PATH is OS-sandboxed
+      // away from the app -- rooting the chain there instead of at real
+      // "/" means neither the collapsed "…" crumb nor any visible one
+      // can land somewhere that 403s (see `canGoUp` above for the same
+      // boundary applied to the Up button).
+      if (mobile && l.path.startsWith(PHONE_STORAGE_PATH)) {
+        out.push({
+          key: PHONE_STORAGE_PATH,
+          label: "Phone Storage",
+          loc: { kind: "fs", path: PHONE_STORAGE_PATH },
+          dropDir: PHONE_STORAGE_PATH,
+        });
+        const rest = l.path.slice(PHONE_STORAGE_PATH.length).split("/").filter(Boolean);
+        let acc = PHONE_STORAGE_PATH;
+        for (const p of rest) {
+          acc = acc + "/" + p;
+          out.push({ key: acc, label: p, loc: { kind: "fs", path: acc }, dropDir: acc });
+        }
+        return out;
+      }
       const parts = l.path.split("/").filter(Boolean);
       out.push({ key: "/", label: "System", loc: { kind: "fs", path: "/" }, dropDir: "/" });
       let acc = "";
@@ -4214,6 +4292,16 @@ function Explorer({ home }: { home: string }) {
   const MAX_CRUMBS = mobile ? 3 : 5;
   const hiddenCrumbs = crumbs.length > MAX_CRUMBS ? crumbs.slice(0, crumbs.length - MAX_CRUMBS) : [];
   const visibleCrumbs = hiddenCrumbs.length ? crumbs.slice(crumbs.length - MAX_CRUMBS) : crumbs;
+  // Collapsing by crumb COUNT alone doesn't guarantee the row fits: 3 long
+  // folder names can still overflow the bar's actual pixel width, and with
+  // a fixed set of visible crumbs there's no further abbreviation to fall
+  // back to. So the bar stays scrollable (not clipped) and this keeps it
+  // scrolled to the right end, where the current folder -- the crumb that
+  // actually matters -- lives, instead of it silently sitting off-screen.
+  useEffect(() => {
+    const el = breadcrumbRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [loc, mobile]);
 
   // ---- column view chain ----
   // Capped at 3 columns: without this, a chain from the root/vault-root
@@ -5099,7 +5187,28 @@ function Explorer({ home }: { home: string }) {
           ref={contentRef}
           onContextMenu={showMyComputer || showInternet ? undefined : backgroundMenu}
           onMouseDown={onContentMouseDown}
+          onTouchStart={onContentTouchStart}
+          onTouchMove={onContentTouchMove}
+          onTouchEnd={onContentTouchEnd}
         >
+          {(pullDist > 0 || pullRefreshing) && (
+            <div
+              className={`pull-refresh ${pullRefreshing ? "spin" : ""}`}
+              style={{
+                height: pullRefreshing ? PULL_THRESHOLD : pullDist,
+                opacity: pullRefreshing ? 1 : Math.min(1, pullDist / PULL_THRESHOLD),
+              }}
+            >
+              <span
+                className="pull-refresh-spinner"
+                style={
+                  pullRefreshing
+                    ? undefined
+                    : { transform: `rotate(${(pullDist / PULL_THRESHOLD) * 360}deg)` }
+                }
+              />
+            </div>
+          )}
           {showMyComputer ? (
             <MyComputerView
               drives={drives}
@@ -5201,6 +5310,7 @@ function Explorer({ home }: { home: string }) {
 
         <div
           className="breadcrumb-bar"
+          ref={breadcrumbRef}
           onClick={(e) => {
             if (showMyComputer || showInternet) return;
             if (!(e.target as HTMLElement).closest(".crumb, .breadcrumb-copy")) beginEditPath();

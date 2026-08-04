@@ -170,31 +170,54 @@ fn activity_map() -> &'static Mutex<HashMap<String, SyncActivity>> {
     ACTIVITY.get_or_init(Default::default)
 }
 
+/// `--create-empty-src-dirs` and `--max-lock` are both rclone >= 1.64
+/// bisync flags; older system-installed rclones (seen: 1.60.1) reject them
+/// outright with "unknown flag", failing every sync. Detected once via
+/// `rclone version` and cached, so this degrades gracefully on an old
+/// rclone instead of breaking sync entirely.
+fn rclone_supports_modern_bisync_flags() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let Ok(output) = Command::new("rclone").arg("version").output() else {
+            return false;
+        };
+        let Some(first_line) = String::from_utf8_lossy(&output.stdout).lines().next().map(str::to_string) else {
+            return false;
+        };
+        let Some(version) = first_line.split_whitespace().nth(1) else {
+            return false;
+        };
+        let version = version.trim_start_matches('v');
+        let mut parts = version.split('.').filter_map(|p| p.parse::<u32>().ok());
+        let (Some(major), Some(minor)) = (parts.next(), parts.next()) else {
+            return false;
+        };
+        (major, minor) >= (1, 64)
+    })
+}
+
 /// On success returns rclone's captured log plus whether this pass did any
 /// real transfer work (the same signal that lights the syncing badge) --
 /// `sync_now` uses that to decide when re-verifying against the cloud is
 /// worth an `rclone check`.
 fn run_bisync(local_path: &str, remote: &str, resync: bool) -> Result<(String, bool), String> {
-    // `--create-empty-src-dirs`: rclone otherwise ignores empty directories,
-    // so an empty folder (e.g. `.../test`) never propagates. (Requires
-    // rclone >= 1.64 for bisync; the app ships/expects a current rclone.)
-    let mut args = vec![
-        "bisync".to_string(),
-        local_path.to_string(),
-        remote.to_string(),
-        "--create-empty-src-dirs".to_string(),
-        // rclone >= 1.64 writes a bisync lock that, by default, NEVER expires
-        // -- so a run killed mid-sync (app quit, machine sleep, a `pkexec
-        // dpkg -i` restart) leaves a lock valid for ~200 years that wedges
-        // every future run ("prior lock file found", Drive sync failed).
-        // --max-lock caps it: bisync auto-renews while alive, and a dead
-        // run's lock self-expires after this, so sync recovers on its own.
-        // 2m is rclone's documented minimum.
-        "--max-lock".to_string(),
-        "2m".to_string(),
-        "--stats-one-line".to_string(),
-        "-v".to_string(),
-    ];
+    let mut args = vec!["bisync".to_string(), local_path.to_string(), remote.to_string()];
+    if rclone_supports_modern_bisync_flags() {
+        // `--create-empty-src-dirs`: rclone otherwise ignores empty
+        // directories, so an empty folder (e.g. `.../test`) never propagates.
+        args.push("--create-empty-src-dirs".to_string());
+        // Bisync writes a lock that, by default, NEVER expires -- so a run
+        // killed mid-sync (app quit, machine sleep, a `pkexec dpkg -i`
+        // restart) leaves a lock valid for ~200 years that wedges every
+        // future run ("prior lock file found", Drive sync failed). --max-lock
+        // caps it: bisync auto-renews while alive, and a dead run's lock
+        // self-expires after this, so sync recovers on its own. 2m is
+        // rclone's documented minimum.
+        args.push("--max-lock".to_string());
+        args.push("2m".to_string());
+    }
+    args.push("--stats-one-line".to_string());
+    args.push("-v".to_string());
     if resync {
         args.push("--resync".to_string());
     }

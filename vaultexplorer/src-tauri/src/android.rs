@@ -439,61 +439,73 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                     if !has_next {
                         break;
                     }
-                    let id = env.call_method(&cursor, "getLong", "(I)J", &[JValue::Int(id_idx)])?.j()?;
-                    let name_obj = env
-                        .call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[JValue::Int(name_idx)])?
-                        .l()?;
-                    let raw_name = if name_obj.is_null() {
-                        format!("contact-{id}")
-                    } else {
-                        let jstr = jni::objects::JString::from(name_obj);
-                        env.get_string(&jstr).map(|s| s.into()).unwrap_or_else(|_| format!("contact-{id}"))
-                    };
-                    let safe_name: String = raw_name
-                        .chars()
-                        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
-                        .collect();
-                    let mut file_name = format!("{safe_name}.vcf");
-                    let mut n = 1;
-                    while used_names.contains(&file_name) {
-                        n += 1;
-                        file_name = format!("{safe_name} {n}.vcf");
-                    }
-                    used_names.insert(file_name.clone());
-
-                    let vcard_path = format!("content://com.android.contacts/contacts/as_vcard/{id}");
-                    let vcard_str = env.new_string(&vcard_path)?;
-                    let uri_class = env.find_class("android/net/Uri")?;
-                    let vcard_uri = env
-                        .call_static_method(uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&vcard_str)])?
-                        .l()?;
-                    let stream = env
-                        .call_method(
-                            &resolver,
-                            "openInputStream",
-                            "(Landroid/net/Uri;)Ljava/io/InputStream;",
-                            &[JValue::Object(&vcard_uri)],
-                        )?
-                        .l()?;
-                    if stream.is_null() {
-                        continue;
-                    }
-                    let buf = env.new_byte_array(4096)?;
-                    let mut out: Vec<u8> = Vec::new();
-                    loop {
-                        let read = env
-                            .call_method(&stream, "read", "([B)I", &[JValue::Object(&buf)])?
-                            .i()?;
-                        if read <= 0 {
-                            break;
+                    // Every JNI call below (getString, new_string, find_class,
+                    // openInputStream, the byte-array buffer...) allocates a
+                    // fresh local ref, and none of them were ever released --
+                    // fine for a handful of contacts, but a real address book
+                    // (hundreds of entries) blew past the JVM's 512-local-ref
+                    // table and crashed the whole app mid-export ("error en
+                    // java"). with_local_frame scopes them to one contact at a
+                    // time, so the table never grows past what a single
+                    // contact needs regardless of how many are exported.
+                    let written = env.with_local_frame(16, |env| -> Result<bool, jni::errors::Error> {
+                        let id = env.call_method(&cursor, "getLong", "(I)J", &[JValue::Int(id_idx)])?.j()?;
+                        let name_obj = env
+                            .call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[JValue::Int(name_idx)])?
+                            .l()?;
+                        let raw_name = if name_obj.is_null() {
+                            format!("contact-{id}")
+                        } else {
+                            let jstr = jni::objects::JString::from(name_obj);
+                            env.get_string(&jstr).map(|s| s.into()).unwrap_or_else(|_| format!("contact-{id}"))
+                        };
+                        let safe_name: String = raw_name
+                            .chars()
+                            .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+                            .collect();
+                        let mut file_name = format!("{safe_name}.vcf");
+                        let mut n = 1;
+                        while used_names.contains(&file_name) {
+                            n += 1;
+                            file_name = format!("{safe_name} {n}.vcf");
                         }
-                        let mut chunk = vec![0i8; read as usize];
-                        env.get_byte_array_region(&buf, 0, &mut chunk)?;
-                        out.extend(chunk.iter().map(|b| *b as u8));
-                    }
-                    let _ = env.call_method(&stream, "close", "()V", &[]);
-                    let full_path = std::path::Path::new(&dest_dir).join(&file_name);
-                    if std::fs::write(&full_path, &out).is_ok() {
+                        used_names.insert(file_name.clone());
+
+                        let vcard_path = format!("content://com.android.contacts/contacts/as_vcard/{id}");
+                        let vcard_str = env.new_string(&vcard_path)?;
+                        let uri_class = env.find_class("android/net/Uri")?;
+                        let vcard_uri = env
+                            .call_static_method(uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&vcard_str)])?
+                            .l()?;
+                        let stream = env
+                            .call_method(
+                                &resolver,
+                                "openInputStream",
+                                "(Landroid/net/Uri;)Ljava/io/InputStream;",
+                                &[JValue::Object(&vcard_uri)],
+                            )?
+                            .l()?;
+                        if stream.is_null() {
+                            return Ok(false);
+                        }
+                        let buf = env.new_byte_array(4096)?;
+                        let mut out: Vec<u8> = Vec::new();
+                        loop {
+                            let read = env
+                                .call_method(&stream, "read", "([B)I", &[JValue::Object(&buf)])?
+                                .i()?;
+                            if read <= 0 {
+                                break;
+                            }
+                            let mut chunk = vec![0i8; read as usize];
+                            env.get_byte_array_region(&buf, 0, &mut chunk)?;
+                            out.extend(chunk.iter().map(|b| *b as u8));
+                        }
+                        let _ = env.call_method(&stream, "close", "()V", &[]);
+                        let full_path = std::path::Path::new(&dest_dir).join(&file_name);
+                        Ok(std::fs::write(&full_path, &out).is_ok())
+                    })?;
+                    if written {
                         count += 1;
                     }
                 }
@@ -547,35 +559,52 @@ pub(crate) fn android_import_contacts(app: tauri::AppHandle, vcf_paths: Vec<Stri
                         .l()?;
                     let file_provider_class = env.find_class("androidx/core/content/FileProvider")?;
 
+                    // Scoped per file for the same reason as the export loop
+                    // below (see its comment): each iteration allocates ~8
+                    // local refs that otherwise never get released, and a
+                    // large batch of .vcf files would overflow the JNI local
+                    // ref table.
                     for path in &vcf_paths {
-                        let file_class = env.find_class("java/io/File")?;
-                        let path_str = env.new_string(path)?;
-                        let file =
-                            env.new_object(file_class, "(Ljava/lang/String;)V", &[JValue::Object(&path_str)])?;
-                        let uri = env
-                            .call_static_method(
-                                &file_provider_class,
-                                "getUriForFile",
-                                "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
-                                &[JValue::Object(activity), JValue::Object(&authority), JValue::Object(&file)],
-                            )?
-                            .l()?;
+                        env.with_local_frame(16, |env| -> Result<(), jni::errors::Error> {
+                            let file_class = env.find_class("java/io/File")?;
+                            let path_str = env.new_string(path)?;
+                            let file = env.new_object(
+                                file_class,
+                                "(Ljava/lang/String;)V",
+                                &[JValue::Object(&path_str)],
+                            )?;
+                            let uri = env
+                                .call_static_method(
+                                    &file_provider_class,
+                                    "getUriForFile",
+                                    "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
+                                    &[JValue::Object(activity), JValue::Object(&authority), JValue::Object(&file)],
+                                )?
+                                .l()?;
 
-                        let action = env.new_string("android.intent.action.VIEW")?;
-                        let intent_class = env.find_class("android/content/Intent")?;
-                        let intent = env.new_object(intent_class, "(Ljava/lang/String;)V", &[JValue::Object(&action)])?;
-                        let mime = env.new_string("text/x-vcard")?;
-                        env.call_method(
-                            &intent,
-                            "setDataAndType",
-                            "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
-                            &[JValue::Object(&uri), JValue::Object(&mime)],
-                        )?;
-                        // FLAG_GRANT_READ_URI_PERMISSION = 1 -- the Contacts app
-                        // needs this to read a FileProvider content:// URI it
-                        // didn't create itself.
-                        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(1)])?;
-                        env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+                            let action = env.new_string("android.intent.action.VIEW")?;
+                            let intent_class = env.find_class("android/content/Intent")?;
+                            let intent =
+                                env.new_object(intent_class, "(Ljava/lang/String;)V", &[JValue::Object(&action)])?;
+                            let mime = env.new_string("text/x-vcard")?;
+                            env.call_method(
+                                &intent,
+                                "setDataAndType",
+                                "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+                                &[JValue::Object(&uri), JValue::Object(&mime)],
+                            )?;
+                            // FLAG_GRANT_READ_URI_PERMISSION = 1 -- the Contacts
+                            // app needs this to read a FileProvider content://
+                            // URI it didn't create itself.
+                            env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(1)])?;
+                            env.call_method(
+                                activity,
+                                "startActivity",
+                                "(Landroid/content/Intent;)V",
+                                &[JValue::Object(&intent)],
+                            )?;
+                            Ok(())
+                        })?;
                     }
                     Ok(())
                 };

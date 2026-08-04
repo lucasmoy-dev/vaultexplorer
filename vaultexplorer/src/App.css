@@ -982,6 +982,27 @@ button:disabled {
   min-height: 0;
 }
 
+/* Pull-to-refresh (mobile). Grows in normal flow as the drag height
+   above the list -- no absolute positioning needed, it just pushes the
+   real entries down the same way the drag pulled them. */
+.pull-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.pull-refresh-spinner {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--row-hover);
+  border-top-color: var(--accent);
+  flex-shrink: 0;
+}
+.pull-refresh.spin .pull-refresh-spinner {
+  animation: ve-actions-spin 0.7s linear infinite;
+}
+
 /* icon grid */
 .entries.icon {
   --icon-scale: 1;
@@ -2677,11 +2698,11 @@ li.md-task[draggable="true"] {
 }
 
 /* Mobile: the JS above already collapses everything but the last few
-   segments behind a leading "…", so this just makes sure a single very
-   long folder name can't still push the bar wider than the screen. */
-.is-mobile .breadcrumb-bar {
-  overflow-x: hidden;
-}
+   segments behind a leading "…", and auto-scrolls the bar to the current
+   folder -- so this just makes sure a single very long folder name can't
+   still eat the whole bar and push the current folder out of that scroll
+   range. Stays scrollable (not hidden): a hard clip here has no fallback
+   and can hide the current folder entirely. */
 .is-mobile .breadcrumb-crumbs {
   min-width: 0;
   flex-wrap: nowrap;
