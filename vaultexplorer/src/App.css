@@ -3798,3 +3798,161 @@ input[type="range"]::-webkit-slider-thumb {
   color: #fff;
   font-weight: 600;
 }
+
+/* ============================================================
+   Notes view (Google Keep-style card grid for markdown files)
+   ============================================================ */
+.notes-view {
+  padding: 14px;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+/* Pure-CSS masonry: a multi-column flow with each card barred from
+   splitting across columns -- the same trick every "CSS masonry without
+   JS" writeup uses, good enough here since cards are short and don't
+   need true top-to-bottom reading order. */
+.notes-grid {
+  column-width: 180px;
+  column-gap: 12px;
+}
+.note-card {
+  break-inside: avoid;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  color: #202124;
+}
+.note-card-title {
+  font-weight: 700;
+  font-size: 13.5px;
+  margin-bottom: 6px;
+  overflow-wrap: break-word;
+}
+.note-card-body {
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-height: 160px;
+  overflow: hidden;
+  opacity: 0.85;
+}
+.notes-others {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+}
+.notes-other-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 76px;
+  padding: 8px 4px;
+  border-radius: 8px;
+  background: none;
+  font-size: 11px;
+  color: var(--text);
+  text-align: center;
+  overflow-wrap: break-word;
+}
+.notes-other-tile:hover {
+  background: var(--row-hover, rgba(127, 127, 127, 0.12));
+}
+.notes-empty {
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+  margin-top: 40px;
+}
+
+/* ============================================================
+   iOS-flavored mobile polish
+   Desktop deliberately mirrors macOS Finder throughout (traffic
+   lights, the checkbox two rules up, the sidebar) -- these are the
+   mobile-only equivalent for the platform conventions that read as
+   most distinctly "wrong OS" carried over unchanged from desktop:
+   real checkboxes (iOS uses toggle switches almost everywhere) and a
+   flat, ungrouped Settings list (iOS groups related rows into
+   separate inset cards over a tinted page background).
+   ============================================================ */
+.is-mobile .checkbox-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 51px;
+  height: 31px;
+  min-width: 51px;
+  border-radius: 16px;
+  border: none;
+  /* `--field-bg` already carries a correct light/dark value for both the
+     "system" (media-query) and explicit Light/Dark (data-theme attribute)
+     cases -- see its definitions near the top of this file -- so reusing
+     it here sidesteps re-deriving that same light/dark logic (and getting
+     the attribute-vs-media-query precedence wrong) just for this switch. */
+  background: var(--field-bg);
+  box-shadow: none;
+  position: relative;
+  transition: background 0.15s ease;
+}
+.is-mobile .checkbox-row input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18);
+  transform: none;
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.is-mobile .checkbox-row input[type="checkbox"]:checked {
+  background: #34c759;
+  border-color: transparent;
+}
+.is-mobile .checkbox-row input[type="checkbox"]:checked::after {
+  transform: translateX(20px);
+}
+/* Settings' "General"/"Security" rows already read as grouped-by-tab;
+   this is the grouped-*card* look inside each tab -- a tinted page with
+   each label+control cluster sitting in its own white inset card,
+   matching iOS Settings rather than a flat form. */
+.is-mobile .settings-screen-body {
+  background: var(--sidebar-bg, rgba(127, 127, 127, 0.06));
+}
+.is-mobile .settings-screen-body .field-label,
+.is-mobile .settings-screen-body > label:not(.checkbox-row) {
+  margin-top: 20px;
+  padding-left: 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.is-mobile .settings-screen-body .checkbox-row,
+.is-mobile .settings-screen-body input:not([type="checkbox"]) {
+  background: var(--win-bg);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 2px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.is-mobile .settings-screen-body .checkbox-row {
+  /* DOM order is switch-then-label (matches the plain checkbox everywhere
+     else), but iOS Settings always reads label-left, switch-right --
+     `row-reverse` flips the *visual* order without touching the DOM/JSX
+     the desktop macOS-style checkbox still relies on unchanged. */
+  flex-direction: row-reverse;
+  justify-content: space-between;
+}
+.is-mobile .settings-select {
+  border-radius: 10px;
+}

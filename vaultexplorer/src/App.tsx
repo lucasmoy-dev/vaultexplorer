@@ -59,6 +59,7 @@ import { EntryTile } from "./components/EntryTile";
 import { MyComputerView } from "./components/MyComputerView";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
+import { NotesGrid } from "./components/NotesGrid";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
 import { buildSyncSubmenu } from "./menus";
@@ -1002,8 +1003,12 @@ function Explorer({ home }: { home: string }) {
     kind: Loc["kind"];
     root?: string;
   } | null>(null);
-  // The mobile in-app text/markdown editor (full-screen, unlike desktop's
-  // split listPreview pane -- there's no room for a split on a phone).
+  // The in-app text/markdown editor, full-screen rather than desktop's
+  // split listPreview pane -- there's no room for a split on a phone.
+  // Originally just mobile's plain file-open, now also what a note card
+  // in Notes view opens into on either platform (see NotesGrid/`view ===
+  // "notes"` below) -- the "mobile" in the name is a holdover, not a
+  // remaining restriction on who can reach it.
   const [mobileEditorTarget, setMobileEditorTarget] = useState<{
     entry: Entry;
     fullPath: string;
@@ -3983,6 +3988,13 @@ function Explorer({ home }: { home: string }) {
       { key: "icon", label: "Icons" },
       { key: "list", label: "List" },
       ...(mobile ? [] : [{ key: "column" as const, label: "Columns" }, { key: "listPreview" as const, label: "List with Preview" }]),
+      // Experiment: markdown files as Keep-style note cards (a content
+      // preview instead of just an icon+name), tap opens the same
+      // full-screen editor mobile's plain file-open already uses. Not
+      // useful for a folder that's mostly non-markdown, but folders that
+      // are basically a notes stash don't have anything like this in
+      // any other view.
+      { key: "notes", label: "Notes" },
     ];
     const items: MenuItem[] = options.map((o) => ({
       label: view === o.key ? `✓ ${o.label}` : o.label,
@@ -5066,6 +5078,17 @@ function Explorer({ home }: { home: string }) {
                 })
               }
               cutPaths={clipboard?.mode === "cut" && clipboard.kind === loc.kind ? clipboard.paths : undefined}
+            />
+          ) : view === "notes" ? (
+            <NotesGrid
+              entries={entries}
+              curDir={curDir}
+              inVault={inVault}
+              onOpenNote={(entry, fullPath) =>
+                withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
+              }
+              onActivateOther={(entry) => activate(curDir, entry)}
+              onMenu={(e, entry) => entryMenu(e, entry)}
             />
           ) : view === "listPreview" ? (
             <div className="list-preview-split">
