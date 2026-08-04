@@ -57,7 +57,7 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { kindLabel, editorExtOf } from "./entryHelpers";
 import { EntryTile } from "./components/EntryTile";
 import { MyComputerView } from "./components/MyComputerView";
-import { InternetView } from "./components/InternetView";
+import { InternetView, SavedInternetSearch } from "./components/InternetView";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
 import { NotesGrid } from "./components/NotesGrid";
@@ -1052,10 +1052,23 @@ function Explorer({ home }: { home: string }) {
   // `InternetView`, which owns its own Videos/Images sub-navigation and
   // search state entirely by itself (see that component).
   const [showInternet, setShowInternet] = useState(false);
+  // Set only when a `.ytsearch`/`.imgsearch` file was double-clicked (see
+  // `activate()`) -- tells InternetView to skip its root tiles and rerun
+  // that exact saved search immediately. Cleared on a plain sidebar open
+  // so that always lands on the root tiles instead of replaying whatever
+  // was last opened.
+  const [internetInitial, setInternetInitial] = useState<SavedInternetSearch | null>(null);
   function openInternet() {
     setShowInternet(true);
     setShowMyComputer(false);
     setSearchResults(null);
+    setInternetInitial(null);
+  }
+  function openInternetSearchFile(saved: SavedInternetSearch) {
+    setShowInternet(true);
+    setShowMyComputer(false);
+    setSearchResults(null);
+    setInternetInitial(saved);
   }
 
   // Some Linux window managers don't raise/focus an unfocused, undecorated
@@ -2471,6 +2484,20 @@ function Explorer({ home }: { home: string }) {
     }
     if (ARCHIVE_EXT_RE.test(entry.name)) {
       return mountArchive(dir, entry);
+    }
+    // Saved Internet search (see InternetView) -- desktop-only, same as
+    // the feature it reopens. Malformed/hand-edited JSON just surfaces as
+    // a normal error rather than silently falling through to a text-editor
+    // open, which would show raw JSON that looks broken for no reason.
+    if (!mobile && /\.(ytsearch|imgsearch)$/i.test(entry.name)) {
+      try {
+        const saved = JSON.parse(await api.fsReadText(full)) as SavedInternetSearch;
+        if (saved.kind !== "videos" && saved.kind !== "images") throw new Error("not a saved search");
+        openInternetSearchFile(saved);
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
     }
     if (mobile && !appSettings.mobileExternalEditor && isPlainTextEntry(entry)) {
       setMobileEditorTarget({ entry, fullPath: full, inVault: false });
@@ -5217,7 +5244,7 @@ function Explorer({ home }: { home: string }) {
               onMenu={driveMenu}
             />
           ) : showInternet ? (
-            <InternetView />
+            <InternetView initial={internetInitial} />
           ) : searchResults !== null ? (
             <SearchResults
               query={searchQuery}

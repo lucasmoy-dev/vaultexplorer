@@ -124,8 +124,12 @@ const OFFICE_EXT_RE = /\.(docx?|odt|xlsx?|ods|pptx?|odp)$/;
 export function kindOf(entry: Entry): Kind {
   if (entry.is_dir) return "folder";
   const l = displayName(entry);
-  if (/\.(png|jpe?g|gif|webp|bmp|svg|heic|tiff?)$/.test(l)) return "image";
-  if (/\.(mp4|mkv|mov|avi|webm|m4v)$/.test(l)) return "video";
+  // .ytsearch/.imgsearch (see InternetView) are a saved search's query +
+  // filters in JSON, not real media -- but they're meant to read as "a
+  // video/image file" in the UI, so they borrow the same icon as the kind
+  // of result they reopen.
+  if (/\.(png|jpe?g|gif|webp|bmp|svg|heic|tiff?|imgsearch)$/.test(l)) return "image";
+  if (/\.(mp4|mkv|mov|avi|webm|m4v|ytsearch)$/.test(l)) return "video";
   if (/\.(mp3|wav|flac|ogg|aac|m4a)$/.test(l)) return "audio";
   if (/\.(pdf)$/.test(l)) return "pdf";
   if (/\.(zip|tar|gz|7z|rar|bz2|xz)$/.test(l)) return "archive";
@@ -447,6 +451,17 @@ export function CopyGlyph({ size = 13 }: GlyphProps) {
     <L size={size} sw={1.9}>
       <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
       <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </L>
+  );
+}
+
+// Lucide `save`.
+export function SaveGlyph({ size = 13 }: GlyphProps) {
+  return (
+    <L size={size} sw={1.9}>
+      <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+      <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
+      <path d="M7 3v4a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.4" />
     </L>
   );
 }

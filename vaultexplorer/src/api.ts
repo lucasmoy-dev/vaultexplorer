@@ -88,7 +88,13 @@ export const api = {
   androidExportContacts: (destDir: string) => invoke<number>("android_export_contacts", { destDir }),
   androidImportContacts: (vcfPaths: string[]) => invoke<void>("android_import_contacts", { vcfPaths }),
   androidDownloadAndInstallApk: (url: string) => invoke<void>("android_download_and_install_apk", { url }),
-  searchYoutube: (query: string) => invoke<YoutubeResult[]>("search_youtube", { query }),
+  searchYoutube: (query: string, filters: YoutubeSearchFilters) =>
+    invoke<YoutubeResult[]>("search_youtube", {
+      query,
+      sortByDate: filters.sortByDate,
+      uploadDate: filters.uploadDate,
+      duration: filters.duration,
+    }),
   searchImages: (query: string) => invoke<ImageResult[]>("search_images", { query }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
@@ -433,6 +439,17 @@ export interface YoutubeResult {
   id: string;
   title: string;
   thumbnail: string;
+  duration: string | null;
+  published: string | null;
+}
+
+// Mirrors youtube_sp_param's Rust-side enums directly -- see webfind.rs.
+export type YoutubeUploadDate = 1 | 2 | 3 | 4 | 5; // hour/today/week/month/year
+export type YoutubeDuration = 1 | 2 | 3; // short(<4m)/long(>20m)/medium(4-20m)
+export interface YoutubeSearchFilters {
+  sortByDate: boolean;
+  uploadDate: YoutubeUploadDate | null;
+  duration: YoutubeDuration | null;
 }
 
 export interface ImageResult {

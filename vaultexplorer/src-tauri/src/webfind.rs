@@ -25,6 +25,8 @@ pub struct YoutubeResult {
     pub id: String,
     pub title: String,
     pub thumbnail: String,
+    pub duration: Option<String>,
+    pub published: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -72,15 +74,60 @@ fn json_string_at(s: &str) -> Option<(String, usize)> {
     None
 }
 
+/// YouTube's `sp=` search-page param is a base64'd protobuf (undocumented,
+/// reverse-engineered by many scrapers) picking sort order plus a nested
+/// "filters" message. Hand-encoding it (instead of a lookup table of known
+/// single-filter values) is what lets sort + upload-date + duration
+/// combine freely -- verified live against youtube.com/results: combining
+/// upload_date=week with duration=long only ever returned results both
+/// long *and* from the last few hours.
+///   top-level:  field 1 (varint)      = sort_by       (2 = upload date)
+///               field 2 (length-delim) = filters, containing:
+///                 field 1 (varint) = upload_date (1=hour,2=today,3=week,4=month,5=year)
+///                 field 3 (varint) = duration    (1=short<4m,2=long>20m,3=medium 4-20m)
+fn youtube_sp_param(sort_by_date: bool, upload_date: Option<u8>, duration: Option<u8>) -> Option<String> {
+    let mut filters = Vec::new();
+    if let Some(d) = upload_date {
+        filters.extend([0x08, d]);
+    }
+    if let Some(d) = duration {
+        filters.extend([0x18, d]);
+    }
+    let mut out = Vec::new();
+    if sort_by_date {
+        out.extend([0x08, 0x02]);
+    }
+    if !filters.is_empty() {
+        out.push(0x12);
+        out.push(filters.len() as u8);
+        out.extend(filters);
+    }
+    if out.is_empty() {
+        return None;
+    }
+    use base64::Engine;
+    Some(base64::engine::general_purpose::URL_SAFE.encode(out))
+}
+
 #[cfg(desktop)]
 #[tauri::command]
-pub(crate) fn search_youtube(query: String) -> Result<Vec<YoutubeResult>, String> {
+pub(crate) fn search_youtube(
+    query: String,
+    sort_by_date: bool,
+    upload_date: Option<u8>,
+    duration: Option<u8>,
+) -> Result<Vec<YoutubeResult>, String> {
     let mut url = reqwest::Url::parse("https://www.youtube.com/results").str_err()?;
     url.query_pairs_mut().append_pair("search_query", &query);
+    if let Some(sp) = youtube_sp_param(sort_by_date, upload_date, duration) {
+        url.query_pairs_mut().append_pair("sp", &sp);
+    }
     let html = http_client()?.get(url).send().str_err()?.text().str_err()?;
 
     let marker = "\"videoId\":\"";
     let title_marker = "\"title\":{\"runs\":[{\"text\":\"";
+    let length_marker = "\"simpleText\":\"";
+    let published_marker = "\"publishedTimeText\":{\"simpleText\":\"";
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut cursor = 0usize;
@@ -100,10 +147,25 @@ pub(crate) fn search_youtube(query: String) -> Result<Vec<YoutubeResult>, String
         if let Some(tpos) = window.find(title_marker) {
             let tstart = tpos + title_marker.len();
             if let Some((title, _)) = json_string_at(&window[tstart..]) {
+                // Both are cosmetic (shown next to the result, not used to
+                // re-filter client-side) -- a miss just leaves them blank
+                // rather than dropping the result.
+                let duration = window
+                    .find("\"lengthText\":")
+                    .and_then(|p| window[p..].find(length_marker).map(|q| p + q + length_marker.len()))
+                    .and_then(|s| json_string_at(&window[s..]))
+                    .map(|(s, _)| s);
+                let published = window
+                    .find(published_marker)
+                    .map(|p| p + published_marker.len())
+                    .and_then(|s| json_string_at(&window[s..]))
+                    .map(|(s, _)| s);
                 results.push(YoutubeResult {
                     thumbnail: format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"),
                     id,
                     title,
+                    duration,
+                    published,
                 });
             }
         }

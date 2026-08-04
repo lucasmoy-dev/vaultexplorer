@@ -3922,6 +3922,50 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 6px;
   background: var(--field-bg);
 }
+.internet-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+  flex-wrap: wrap;
+}
+.internet-filters select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--win-bg);
+  border: 1px solid var(--toolbar-border, rgba(127, 127, 127, 0.3));
+  border-radius: 6px;
+  padding: 4px 6px;
+  outline: none;
+  cursor: pointer;
+}
+.internet-sort-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.internet-badge {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.internet-published {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-2);
+  font-weight: 400;
+}
 
 /* ============================================================
    Contacts view (folder of .vcf as a real contacts list)
