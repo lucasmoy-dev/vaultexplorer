@@ -297,6 +297,8 @@ export function SettingsScreen({
   onChange,
   onClose,
   mobile,
+  onExportConfig,
+  onImportConfig,
 }: {
   settings: {
     showHiddenFiles: boolean;
@@ -320,8 +322,11 @@ export function SettingsScreen({
     mobileExternalEditor: boolean;
   }) => void;
   onClose: () => void;
+  onExportConfig: (includeCloud: boolean) => void;
+  onImportConfig: () => void;
 }) {
   const [tab, setTab] = useState<"general" | "security" | "system">("general");
+  const [includeCloudCreds, setIncludeCloudCreds] = useState(false);
   const [portalEnabled, setPortalEnabled] = useState(false);
   const [portalBusy, setPortalBusy] = useState(false);
   const [portalError, setPortalError] = useState("");
@@ -454,6 +459,33 @@ export function SettingsScreen({
               Use <code>{"{date}"}</code>, <code>{"{time}"}</code>, or <code>{"{datetime}"}</code> to
               include the current date/time, e.g. <code>{"{datetime}"}</code> → “2026-11-30 16.16hs”.
             </p>
+            <label className="field-label" style={{ marginTop: 14 }}>
+              Config
+            </label>
+            <p className="hint" style={{ marginTop: -2 }}>
+              Favorites, appearance, and other settings -- as one blob on the clipboard, to carry
+              over to another device. Pasting it here remaps any path from this device's home
+              folder to the equivalent spot on this one.
+            </p>
+            {!mobile && (
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={includeCloudCreds}
+                  onChange={(e) => setIncludeCloudCreds(e.target.checked)}
+                />
+                Include cloud sync credentials (sensitive -- puts live account access on the
+                clipboard)
+              </label>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              <button className="settings-select" onClick={() => onExportConfig(includeCloudCreds)}>
+                Copy config to clipboard
+              </button>
+              <button className="settings-select" onClick={onImportConfig}>
+                Paste config from clipboard
+              </button>
+            </div>
           </>
         )}
 

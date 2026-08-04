@@ -2853,6 +2853,115 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
+  // Export/import every `vaultexplorer:*` localStorage key as one blob --
+  // favorites, appSettings, per-vault UI prefs, custom icons, templates,
+  // pinned files, all of it -- rather than hand-picking fields one at a
+  // time and inevitably missing the next one someone adds. `sourceHome`
+  // rides along so import can remap paths for a *different* platform's
+  // layout (e.g. a Linux `/home/you/...` favorite pasted on Android
+  // becomes a real `/storage/emulated/0/...` one, not a dead path) --
+  // exactly the "paste this on my phone" case this was built for.
+  //
+  // `includeCloud` bundles the live rclone OAuth tokens too, for
+  // reconnecting cloud sync from wherever this gets pasted next without
+  // re-authenticating -- opt-in and off by default (see the Settings
+  // checkbox this is wired to): those tokens are as good as the account
+  // password for whatever they're scoped to, and this puts them on the
+  // plain OS clipboard, readable by any clipboard manager/sync service
+  // that happens to be watching. Desktop-only either way -- there's no
+  // `rclone` binary on Android for a receiving mobile device to use them
+  // with regardless of whether they're included.
+  async function buildConfigExportBlob(includeCloud: boolean): Promise<string> {
+    const data: Record<string, string> = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith("vaultexplorer:")) data[key] = localStorage.getItem(key) ?? "";
+    }
+    const payload: {
+      version: 1;
+      sourceHome: string;
+      data: Record<string, string>;
+      rcloneConf?: string;
+    } = { version: 1, sourceHome: home, data };
+    if (includeCloud && !mobile) {
+      try {
+        const conf = await api.rcloneReadConfRaw();
+        if (conf) payload.rcloneConf = conf;
+      } catch {
+        /* rclone not installed -- nothing to include */
+      }
+    }
+    return JSON.stringify(payload);
+  }
+
+  async function exportConfigToClipboard(includeCloud: boolean) {
+    try {
+      const blob = await buildConfigExportBlob(includeCloud);
+      await navigator.clipboard.writeText(blob);
+      setInfoMsg(
+        includeCloud
+          ? "Config + cloud credentials copied to clipboard"
+          : "Config copied to clipboard"
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function importConfigFromClipboard() {
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    let payload: { version?: number; sourceHome?: string; data?: Record<string, string>; rcloneConf?: string };
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      setError("Clipboard doesn't contain a Vault Explorer config export");
+      return;
+    }
+    if (!payload?.data || typeof payload.data !== "object") {
+      setError("Clipboard doesn't contain a Vault Explorer config export");
+      return;
+    }
+    // On mobile the real target for anything that used to live under the
+    // exporting device's home is shared storage, not this app's own
+    // sandboxed "home" -- see the favorites fix (`useFavorites.ts`) this
+    // mirrors, for the same reason.
+    const targetPrefix = mobile ? PHONE_STORAGE_PATH : home;
+    const sourcePrefix = payload.sourceHome;
+    let remapped = 0;
+    for (const [key, rawValue] of Object.entries(payload.data)) {
+      let value = rawValue;
+      if (sourcePrefix && value.includes(sourcePrefix)) {
+        const remappedValue = value.split(sourcePrefix).join(targetPrefix);
+        if (remappedValue !== value) remapped++;
+        value = remappedValue;
+      }
+      localStorage.setItem(key, value);
+    }
+    if (payload.rcloneConf && !mobile) {
+      try {
+        await api.rcloneMergeConfRaw(payload.rcloneConf);
+      } catch (e) {
+        setError(String(e));
+        return;
+      }
+    }
+    // Every setting above is read once at mount (`useState(() => ...
+    // localStorage...)`) -- reapplying all of it live would mean
+    // duplicating that same read for every single one of those states
+    // instead of the one source of truth localStorage already is. A
+    // reload is what actually re-runs them.
+    setInfoMsg(
+      `Imported${payload.rcloneConf ? " + cloud credentials" : ""}${remapped ? ` (${remapped} path${remapped === 1 ? "" : "s"} remapped)` : ""} — reloading…`
+    );
+    setTimeout(() => window.location.reload(), 900);
+  }
+
   async function duplicate(entry: Entry) {
     const src = joinPath(curDir, entry.name);
     const dot = entry.name.lastIndexOf(".");
@@ -5183,6 +5292,8 @@ function Explorer({ home }: { home: string }) {
           onChange={setAppSettings}
           onClose={() => setSettingsOpen(false)}
           mobile={mobile}
+          onExportConfig={exportConfigToClipboard}
+          onImportConfig={importConfigFromClipboard}
         />
       )}
       {mobileEditorTarget && (

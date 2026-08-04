@@ -289,6 +289,8 @@ export const api = {
   rcloneConnect: (provider: string, urlChannel: Channel<string>) =>
     invoke<void>("rclone_connect", { provider, urlChannel }),
   rcloneDisconnect: (provider: string) => invoke<void>("rclone_disconnect", { provider }),
+  rcloneReadConfRaw: () => invoke<string | null>("rclone_read_conf_raw"),
+  rcloneMergeConfRaw: (incoming: string) => invoke<void>("rclone_merge_conf_raw", { incoming }),
   driveListPairs: () => invoke<SyncPair[]>("drive_list_pairs"),
   driveAddPair: (provider: string, localPath: string) =>
     invoke<SyncPair>("drive_add_pair", { provider, localPath }),

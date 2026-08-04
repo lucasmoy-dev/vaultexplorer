@@ -240,6 +240,73 @@ pub fn rclone_disconnect(provider: String) -> Result<(), String> {
     disconnect(&provider)
 }
 
+/// rclone's own default config path (respects `$RCLONE_CONFIG` the same
+/// way the plain `rclone` invocations elsewhere in this file do, by not
+/// overriding it) -- used by the Settings "export config" feature to
+/// bundle live cloud OAuth tokens for reconnecting from another device,
+/// opt-in only (see `App.tsx`'s export flow). Desktop-only: there's no
+/// `rclone` binary on Android to read a config *for* (see `sync.rs`'s
+/// mobile-scoping notes), so a device on the receiving end of an export
+/// couldn't use this half of it anyway.
+#[cfg(desktop)]
+fn rclone_conf_path() -> Result<std::path::PathBuf, String> {
+    if let Ok(p) = std::env::var("RCLONE_CONFIG") {
+        return Ok(std::path::PathBuf::from(p));
+    }
+    let home = std::env::var("HOME").str_err()?;
+    Ok(std::path::Path::new(&home).join(".config/rclone/rclone.conf"))
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub fn rclone_read_conf_raw() -> Result<Option<String>, String> {
+    let path = rclone_conf_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(path).map(Some).str_err()
+}
+
+/// Merges (doesn't replace) the imported config into whatever's already
+/// there -- an rclone conf is just a set of `[remote-name]` INI sections,
+/// so this only touches sections this app's own export would have
+/// produced (`vaultexplorer-<provider>`), leaving any of the *importing*
+/// device's own unrelated rclone remotes alone.
+#[cfg(desktop)]
+#[tauri::command]
+pub fn rclone_merge_conf_raw(incoming: String) -> Result<(), String> {
+    let path = rclone_conf_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).str_err()?;
+    }
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut push_section = |body: String| {
+        if body.trim().is_empty() {
+            return;
+        }
+        let name = body.lines().next().unwrap_or("").to_string();
+        if let Some(i) = sections.iter().position(|(n, _)| *n == name) {
+            sections[i].1 = body;
+        } else {
+            sections.push((name, body));
+        }
+    };
+    for text in [existing, incoming] {
+        let mut current = String::new();
+        for line in text.lines() {
+            if line.starts_with('[') && !current.is_empty() {
+                push_section(std::mem::take(&mut current));
+            }
+            current.push_str(line);
+            current.push('\n');
+        }
+        push_section(current);
+    }
+    let merged = sections.into_iter().map(|(_, body)| body).collect::<Vec<_>>().join("\n");
+    std::fs::write(path, merged).str_err()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

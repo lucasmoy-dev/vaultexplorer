@@ -1723,6 +1723,10 @@ pub fn run() {
             rclone::rclone_is_connected,
             rclone::rclone_connect,
             rclone::rclone_disconnect,
+            #[cfg(desktop)]
+            rclone::rclone_read_conf_raw,
+            #[cfg(desktop)]
+            rclone::rclone_merge_conf_raw,
             sync::drive_list_pairs,
             sync::drive_add_pair,
             sync::drive_remove_pair,
