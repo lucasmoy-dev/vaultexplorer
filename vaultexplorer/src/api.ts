@@ -96,6 +96,7 @@ export const api = {
       duration: filters.duration,
     }),
   searchImages: (query: string) => invoke<ImageResult[]>("search_images", { query }),
+  searchBooks: (query: string) => invoke<BookResult[]>("search_books", { query }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>
@@ -457,6 +458,15 @@ export interface ImageResult {
   thumbnail: string;
   image: string;
   source_url: string;
+}
+
+export interface BookResult {
+  identifier: string;
+  title: string;
+  creator: string | null;
+  year: number | null;
+  thumbnail: string;
+  details_url: string;
 }
 
 export interface Drive {

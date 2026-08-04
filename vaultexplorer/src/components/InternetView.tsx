@@ -1,33 +1,40 @@
 import { useEffect, useState } from "react";
 import { openPath as osOpen } from "@tauri-apps/plugin-opener";
-import { save as pickSaveLocation } from "@tauri-apps/plugin-dialog";
-import { api, YoutubeResult, ImageResult, YoutubeSearchFilters } from "../api";
+import { api, YoutubeResult, ImageResult, BookResult, YoutubeSearchFilters } from "../api";
 import { ChevronLeft, SearchGlyph, SaveGlyph } from "../icons";
 import folderVideosIcon from "../assets/foldericons/folder-videos.svg";
 import folderImagesIcon from "../assets/foldericons/folder-images.svg";
+import folderBookIcon from "../assets/foldericons/folder-book.svg";
 
-type Mode = "root" | "videos" | "images";
+type Mode = "root" | "videos" | "images" | "books";
 
 const DEFAULT_FILTERS: YoutubeSearchFilters = { sortByDate: false, uploadDate: null, duration: null };
 
 // A saved search's whole state, round-tripped through a `.ytsearch`/
-// `.imgsearch` file's JSON content (see `activate()` in App.tsx for the
-// open side, and `saveSearch` below for the write side) -- deliberately
-// small/flat so the file stays human-readable if someone opens it in a
-// text editor.
+// `.imgsearch`/`.booksearch` file's JSON content (see `activate()` in
+// App.tsx for the open side, and `saveSearch` below for the write side) --
+// deliberately small/flat so the file stays human-readable if someone
+// opens it in a text editor.
 export type SavedInternetSearch =
   | { kind: "videos"; query: string; filters: YoutubeSearchFilters }
-  | { kind: "images"; query: string };
+  | { kind: "images"; query: string }
+  | { kind: "books"; query: string };
 
 // Desktop-only experiment: a sidebar entry that behaves like a folder but
-// isn't backed by any real filesystem path -- "Videos" and "Images" inside
-// it are YouTube/web-image search results wearing file icons, not
-// anything downloaded or stored anywhere. A search can be saved to a real
-// file though (see SaveGlyph button below) -- that file IS a normal
-// filesystem citizen, movable/copyable anywhere, and reopening it comes
-// back here via `initial` instead of this component inventing its own
-// separate storage.
-export function InternetView({ initial }: { initial: SavedInternetSearch | null }) {
+// isn't backed by any real filesystem path -- "Videos"/"Images"/"Books"
+// inside it are YouTube/web-image/Internet-Archive search results wearing
+// file icons, not anything downloaded or stored anywhere. A search can be
+// saved to a real file though (see SaveGlyph button below) -- that file IS
+// a normal filesystem citizen, movable/copyable anywhere, and reopening it
+// comes back here via `initial` instead of this component inventing its
+// own separate storage.
+export function InternetView({
+  initial,
+  onSave,
+}: {
+  initial: SavedInternetSearch | null;
+  onSave: (filename: string, content: string) => Promise<string>;
+}) {
   const [mode, setMode] = useState<Mode>("root");
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<YoutubeSearchFilters>(DEFAULT_FILTERS);
@@ -35,6 +42,7 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
   const [error, setError] = useState("");
   const [videos, setVideos] = useState<YoutubeResult[]>([]);
   const [images, setImages] = useState<ImageResult[]>([]);
+  const [books, setBooks] = useState<BookResult[]>([]);
   const [searched, setSearched] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
 
@@ -46,6 +54,7 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
     try {
       if (m === "videos") setVideos(await api.searchYoutube(q, f));
       else if (m === "images") setImages(await api.searchImages(q));
+      else if (m === "books") setBooks(await api.searchBooks(q));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -81,18 +90,16 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
   async function saveSearch() {
     if (!query.trim()) return;
     const saved: SavedInternetSearch =
-      mode === "videos" ? { kind: "videos", query, filters } : { kind: "images", query };
-    const ext = mode === "videos" ? "ytsearch" : "imgsearch";
+      mode === "videos"
+        ? { kind: "videos", query, filters }
+        : mode === "images"
+        ? { kind: "images", query }
+        : { kind: "books", query };
+    const ext = mode === "videos" ? "ytsearch" : mode === "images" ? "imgsearch" : "booksearch";
     const safeName = query.trim().replace(/[/\\:*?"<>|]/g, "_").slice(0, 60);
     try {
-      const dest = await pickSaveLocation({
-        title: "Save search",
-        defaultPath: `${safeName}.${ext}`,
-        filters: [{ name: mode === "videos" ? "YouTube search" : "Image search", extensions: [ext] }],
-      });
-      if (!dest) return;
-      await api.fsWriteText(dest, JSON.stringify(saved));
-      setSaveMsg(`Saved -- double-click it anytime to rerun this search.`);
+      const path = await onSave(`${safeName}.${ext}`, JSON.stringify(saved));
+      setSaveMsg(`Saved as "${path.split("/").pop()}" -- double-click it anytime to rerun this search.`);
     } catch (e) {
       setSaveMsg(String(e));
     }
@@ -114,15 +121,24 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
             </span>
             <span className="entry-name">Images</span>
           </div>
+          <div className="entry icon" onDoubleClick={() => enterFolder("books")}>
+            <span className="entry-icon">
+              <img className="fileicon-img" src={folderBookIcon} alt="" draggable={false} />
+            </span>
+            <span className="entry-name">Books</span>
+          </div>
         </div>
         <p className="hint" style={{ padding: "0 14px" }}>
-          Experimental: "files" in here are YouTube/web search results, fetched live -- nothing is
-          downloaded or stored until you open one. Save a search (once you've run one) to drop a real
-          file anywhere in your filesystem that reruns it on double-click.
+          Experimental: "files" in here are YouTube/web-image/Internet-Archive search results, fetched
+          live -- nothing is downloaded or stored until you open one. Save a search (once you've run
+          one) to drop a real file anywhere in your filesystem that reruns it on double-click.
         </p>
       </div>
     );
   }
+
+  const placeholder =
+    mode === "videos" ? "Search YouTube…" : mode === "images" ? "Search images…" : "Search books…";
 
   return (
     <div className="internet-view">
@@ -134,7 +150,7 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
           <SearchGlyph />
           <input
             autoFocus
-            placeholder={mode === "videos" ? "Search YouTube…" : "Search images…"}
+            placeholder={placeholder}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && runSearch(query, filters, mode)}
@@ -156,6 +172,7 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
       {mode === "videos" && (
         <div className="internet-filters">
           <select
+            className="settings-select"
             value={filters.uploadDate ?? ""}
             onChange={(e) =>
               setFilters((f) => ({ ...f, uploadDate: e.target.value ? (Number(e.target.value) as 1 | 2 | 3 | 4 | 5) : null }))
@@ -168,6 +185,7 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
             <option value="5">This year</option>
           </select>
           <select
+            className="settings-select"
             value={filters.duration ?? ""}
             onChange={(e) =>
               setFilters((f) => ({ ...f, duration: e.target.value ? (Number(e.target.value) as 1 | 2 | 3) : null }))
@@ -199,6 +217,9 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
         <div className="column-empty">No results.</div>
       )}
       {!loading && searched && mode === "images" && images.length === 0 && !error && (
+        <div className="column-empty">No results.</div>
+      )}
+      {!loading && searched && mode === "books" && books.length === 0 && !error && (
         <div className="column-empty">No results.</div>
       )}
       {mode === "videos" && videos.length > 0 && (
@@ -233,6 +254,28 @@ export function InternetView({ initial }: { initial: SavedInternetSearch | null 
             >
               <img className="internet-thumb" src={img.thumbnail} draggable={false} />
               <span className="entry-name">{img.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {mode === "books" && books.length > 0 && (
+        <div className="entries icon internet-results">
+          {books.map((b) => (
+            <div
+              key={b.identifier}
+              className="entry icon"
+              title={b.title}
+              onDoubleClick={() => osOpen(b.details_url).catch(() => {})}
+            >
+              <img className="internet-thumb" src={b.thumbnail} draggable={false} />
+              <span className="entry-name">
+                {b.title}
+                {(b.creator || b.year) && (
+                  <span className="internet-published">
+                    {[b.creator, b.year].filter(Boolean).join(" -- ")}
+                  </span>
+                )}
+              </span>
             </div>
           ))}
         </div>

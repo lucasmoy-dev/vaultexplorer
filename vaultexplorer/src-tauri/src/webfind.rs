@@ -1,21 +1,25 @@
 //! Backs the desktop-only "Internet" sidebar experiment (see App.tsx's
-//! `InternetView`): a fake "Videos" folder full of YouTube search results
-//! and a fake "Images" folder full of web image search results, browsed
-//! like any other folder even though nothing here is a real file.
+//! `InternetView`): fake "Videos"/"Images"/"Books" folders full of live
+//! search results, browsed like any other folder even though nothing here
+//! is a real file.
 //!
 //! Neither YouTube nor DuckDuckGo offer this without either an API key
 //! (YouTube Data API -- needs a Google Cloud project and billing, not
 //! something to provision on someone else's behalf mid-experiment) or a
-//! paid plan (Bing/Google Image Search APIs). Both commands below instead
-//! read the same public search pages a browser would, unauthenticated --
-//! `search_youtube` picks `videoId`/title pairs out of the page's own
-//! embedded JSON (the same technique most no-API-key YouTube search tools
-//! use), and `search_images` replicates DuckDuckGo's own image tab request
-//! (fetch the page for a `vqd` token, then call its `i.js` JSON endpoint
-//! with it). Both are unofficial, undocumented, and can break the moment
-//! either site changes its markup/endpoint -- acceptable for an
-//! experiment explicitly framed as "might not work out", not something
-//! to build a real feature's only code path on.
+//! paid plan (Bing/Google Image Search APIs). `search_youtube` and
+//! `search_images` instead read the same public search pages a browser
+//! would, unauthenticated -- `search_youtube` picks `videoId`/title pairs
+//! out of the page's own embedded JSON (the same technique most no-API-key
+//! YouTube search tools use), and `search_images` replicates DuckDuckGo's
+//! own image tab request (fetch the page for a `vqd` token, then call its
+//! `i.js` JSON endpoint with it). Both are unofficial, undocumented, and
+//! can break the moment either site changes its markup/endpoint --
+//! acceptable for an experiment explicitly framed as "might not work out",
+//! not something to build a real feature's only code path on.
+//!
+//! `search_books` is the one exception: the Internet Archive's
+//! `advancedsearch.php` is a real, documented, keyless JSON API (not
+//! scraped HTML), so it's meaningfully more stable than the other two.
 
 use crate::errmap::ToStringErr;
 use serde::Serialize;
@@ -35,6 +39,16 @@ pub struct ImageResult {
     pub thumbnail: String,
     pub image: String,
     pub source_url: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct BookResult {
+    pub identifier: String,
+    pub title: String,
+    pub creator: Option<String>,
+    pub year: Option<i64>,
+    pub thumbnail: String,
+    pub details_url: String,
 }
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
@@ -210,5 +224,48 @@ pub(crate) fn search_images(query: String) -> Result<Vec<ImageResult>, String> {
             })
         })
         .take(40)
+        .collect())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) fn search_books(query: String) -> Result<Vec<BookResult>, String> {
+    let mut url = reqwest::Url::parse("https://archive.org/advancedsearch.php").str_err()?;
+    url.query_pairs_mut()
+        .append_pair("q", &format!("{query} AND mediatype:texts"))
+        .append_pair("fl[]", "identifier")
+        .append_pair("fl[]", "title")
+        .append_pair("fl[]", "creator")
+        .append_pair("fl[]", "year")
+        .append_pair("rows", "30")
+        .append_pair("page", "1")
+        .append_pair("output", "json");
+    let json: serde_json::Value = http_client()?.get(url).send().str_err()?.json().str_err()?;
+    let docs = json
+        .get("response")
+        .and_then(|r| r.get("docs"))
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(docs
+        .into_iter()
+        .filter_map(|d| {
+            let identifier = d.get("identifier")?.as_str()?.to_string();
+            // `creator` can be a single string or an array of strings
+            // (multi-author items) -- both seen live against the real API.
+            let creator = d.get("creator").and_then(|c| {
+                c.as_str().map(str::to_string).or_else(|| {
+                    c.as_array()?.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ").into()
+                })
+            });
+            Some(BookResult {
+                title: d.get("title").and_then(|t| t.as_str()).unwrap_or(&identifier).to_string(),
+                creator,
+                year: d.get("year").and_then(|y| y.as_i64().or_else(|| y.as_str()?.parse().ok())),
+                thumbnail: format!("https://archive.org/services/img/{identifier}"),
+                details_url: format!("https://archive.org/details/{identifier}"),
+                identifier,
+            })
+        })
         .collect())
 }

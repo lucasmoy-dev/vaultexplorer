@@ -1630,6 +1630,8 @@ pub fn run() {
             #[cfg(desktop)]
             webfind::search_images,
             #[cfg(desktop)]
+            webfind::search_books,
+            #[cfg(desktop)]
             terminal::open_terminal,
             #[cfg(desktop)]
             terminal::run_shell_script,

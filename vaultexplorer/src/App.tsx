@@ -58,6 +58,7 @@ import { kindLabel, editorExtOf } from "./entryHelpers";
 import { EntryTile } from "./components/EntryTile";
 import { MyComputerView } from "./components/MyComputerView";
 import { InternetView, SavedInternetSearch } from "./components/InternetView";
+import { SavedSearchDigest } from "./components/SavedSearchDigest";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
 import { NotesGrid } from "./components/NotesGrid";
@@ -952,7 +953,23 @@ function Explorer({ home }: { home: string }) {
       return next;
     });
   }
-  const [error, setError] = useState("");
+  const [error, setErrorRaw] = useState("");
+  // Every one of the ~60 call sites across this file just calls
+  // `setError(String(e))` -- wrapping the setter here (instead of editing
+  // each one) is what lets a raw OS error like "Permission denied (os
+  // error 13)" get a plain-language explanation attached without having to
+  // find every place it could surface. Android-specific because on
+  // desktop the same OS message usually means a real Unix permission
+  // (sudo-only file, etc.), not this sandboxing wall.
+  function setError(msg: string) {
+    if (mobile && /permission denied/i.test(msg)) {
+      setErrorRaw(
+        `${msg} -- Android blocks apps from most folders outside your own phone storage, even with "All files access" granted. This isn't something the app can unlock.`
+      );
+    } else {
+      setErrorRaw(msg);
+    }
+  }
   const [infoMsg, setInfoMsg] = useState("");
   useEffect(() => {
     if (!infoMsg) return;
@@ -1070,6 +1087,32 @@ function Explorer({ home }: { home: string }) {
     setSearchResults(null);
     setInternetInitial(saved);
   }
+  // Writes a saved search straight into curDir (wherever the user was
+  // browsing before opening Internet) rather than handing off to the OS's
+  // native save dialog -- the whole point of a saved search being a real
+  // file is staying inside the app's own filesystem view; a native picker
+  // just for this one write would undercut that. Organizing it into a
+  // different folder afterward is the same cut/paste or drag the user
+  // already has for any other file.
+  async function saveInternetSearch(filename: string, content: string): Promise<string> {
+    const name = uniqueName(filename);
+    const path = joinPath(curDir, name);
+    await api.fsWriteText(path, content);
+    refresh();
+    return path;
+  }
+  // A folder holding nothing but .ytsearch (or nothing but .imgsearch, or
+  // nothing but .booksearch) files gets an auto-preview digest instead of
+  // the normal file view -- desktop-only, same as the rest of Internet
+  // (search_youtube/search_images/search_books aren't registered on
+  // Android).
+  function savedSearchExtOf(list: Entry[]): "ytsearch" | "imgsearch" | "booksearch" | null {
+    if (list.length === 0 || list.some((e) => e.is_dir)) return null;
+    if (list.every((e) => e.name.toLowerCase().endsWith(".ytsearch"))) return "ytsearch";
+    if (list.every((e) => e.name.toLowerCase().endsWith(".imgsearch"))) return "imgsearch";
+    if (list.every((e) => e.name.toLowerCase().endsWith(".booksearch"))) return "booksearch";
+    return null;
+  }
 
   // Some Linux window managers don't raise/focus an unfocused, undecorated
   // window on click (the WM has no titlebar to hand click-to-focus off to),
@@ -1159,6 +1202,16 @@ function Explorer({ home }: { home: string }) {
   const [editingPath, setEditingPath] = useState(false);
   const [pathInput, setPathInput] = useState("");
   const [pathCopied, setPathCopied] = useState(false);
+  const [errorCopied, setErrorCopied] = useState(false);
+  async function copyError() {
+    try {
+      await navigator.clipboard.writeText(error);
+      setErrorCopied(true);
+      setTimeout(() => setErrorCopied(false), 1200);
+    } catch {
+      /* ignore -- the error bar is already visible with the same text */
+    }
+  }
 
   const [history, setHistory] = useState<Loc[]>([{ kind: "fs", path: startPath(home) }]);
   const [histIdx, setHistIdx] = useState(0);
@@ -1225,6 +1278,12 @@ function Explorer({ home }: { home: string }) {
 
   const inVault = loc.kind === "vault";
   const curDir = inVault ? loc.rel : loc.path; // dir key in the active space
+  const [digestDismissed, setDigestDismissed] = useState(false);
+  useEffect(() => {
+    setDigestDismissed(false);
+  }, [curDir]);
+  const savedSearchExt = mobile || loc.kind !== "fs" ? null : savedSearchExtOf(entries);
+  const showDigest = !!savedSearchExt && !digestDismissed;
 
   // Per-entry "truly synced" state for the folder on screen: "verified"
   // means the last `rclone check` matched this file's checksum against the
@@ -1940,11 +1999,32 @@ function Explorer({ home }: { home: string }) {
     commitLoc(target, push);
   }
 
+  // My Computer/Internet overlay the content area without ever pushing a
+  // history entry (opening a saved search file doesn't change `loc`
+  // either) -- so Back/Forward's normal history-index math doesn't apply
+  // to them at all. Dismissing the overlay is enough: `loc`/`curDir`
+  // never moved, so whatever's underneath is still exactly the folder the
+  // user was in. Without this, Back either did nothing (disabled at
+  // histIdx 0, which is exactly when a saved search opened from the
+  // start-page folder) or jumped past the current folder to an earlier
+  // one in history.
   function goBack() {
+    if (showMyComputer || showInternet) {
+      setShowMyComputer(false);
+      setShowInternet(false);
+      setInternetInitial(null);
+      return;
+    }
     if (histIdx === 0) return;
     go(history[histIdx - 1], false).then(() => setHistIdx(histIdx - 1));
   }
   function goForward() {
+    if (showMyComputer || showInternet) {
+      setShowMyComputer(false);
+      setShowInternet(false);
+      setInternetInitial(null);
+      return;
+    }
     if (histIdx >= history.length - 1) return;
     go(history[histIdx + 1], false).then(() => setHistIdx(histIdx + 1));
   }
@@ -1962,15 +2042,16 @@ function Explorer({ home }: { home: string }) {
     if (loc.path === "/") return;
     go({ kind: "fs", path: parentPath(loc.path) });
   }
-  // On mobile the app only ever has (or can get) access under
-  // PHONE_STORAGE_PATH -- everything above that (/storage/emulated,
-  // /storage, /data, /...) is OS-sandboxed away from this app regardless
-  // of the "All files access" grant, so letting "up" go further just
-  // walks into a raw "Permission denied (os error 13)" with nothing to
-  // see. Treat phone storage as mobile's root, same as it's already
-  // labeled ("Phone Storage") and prefixed-checked elsewhere.
-  const canGoUp =
-    loc.kind === "vault" || (loc.path !== "/" && !(mobile && loc.path === PHONE_STORAGE_PATH));
+  // Above PHONE_STORAGE_PATH is mostly OS-sandboxed away from the app on
+  // Android even with "All files access" granted (that permission only
+  // covers shared/media storage, not the general filesystem) -- but
+  // /storage and /storage/emulated themselves usually still list fine, and
+  // this is meant to be a real file explorer, not one artificially capped
+  // at a folder boundary. So "up" is allowed all the way to "/" same as
+  // desktop; a folder that's genuinely blocked just surfaces a clear,
+  // copyable error instead (see `refresh()`'s catch) rather than silently
+  // refusing to try.
+  const canGoUp = loc.kind === "vault" || loc.path !== "/";
   // Android's physical back button and the gesture-nav back-swipe are the
   // same OS event, and Tauri's own `app` plugin already exposes it as
   // `onBackButtonPress` for exactly this -- subscribing to it is also what
@@ -2489,10 +2570,12 @@ function Explorer({ home }: { home: string }) {
     // the feature it reopens. Malformed/hand-edited JSON just surfaces as
     // a normal error rather than silently falling through to a text-editor
     // open, which would show raw JSON that looks broken for no reason.
-    if (!mobile && /\.(ytsearch|imgsearch)$/i.test(entry.name)) {
+    if (!mobile && /\.(ytsearch|imgsearch|booksearch)$/i.test(entry.name)) {
       try {
         const saved = JSON.parse(await api.fsReadText(full)) as SavedInternetSearch;
-        if (saved.kind !== "videos" && saved.kind !== "images") throw new Error("not a saved search");
+        if (saved.kind !== "videos" && saved.kind !== "images" && saved.kind !== "books") {
+          throw new Error("not a saved search");
+        }
         openInternetSearchFile(saved);
       } catch (e) {
         setError(String(e));
@@ -4244,26 +4327,6 @@ function Explorer({ home }: { home: string }) {
   function crumbsFor(l: Loc): Crumb[] {
     const out: Crumb[] = [];
     if (l.kind === "fs") {
-      // On mobile, everything above PHONE_STORAGE_PATH is OS-sandboxed
-      // away from the app -- rooting the chain there instead of at real
-      // "/" means neither the collapsed "…" crumb nor any visible one
-      // can land somewhere that 403s (see `canGoUp` above for the same
-      // boundary applied to the Up button).
-      if (mobile && l.path.startsWith(PHONE_STORAGE_PATH)) {
-        out.push({
-          key: PHONE_STORAGE_PATH,
-          label: "Phone Storage",
-          loc: { kind: "fs", path: PHONE_STORAGE_PATH },
-          dropDir: PHONE_STORAGE_PATH,
-        });
-        const rest = l.path.slice(PHONE_STORAGE_PATH.length).split("/").filter(Boolean);
-        let acc = PHONE_STORAGE_PATH;
-        for (const p of rest) {
-          acc = acc + "/" + p;
-          out.push({ key: acc, label: p, loc: { kind: "fs", path: acc }, dropDir: acc });
-        }
-        return out;
-      }
       const parts = l.path.split("/").filter(Boolean);
       out.push({ key: "/", label: "System", loc: { kind: "fs", path: "/" }, dropDir: "/" });
       let acc = "";
@@ -5059,13 +5122,18 @@ function Explorer({ home }: { home: string }) {
           <>
           <div className="nav-buttons">
             {/* Menu moved to the bottom tab bar on mobile (see .mobile-tabbar). */}
-            <button className="tool-btn" onClick={goBack} disabled={histIdx === 0} aria-label="Back">
+            <button
+              className="tool-btn"
+              onClick={goBack}
+              disabled={!showMyComputer && !showInternet && histIdx === 0}
+              aria-label="Back"
+            >
               <ChevronLeft />
             </button>
             <button
               className="tool-btn"
               onClick={goForward}
-              disabled={histIdx >= history.length - 1}
+              disabled={!showMyComputer && !showInternet && histIdx >= history.length - 1}
               aria-label="Forward"
             >
               <ChevronRight />
@@ -5184,19 +5252,16 @@ function Explorer({ home }: { home: string }) {
           )}
         </div>
         {error && (
-          <div
-            className="error-bar"
-            title="Click to copy"
-            onClick={() => {
-              navigator.clipboard.writeText(error).catch(() => {});
-            }}
-          >
-            {error}{" "}
+          <div className="error-bar" title="Tap to copy" onClick={copyError}>
+            <span className="error-text">{error}</span>
+            <span className="error-copy" onClick={(e) => { e.stopPropagation(); copyError(); }}>
+              {errorCopied ? <CheckGlyph size={13} /> : <CopyGlyph size={13} />}
+            </span>
             <span
               className="error-x"
               onClick={(e) => {
                 e.stopPropagation();
-                setError("");
+                setErrorRaw("");
               }}
             >
               ✕
@@ -5244,7 +5309,7 @@ function Explorer({ home }: { home: string }) {
               onMenu={driveMenu}
             />
           ) : showInternet ? (
-            <InternetView initial={internetInitial} />
+            <InternetView initial={internetInitial} onSave={saveInternetSearch} />
           ) : searchResults !== null ? (
             <SearchResults
               query={searchQuery}
@@ -5256,6 +5321,14 @@ function Explorer({ home }: { home: string }) {
                 else go({ kind: "fs", path: parentPath(p) });
               }}
               onMenu={(e, p) => pathMenu(e, p, () => runSearch(searchQuery))}
+            />
+          ) : showDigest ? (
+            <SavedSearchDigest
+              dir={curDir}
+              entries={entries}
+              ext={savedSearchExt as "ytsearch" | "imgsearch" | "booksearch"}
+              onDismiss={() => setDigestDismissed(true)}
+              onOpenFile={(entry) => activate(curDir, entry)}
             />
           ) : view === "column" ? (
             <ColumnView

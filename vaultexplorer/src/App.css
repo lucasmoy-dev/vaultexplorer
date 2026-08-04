@@ -544,6 +544,10 @@ button:disabled {
 .btn-primary.danger {
   background: linear-gradient(180deg, #ff6961, #ff3b30);
 }
+.btn-primary.small {
+  padding: 3px 10px;
+  font-size: 12px;
+}
 .btn-plain {
   font-size: 13px;
   color: var(--text);
@@ -959,11 +963,31 @@ button:disabled {
   font-size: 12.5px;
   padding: 7px 14px;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   border-bottom: 0.5px solid rgba(215, 0, 21, 0.2);
+  cursor: pointer;
+}
+.error-text {
+  flex: 1;
+  word-break: break-word;
+}
+/* Copy affordance is a real icon, not just a hover title -- a title
+   tooltip never shows on a touchscreen, so mobile had no visible way to
+   know the error bar was tappable to copy at all. */
+.error-copy {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin: 0 10px;
+  opacity: 0.7;
+}
+.error-copy:hover {
+  opacity: 1;
 }
 .error-x {
   opacity: 0.6;
+  flex-shrink: 0;
 }
 .info-bar {
   background: #eafff0;
@@ -1103,6 +1127,23 @@ button:disabled {
 .fileicon-lock svg {
   width: 62%;
   height: 62%;
+}
+.fileicon-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 45%;
+  height: 45%;
+  max-width: 18px;
+  max-height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+  font-size: 10px;
+  line-height: 1;
 }
 .entry-tag-dot {
   position: absolute;
@@ -3930,16 +3971,12 @@ input[type="range"]::-webkit-slider-thumb {
   border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
   flex-wrap: wrap;
 }
-.internet-filters select {
-  font: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--win-bg);
-  border: 1px solid var(--toolbar-border, rgba(127, 127, 127, 0.3));
-  border-radius: 6px;
-  padding: 4px 6px;
-  outline: none;
-  cursor: pointer;
+/* Same look as .settings-select (the app's one established select style)
+   but sized for an inline filter row instead of a full-width settings
+   field. */
+.internet-filters .settings-select {
+  width: auto;
+  margin-bottom: 0;
 }
 .internet-sort-toggle {
   display: inline-flex;
@@ -3965,6 +4002,34 @@ input[type="range"]::-webkit-slider-thumb {
   font-size: 10.5px;
   color: var(--text-2);
   font-weight: 400;
+}
+
+/* ============================================================
+   Saved-search digest (auto-shown for a folder of only .ytsearch/
+   .imgsearch files -- see SavedSearchDigest.tsx)
+   ============================================================ */
+.digest-view {
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+.digest-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+}
+.digest-section {
+  padding: 10px 14px 4px;
+}
+.digest-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+  cursor: default;
 }
 
 /* ============================================================

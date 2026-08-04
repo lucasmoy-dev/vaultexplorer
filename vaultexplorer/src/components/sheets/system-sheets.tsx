@@ -404,10 +404,22 @@ export function SettingsScreen({
     setContactsBusy(true);
     setContactsMsg("");
     try {
-      const granted = await api.androidContactsPermissionGranted();
-      if (!granted) {
+      const contactsGranted = await api.androidContactsPermissionGranted();
+      if (!contactsGranted) {
         await api.androidRequestContactsPermission();
         setContactsMsg("Grant the permission in the dialog, then try again.");
+        return;
+      }
+      // The export/import folders default to a real Phone Storage path
+      // (see exportDir/importDir below) -- writing/reading .vcf files
+      // there needs "All files access" too, same as any other real-fs
+      // folder (see `go()` in App.tsx). Missing this check meant export
+      // failed with a raw "Permission denied (os error 13)" from the
+      // write itself instead of ever prompting for the permission.
+      const storageGranted = await api.androidStorageAccessGranted();
+      if (!storageGranted) {
+        await api.androidRequestStorageAccess();
+        setContactsMsg('Also grant "All files access" (just opened in Settings) so contacts can be written to your phone storage, then try again.');
         return;
       }
       await action();
@@ -589,10 +601,10 @@ export function SettingsScreen({
               </label>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-              <button className="settings-select" onClick={() => onExportConfig(includeCloudCreds)}>
+              <button className="btn-plain small" onClick={() => onExportConfig(includeCloudCreds)}>
                 Copy config to clipboard
               </button>
-              <button className="settings-select" onClick={onImportConfig}>
+              <button className="btn-plain small" onClick={onImportConfig}>
                 Paste config from clipboard
               </button>
             </div>
@@ -608,14 +620,14 @@ export function SettingsScreen({
                 <label className="field-label">Export folder</label>
                 <input value={exportDir} onChange={(e) => setExportDir(e.target.value)} />
                 <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
-                  <button className="settings-select" disabled={contactsBusy} onClick={exportContacts}>
+                  <button className="btn-plain small" disabled={contactsBusy} onClick={exportContacts}>
                     Export contacts
                   </button>
                 </div>
                 <label className="field-label">Import folder</label>
                 <input value={importDir} onChange={(e) => setImportDir(e.target.value)} />
                 <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  <button className="settings-select" disabled={contactsBusy} onClick={importContacts}>
+                  <button className="btn-plain small" disabled={contactsBusy} onClick={importContacts}>
                     Import contacts from folder
                   </button>
                 </div>
@@ -646,12 +658,12 @@ export function SettingsScreen({
                 : "Opens the release page to download."}
             </p>
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-              <button className="settings-select" disabled={updateBusy} onClick={checkForUpdate}>
+              <button className="btn-plain small" disabled={updateBusy} onClick={checkForUpdate}>
                 Check for updates
               </button>
               {updateCheck && isNewerVersion(updateCheck.latestVersion, appVersion) && (
                 <button
-                  className="settings-select"
+                  className="btn-primary small"
                   disabled={updateBusy}
                   onClick={() =>
                     mobile
