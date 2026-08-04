@@ -1898,32 +1898,65 @@ function Explorer({ home }: { home: string }) {
   // double-back-to-exit pattern, via the plugin's own `exit` command), so a
   // single stray back press at the root never loses the app by accident.
   const lastBackAt = useRef(0);
+  // `onBackButtonPress`'s callback is a closure captured once, whenever
+  // this effect (re-)runs -- and `canGoUp` is `true` almost everywhere on
+  // Android (its root is a real sandboxed path, never literally "/", so
+  // it doesn't flip false↔true across an ordinary browse the way it does
+  // on desktop). That meant this effect's dependency array rarely changed
+  // and the listener rarely resubscribed, so a back press kept calling a
+  // *stale* `goUp` bound to wherever `loc` was the last time it *did*
+  // resubscribe (often app launch) -- confirmed live: navigating into a
+  // folder then pressing back landed two levels above the real current
+  // folder, at whatever was one-up from the stale one, not one-up from
+  // where the user actually was. A ref keeps the callback reading
+  // whatever is current at press-time without needing to resubscribe for
+  // every value it touches -- so this now subscribes exactly once, when
+  // `mobile` first turns true, and never again for the component's life.
+  const backStateRef = useRef({
+    mobileEditorTarget,
+    menu,
+    settingsOpen,
+    sidebarOpen,
+    searchExpanded,
+    canGoUp,
+    goUp,
+  });
+  backStateRef.current = {
+    mobileEditorTarget,
+    menu,
+    settingsOpen,
+    sidebarOpen,
+    searchExpanded,
+    canGoUp,
+    goUp,
+  };
   useEffect(() => {
     if (!mobile) return;
     let listener: { unregister: () => Promise<void> } | undefined;
     onBackButtonPress(() => {
-      if (mobileEditorTarget) {
+      const s = backStateRef.current;
+      if (s.mobileEditorTarget) {
         setMobileEditorTarget(null);
         return;
       }
-      if (menu) {
+      if (s.menu) {
         setMenu(null);
         return;
       }
-      if (settingsOpen) {
+      if (s.settingsOpen) {
         setSettingsOpen(false);
         return;
       }
-      if (sidebarOpen) {
+      if (s.sidebarOpen) {
         setSidebarOpen(false);
         return;
       }
-      if (searchExpanded) {
+      if (s.searchExpanded) {
         setSearchExpanded(false);
         return;
       }
-      if (canGoUp) {
-        goUp();
+      if (s.canGoUp) {
+        s.goUp();
         return;
       }
       const now = Date.now();
@@ -1941,7 +1974,7 @@ function Explorer({ home }: { home: string }) {
     return () => {
       listener?.unregister();
     };
-  }, [mobile, mobileEditorTarget, menu, settingsOpen, sidebarOpen, searchExpanded, canGoUp]);
+  }, [mobile]);
   // Best-effort: flush every still-mounted archive back to its file when
   // the window closes, so quitting mid-browse doesn't usually strand
   // edits in a scratch directory that's about to be orphaned. Deliberately

@@ -87,6 +87,7 @@ export const api = {
   androidRequestContactsPermission: () => invoke<void>("android_request_contacts_permission"),
   androidExportContacts: (destDir: string) => invoke<number>("android_export_contacts", { destDir }),
   androidImportContacts: (vcfPaths: string[]) => invoke<void>("android_import_contacts", { vcfPaths }),
+  androidDownloadAndInstallApk: (url: string) => invoke<void>("android_download_and_install_apk", { url }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>

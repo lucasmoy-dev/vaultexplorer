@@ -21,6 +21,11 @@
          (see android_import_contacts), not done directly here. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <!-- In-app update check (Settings): installing a downloaded APK from
+         outside the Play Store needs this on API 26+, requested the same
+         way the OS would ask anyway if it were missing (see
+         android_download_and_install_apk). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

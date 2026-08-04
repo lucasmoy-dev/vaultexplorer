@@ -1646,6 +1646,8 @@ pub fn run() {
             android::android_export_contacts,
             #[cfg(target_os = "android")]
             android::android_import_contacts,
+            #[cfg(target_os = "android")]
+            android::android_download_and_install_apk,
             fs_list,
             fs_is_vault,
             fs_set_readonly,

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { openPath as osOpen } from "@tauri-apps/plugin-opener";
 import { api, formatSize, joinPath } from "../../api";
 import { PHONE_STORAGE_PATH } from "../../constants";
 import { ComputerGlyph, ChevronLeft } from "../../icons";
@@ -20,6 +22,34 @@ function timeoutOptions(current: SensitiveTimeout): { value: SensitiveTimeout; l
   return known
     ? SENSITIVE_TIMEOUT_CHOICES
     : [...SENSITIVE_TIMEOUT_CHOICES, { value: current, label: sensitiveTimeoutLabel(current) }];
+}
+
+const RELEASES_API = "https://api.github.com/repos/lucasmoy-dev/vaultexplorer/releases/latest";
+const RELEASES_PAGE = "https://github.com/lucasmoy-dev/vaultexplorer/releases/latest";
+
+function isNewerVersion(latest: string, current: string): boolean {
+  const a = latest.replace(/^v/, "").split(".").map(Number);
+  const b = current.replace(/^v/, "").split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) return diff > 0;
+  }
+  return false;
+}
+
+type ReleaseInfo = { latestVersion: string; apkUrl?: string };
+type UpdateCheck = ReleaseInfo | null;
+
+// GitHub's own release API, not a custom update-manifest server -- this is
+// a small side project, not something that needs its own infrastructure
+// just to answer "is there a newer version". No auth needed for a public
+// repo's release info.
+async function fetchLatestRelease(): Promise<ReleaseInfo> {
+  const res = await fetch(RELEASES_API);
+  if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
+  const data = await res.json();
+  const asset = (data.assets ?? []).find((a: { name: string }) => a.name.toLowerCase().endsWith(".apk"));
+  return { latestVersion: String(data.tag_name ?? "").replace(/^v/, ""), apkUrl: asset?.browser_download_url };
 }
 
 export function ManageTemplatesSheet({
@@ -333,6 +363,43 @@ export function SettingsScreen({
   const [importDir, setImportDir] = useState(defaultContactsDir);
   const [contactsBusy, setContactsBusy] = useState(false);
   const [contactsMsg, setContactsMsg] = useState("");
+  const [appVersion, setAppVersion] = useState("");
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState("");
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => {});
+  }, []);
+  async function checkForUpdate() {
+    setUpdateBusy(true);
+    setUpdateMsg("");
+    try {
+      const result = await fetchLatestRelease();
+      setUpdateCheck(result);
+      if (!isNewerVersion(result.latestVersion, appVersion)) {
+        setUpdateMsg(`You're up to date (v${appVersion}).`);
+      }
+    } catch (e) {
+      setUpdateMsg(String(e));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+  async function installUpdate() {
+    if (!updateCheck?.apkUrl) return;
+    setUpdateBusy(true);
+    setUpdateMsg("Downloading update…");
+    try {
+      await api.androidDownloadAndInstallApk(updateCheck.apkUrl);
+      setUpdateMsg("Confirm the install prompt to finish.");
+    } catch (e) {
+      setUpdateMsg(String(e));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
   async function withContactsPermission(action: () => Promise<void>) {
     setContactsBusy(true);
     setContactsMsg("");
@@ -568,6 +635,38 @@ export function SettingsScreen({
                   syncing directly.
                 </p>
               </>
+            )}
+            <label className="field-label" style={{ marginTop: 14 }}>
+              Updates
+            </label>
+            <p className="hint" style={{ marginTop: -2 }}>
+              {appVersion ? `Running v${appVersion}.` : "Checking current version…"}{" "}
+              {mobile
+                ? "Downloads and hands the APK to the system installer -- you'll still confirm the install yourself."
+                : "Opens the release page to download."}
+            </p>
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              <button className="settings-select" disabled={updateBusy} onClick={checkForUpdate}>
+                Check for updates
+              </button>
+              {updateCheck && isNewerVersion(updateCheck.latestVersion, appVersion) && (
+                <button
+                  className="settings-select"
+                  disabled={updateBusy}
+                  onClick={() =>
+                    mobile
+                      ? installUpdate()
+                      : osOpen(RELEASES_PAGE).catch((e) => setUpdateMsg(String(e)))
+                  }
+                >
+                  Update to v{updateCheck.latestVersion}
+                </button>
+              )}
+            </div>
+            {updateMsg && (
+              <p className="hint" style={{ marginTop: 6 }}>
+                {updateMsg}
+              </p>
             )}
           </>
         )}

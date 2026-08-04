@@ -586,3 +586,86 @@ pub(crate) fn android_import_contacts(app: tauri::AppHandle, vcf_paths: Vec<Stri
         })
         .str_err()
 }
+
+/// Downloads an APK (a GitHub release asset URL, see `checkForUpdate` on
+/// the JS side) into this app's own cache dir, then hands it to the
+/// system's package installer via `ACTION_VIEW` -- same FileProvider +
+/// `ACTION_VIEW` handoff `android_import_contacts` above uses for a
+/// `.vcf`, just with the APK MIME type instead. The install itself still
+/// needs the user's confirmation in that system UI (and, the first time,
+/// granting "install unknown apps" for this app as the source) -- there's
+/// no way to skip that outside being an actual app-store client, and this
+/// deliberately doesn't try to.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn android_download_and_install_apk(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let bytes = reqwest::blocking::get(&url)
+        .str_err()?
+        .error_for_status()
+        .str_err()?
+        .bytes()
+        .str_err()?;
+    let cache_dir = app.path().app_cache_dir().str_err()?;
+    std::fs::create_dir_all(&cache_dir).str_err()?;
+    let apk_path = cache_dir.join("vault-explorer-update.apk");
+    std::fs::write(&apk_path, &bytes).str_err()?;
+    let apk_path_str = apk_path.to_string_lossy().to_string();
+
+    let window = app.get_webview_window("main").ok_or("no main window")?;
+    window
+        .with_webview(move |pw| {
+            let jni = pw.jni_handle();
+            jni.exec(move |env, activity, _webview| {
+                let mut run = || -> Result<(), jni::errors::Error> {
+                    use jni::objects::JValue;
+                    let pkg_name = env
+                        .call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?
+                        .l()?;
+                    let authority_suffix = env.new_string(".fileprovider")?;
+                    let authority = env
+                        .call_method(
+                            &pkg_name,
+                            "concat",
+                            "(Ljava/lang/String;)Ljava/lang/String;",
+                            &[JValue::Object(&authority_suffix)],
+                        )?
+                        .l()?;
+                    let file_provider_class = env.find_class("androidx/core/content/FileProvider")?;
+                    let file_class = env.find_class("java/io/File")?;
+                    let path_str = env.new_string(&apk_path_str)?;
+                    let file = env.new_object(file_class, "(Ljava/lang/String;)V", &[JValue::Object(&path_str)])?;
+                    let uri = env
+                        .call_static_method(
+                            &file_provider_class,
+                            "getUriForFile",
+                            "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
+                            &[JValue::Object(activity), JValue::Object(&authority), JValue::Object(&file)],
+                        )?
+                        .l()?;
+
+                    let action = env.new_string("android.intent.action.VIEW")?;
+                    let intent_class = env.find_class("android/content/Intent")?;
+                    let intent = env.new_object(intent_class, "(Ljava/lang/String;)V", &[JValue::Object(&action)])?;
+                    let mime = env.new_string("application/vnd.android.package-archive")?;
+                    env.call_method(
+                        &intent,
+                        "setDataAndType",
+                        "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+                        &[JValue::Object(&uri), JValue::Object(&mime)],
+                    )?;
+                    // FLAG_GRANT_READ_URI_PERMISSION (1) | FLAG_ACTIVITY_NEW_TASK
+                    // (0x10000000) -- the installer needs read access to a
+                    // FileProvider URI it didn't create, and NEW_TASK since
+                    // the installer is a distinct app PackageInstaller may
+                    // launch outside this activity's own task.
+                    env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(1 | 0x10000000)])?;
+                    env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+                    Ok(())
+                };
+                if run().is_err() {
+                    let _ = env.exception_clear();
+                }
+            });
+        })
+        .str_err()
+}
