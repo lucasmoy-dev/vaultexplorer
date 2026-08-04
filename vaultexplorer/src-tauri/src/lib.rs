@@ -1638,6 +1638,14 @@ pub fn run() {
             android::android_request_storage_access,
             #[cfg(target_os = "android")]
             android::android_pin_folder_shortcut,
+            #[cfg(target_os = "android")]
+            android::android_contacts_permission_granted,
+            #[cfg(target_os = "android")]
+            android::android_request_contacts_permission,
+            #[cfg(target_os = "android")]
+            android::android_export_contacts,
+            #[cfg(target_os = "android")]
+            android::android_import_contacts,
             fs_list,
             fs_is_vault,
             fs_set_readonly,

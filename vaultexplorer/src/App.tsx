@@ -60,6 +60,7 @@ import { MyComputerView } from "./components/MyComputerView";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
 import { NotesGrid } from "./components/NotesGrid";
+import { ContactsGrid } from "./components/ContactsGrid";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
 import { buildSyncSubmenu } from "./menus";
@@ -3995,6 +3996,7 @@ function Explorer({ home }: { home: string }) {
       // are basically a notes stash don't have anything like this in
       // any other view.
       { key: "notes", label: "Notes" },
+      { key: "contacts", label: "Contacts" },
     ];
     const items: MenuItem[] = options.map((o) => ({
       label: view === o.key ? `✓ ${o.label}` : o.label,
@@ -5085,6 +5087,17 @@ function Explorer({ home }: { home: string }) {
               curDir={curDir}
               inVault={inVault}
               onOpenNote={(entry, fullPath) =>
+                withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
+              }
+              onActivateOther={(entry) => activate(curDir, entry)}
+              onMenu={(e, entry) => entryMenu(e, entry)}
+            />
+          ) : view === "contacts" ? (
+            <ContactsGrid
+              entries={entries}
+              curDir={curDir}
+              inVault={inVault}
+              onEditContact={(entry, fullPath) =>
                 withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
               }
               onActivateOther={(entry) => activate(curDir, entry)}

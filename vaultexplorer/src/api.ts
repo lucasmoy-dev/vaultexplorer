@@ -83,6 +83,10 @@ export const api = {
   androidRequestStorageAccess: () => invoke<void>("android_request_storage_access"),
   androidPinFolderShortcut: (id: string, label: string, url: string, iconBase64?: string) =>
     invoke<void>("android_pin_folder_shortcut", { id, label, url, iconBase64 }),
+  androidContactsPermissionGranted: () => invoke<boolean>("android_contacts_permission_granted"),
+  androidRequestContactsPermission: () => invoke<void>("android_request_contacts_permission"),
+  androidExportContacts: (destDir: string) => invoke<number>("android_export_contacts", { destDir }),
+  androidImportContacts: (vcfPaths: string[]) => invoke<void>("android_import_contacts", { vcfPaths }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>

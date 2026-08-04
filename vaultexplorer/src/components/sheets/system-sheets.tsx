@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, formatSize } from "../../api";
+import { api, formatSize, joinPath } from "../../api";
+import { PHONE_STORAGE_PATH } from "../../constants";
 import { ComputerGlyph, ChevronLeft } from "../../icons";
 import { Dropdown } from "../../ContextMenu";
 import { RecoverySheet, UnfreezeSheet } from "./vault-sheets";
@@ -327,6 +328,48 @@ export function SettingsScreen({
 }) {
   const [tab, setTab] = useState<"general" | "security" | "system">("general");
   const [includeCloudCreds, setIncludeCloudCreds] = useState(false);
+  const defaultContactsDir = joinPath(joinPath(PHONE_STORAGE_PATH, "Documents"), "Contacts");
+  const [exportDir, setExportDir] = useState(defaultContactsDir);
+  const [importDir, setImportDir] = useState(defaultContactsDir);
+  const [contactsBusy, setContactsBusy] = useState(false);
+  const [contactsMsg, setContactsMsg] = useState("");
+  async function withContactsPermission(action: () => Promise<void>) {
+    setContactsBusy(true);
+    setContactsMsg("");
+    try {
+      const granted = await api.androidContactsPermissionGranted();
+      if (!granted) {
+        await api.androidRequestContactsPermission();
+        setContactsMsg("Grant the permission in the dialog, then try again.");
+        return;
+      }
+      await action();
+    } catch (e) {
+      setContactsMsg(String(e));
+    } finally {
+      setContactsBusy(false);
+    }
+  }
+  async function exportContacts() {
+    await withContactsPermission(async () => {
+      const count = await api.androidExportContacts(exportDir);
+      setContactsMsg(`Exported ${count} contact${count === 1 ? "" : "s"} to ${exportDir}`);
+    });
+  }
+  async function importContacts() {
+    await withContactsPermission(async () => {
+      const entries = await api.fsList(importDir, false);
+      const vcfPaths = entries
+        .filter((e) => !e.is_dir && e.name.toLowerCase().endsWith(".vcf"))
+        .map((e) => joinPath(importDir, e.name));
+      if (vcfPaths.length === 0) {
+        setContactsMsg(`No .vcf files found in ${importDir}`);
+        return;
+      }
+      await api.androidImportContacts(vcfPaths);
+      setContactsMsg(`Opened ${vcfPaths.length} import prompt${vcfPaths.length === 1 ? "" : "s"} -- confirm each in the Contacts app`);
+    });
+  }
   const [portalEnabled, setPortalEnabled] = useState(false);
   const [portalBusy, setPortalBusy] = useState(false);
   const [portalError, setPortalError] = useState("");
@@ -486,6 +529,36 @@ export function SettingsScreen({
                 Paste config from clipboard
               </button>
             </div>
+            {mobile && (
+              <>
+                <label className="field-label" style={{ marginTop: 14 }}>
+                  Contacts
+                </label>
+                <p className="hint" style={{ marginTop: -2 }}>
+                  Export writes one .vcf per contact. Import hands each .vcf in the folder to the
+                  Contacts app to confirm.
+                </p>
+                <label className="field-label">Export folder</label>
+                <input value={exportDir} onChange={(e) => setExportDir(e.target.value)} />
+                <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
+                  <button className="settings-select" disabled={contactsBusy} onClick={exportContacts}>
+                    Export contacts
+                  </button>
+                </div>
+                <label className="field-label">Import folder</label>
+                <input value={importDir} onChange={(e) => setImportDir(e.target.value)} />
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <button className="settings-select" disabled={contactsBusy} onClick={importContacts}>
+                    Import contacts from folder
+                  </button>
+                </div>
+                {contactsMsg && (
+                  <p className="hint" style={{ marginTop: 6 }}>
+                    {contactsMsg}
+                  </p>
+                )}
+              </>
+            )}
           </>
         )}
 

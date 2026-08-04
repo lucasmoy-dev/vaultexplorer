@@ -13,6 +13,14 @@
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Contacts export/import (Settings): requested via the normal
+         runtime dialog, unlike MANAGE_EXTERNAL_STORAGE above (see
+         android_request_contacts_permission). READ is also enough on its
+         own for exporting: the actual per-file write to contacts on
+         import is delegated to the system Contacts app via an Intent
+         (see android_import_contacts), not done directly here. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
