@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Compiled installers (.deb/.rpm/.AppImage/.apk) -- too large for git,
+# rebuilt locally via the commands in README.md's "Building from source".
+releases
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
