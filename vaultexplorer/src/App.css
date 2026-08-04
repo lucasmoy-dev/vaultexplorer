@@ -3873,6 +3873,36 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 /* ============================================================
+   Internet view (desktop-only experiment -- see InternetView.tsx)
+   ============================================================ */
+.internet-view {
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+.internet-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+}
+.internet-search-field {
+  flex: 1;
+  width: auto;
+}
+.internet-results {
+  padding-top: 4px;
+}
+.internet-thumb {
+  width: calc(96px * var(--icon-scale, 1));
+  height: calc(64px * var(--icon-scale, 1));
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--field-bg);
+}
+
+/* ============================================================
    Contacts view (folder of .vcf as a real contacts list)
    ============================================================ */
 .contacts-view {

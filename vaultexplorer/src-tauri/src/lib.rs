@@ -39,6 +39,7 @@ mod sync;
 mod syncthing;
 mod verify;
 mod terminal;
+mod webfind;
 mod thumbnail;
 #[cfg(desktop)]
 mod transcribe;
@@ -1625,6 +1626,10 @@ pub fn run() {
             #[cfg(desktop)]
             open_path,
             #[cfg(desktop)]
+            #[cfg(desktop)]
+            webfind::search_youtube,
+            #[cfg(desktop)]
+            webfind::search_images,
             terminal::open_terminal,
             #[cfg(desktop)]
             terminal::run_shell_script,

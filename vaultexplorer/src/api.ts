@@ -88,6 +88,8 @@ export const api = {
   androidExportContacts: (destDir: string) => invoke<number>("android_export_contacts", { destDir }),
   androidImportContacts: (vcfPaths: string[]) => invoke<void>("android_import_contacts", { vcfPaths }),
   androidDownloadAndInstallApk: (url: string) => invoke<void>("android_download_and_install_apk", { url }),
+  searchYoutube: (query: string) => invoke<YoutubeResult[]>("search_youtube", { query }),
+  searchImages: (query: string) => invoke<ImageResult[]>("search_images", { query }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>
@@ -425,6 +427,19 @@ export interface DiskInfo {
 export interface FreezeMeta {
   original_path: string;
   frozen_at: number;
+}
+
+export interface YoutubeResult {
+  id: string;
+  title: string;
+  thumbnail: string;
+}
+
+export interface ImageResult {
+  title: string;
+  thumbnail: string;
+  image: string;
+  source_url: string;
 }
 
 export interface Drive {

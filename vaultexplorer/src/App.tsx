@@ -57,6 +57,7 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { kindLabel, editorExtOf } from "./entryHelpers";
 import { EntryTile } from "./components/EntryTile";
 import { MyComputerView } from "./components/MyComputerView";
+import { InternetView } from "./components/InternetView";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
 import { NotesGrid } from "./components/NotesGrid";
@@ -1041,8 +1042,20 @@ function Explorer({ home }: { home: string }) {
   }, []);
   function openMyComputer() {
     setShowMyComputer(true);
+    setShowInternet(false);
     setSearchResults(null);
     refreshDrives();
+  }
+
+  // "Internet" (desktop-only experiment): same non-fs-path sidebar-entry
+  // pattern as "My Computer" above -- swaps the content area for
+  // `InternetView`, which owns its own Videos/Images sub-navigation and
+  // search state entirely by itself (see that component).
+  const [showInternet, setShowInternet] = useState(false);
+  function openInternet() {
+    setShowInternet(true);
+    setShowMyComputer(false);
+    setSearchResults(null);
   }
 
   // Some Linux window managers don't raise/focus an unfocused, undecorated
@@ -1835,6 +1848,7 @@ function Explorer({ home }: { home: string }) {
       }
     }
     setShowMyComputer(false);
+    setShowInternet(false);
     cancelPendingRenameClick();
     if (target.kind === "vault") {
       if (unlockedRoots.has(target.root)) {
@@ -4659,8 +4673,22 @@ function Explorer({ home }: { home: string }) {
             {!favCollapsed && "My Computer"}
           </div>
         )}
+        {/* Experimental (see InternetView) -- fake "Videos"/"Images"
+            folders backed by live search, not a real path. Desktop-only:
+            no reason it couldn't run on mobile too, but this hasn't been
+            tried there yet and the sidebar real-estate is tighter. */}
+        {!mobile && (
+          <div
+            className={`sidebar-item ${showInternet ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
+            title={favCollapsed ? "Internet" : undefined}
+            onClick={openInternet}
+          >
+            <span className="sidebar-ico place">🌐</span>
+            {!favCollapsed && "Internet"}
+          </div>
+        )}
         {favorites.map((f, i) => {
-          const active = !showMyComputer && loc.kind === "fs" && loc.path === f.path;
+          const active = !showMyComputer && !showInternet && loc.kind === "fs" && loc.path === f.path;
           return (
             <div
               key={f.path}
@@ -4935,7 +4963,13 @@ function Explorer({ home }: { home: string }) {
             </button>
           </div>
           <div className="toolbar-title">
-            {showMyComputer ? "My Computer" : crumbs.length ? crumbs[crumbs.length - 1].label : "System"}
+            {showMyComputer
+              ? "My Computer"
+              : showInternet
+                ? "Internet"
+                : crumbs.length
+                  ? crumbs[crumbs.length - 1].label
+                  : "System"}
           </div>
           <button
             className={`tool-btn cluster-start ${mobile ? "" : "wide-btn"}`}
@@ -5063,7 +5097,7 @@ function Explorer({ home }: { home: string }) {
         <div
           className="content"
           ref={contentRef}
-          onContextMenu={showMyComputer ? undefined : backgroundMenu}
+          onContextMenu={showMyComputer || showInternet ? undefined : backgroundMenu}
           onMouseDown={onContentMouseDown}
         >
           {showMyComputer ? (
@@ -5073,6 +5107,8 @@ function Explorer({ home }: { home: string }) {
               onOpenDrive={(d) => d.mountpoint && go({ kind: "fs", path: d.mountpoint })}
               onMenu={driveMenu}
             />
+          ) : showInternet ? (
+            <InternetView />
           ) : searchResults !== null ? (
             <SearchResults
               query={searchQuery}
@@ -5166,7 +5202,7 @@ function Explorer({ home }: { home: string }) {
         <div
           className="breadcrumb-bar"
           onClick={(e) => {
-            if (showMyComputer) return;
+            if (showMyComputer || showInternet) return;
             if (!(e.target as HTMLElement).closest(".crumb, .breadcrumb-copy")) beginEditPath();
           }}
         >
@@ -5174,6 +5210,12 @@ function Explorer({ home }: { home: string }) {
             <div className="breadcrumb-crumbs">
               <span className="crumb-group">
                 <span className="crumb">My Computer</span>
+              </span>
+            </div>
+          ) : showInternet ? (
+            <div className="breadcrumb-crumbs">
+              <span className="crumb-group">
+                <span className="crumb">Internet</span>
               </span>
             </div>
           ) : editingPath ? (
