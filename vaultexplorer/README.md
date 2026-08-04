@@ -42,11 +42,19 @@ them without disturbing whatever's already open on a real desktop session.
 
 ## Install
 
-No prebuilt binaries are attached to this repo -- a debug Android build alone
-is 500+MB, well past what belongs in git. Build from source (below); each
-build drops its own installer/APK where noted, and copying those into a local
-`releases/` folder (already gitignored) is a convenient way to keep the
-latest one handy without them ending up in git history.
+Prebuilt binaries are attached to [GitHub Releases](https://github.com/lucasmoy-dev/vaultexplorer/releases/latest)
+(`.apk` for Android, `.deb`/`.rpm`/`.AppImage` for desktop) -- **not**
+committed into the repo itself (git isn't a great place for binaries that
+change every release; a *debug* Android build alone is 500+MB). The Android
+app's own Settings screen has a "Check for updates" button that reads
+straight from that same latest release, downloads the APK, and hands it to
+the system installer -- no separate update server. Desktop's equivalent just
+opens the release page, since replacing a running desktop binary in place is
+a different problem this doesn't try to solve yet.
+
+Building from source drops its own installer/APK where noted (below); a
+local `releases/` folder (already gitignored) is a convenient place to keep
+the latest one handy without it ending up in git history.
 
 ## Building from source
 
