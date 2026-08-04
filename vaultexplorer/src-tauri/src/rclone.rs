@@ -38,6 +38,33 @@ pub fn remote_name(provider: &str) -> String {
     format!("vaultexplorer-{provider}")
 }
 
+/// Optional user-supplied OAuth client for a provider, read from
+/// `~/.config/vaultexplorer/oauth_clients.json`:
+///
+/// ```json
+/// { "drive": { "client_id": "…", "client_secret": "…" } }
+/// ```
+///
+/// Exists because rclone's shared built-in Google Drive client_id is
+/// being retired during 2026 (rclone NOTICEs this on every sync; see
+/// https://rclone.org/drive/#making-your-own-client-id) -- users can
+/// create their own client in the Google Cloud console, drop it in this
+/// file, and reconnect. Falls back to rclone's built-in client when the
+/// file or the provider's entry is absent, so nothing changes for
+/// providers whose shared client still works.
+fn oauth_client_override(provider: &str) -> Option<(String, String)> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home).join(".config/vaultexplorer/oauth_clients.json");
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let entry = json.get(provider)?;
+    let id = entry.get("client_id")?.as_str()?.trim();
+    let secret = entry.get("client_secret")?.as_str()?.trim();
+    if id.is_empty() || secret.is_empty() {
+        return None;
+    }
+    Some((id.to_string(), secret.to_string()))
+}
+
 pub fn is_installed() -> bool {
     Command::new("which").arg("rclone").output().map(|o| o.status.success()).unwrap_or(false)
 }
@@ -116,8 +143,17 @@ fn extract_token(stdout: &str) -> Option<String> {
 /// Blocking (real child-process I/O throughout); callers on the Tauri
 /// command side run this via `spawn_blocking`.
 pub fn connect(provider: &str, on_url: impl Fn(String) + Send + Sync + 'static) -> Result<(), String> {
+    let oauth_override = oauth_client_override(provider);
+    let mut authorize_args: Vec<&str> = vec!["authorize", provider];
+    if let Some((id, secret)) = &oauth_override {
+        // `rclone authorize <backend> <client_id> <client_secret>` -- the
+        // token minted must come from the same OAuth client the remote is
+        // later configured with, or every API call is rejected.
+        authorize_args.push(id);
+        authorize_args.push(secret);
+    }
     let mut child = Command::new("rclone")
-        .args(["authorize", provider])
+        .args(&authorize_args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -160,6 +196,9 @@ pub fn connect(provider: &str, on_url: impl Fn(String) + Send + Sync + 'static) 
     // for the other providers' OAuth apps.
     if provider == "drive" {
         args.extend(["scope", "drive.file"]);
+    }
+    if let Some((id, secret)) = &oauth_override {
+        args.extend(["client_id", id, "client_secret", secret]);
     }
     let output = Command::new("rclone").args(&args).output().str_err()?;
     if !output.status.success() {

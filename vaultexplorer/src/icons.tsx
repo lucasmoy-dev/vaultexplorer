@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Entry, ENCRYPTED_FILE_EXT } from "./api";
 // File/folder tile artwork: WhiteSur (macOS Big Sur style) icon theme,
@@ -190,6 +190,40 @@ function useOfficeIcon(ext: string | null): string | null {
   return icon;
 }
 
+// Android's WebView occasionally fails to load a bundled static asset on
+// the first request (seen in practice with these bundled SVGs specifically
+// -- the browser's own "broken image" glyph in place of the icon, clearing
+// up on a manual refresh), the same class of one-off WebView flakiness as
+// this app's other Android-only IPC/cache quirks. There's no such thing
+// for a data: URI (thumbnails, see useThumbnail.ts) since a cache-busting
+// query string would corrupt one -- this is only for real asset/file URLs.
+export function RetryImg({
+  src,
+  className,
+  alt = "",
+}: {
+  src: string;
+  className?: string;
+  alt?: string;
+}) {
+  const [attempt, setAttempt] = useState(0);
+  const triesRef = useRef(0);
+  const resolvedSrc = attempt === 0 ? src : `${src}${src.includes("?") ? "&" : "?"}retry=${attempt}`;
+  return (
+    <img
+      className={className}
+      src={resolvedSrc}
+      alt={alt}
+      draggable={false}
+      onError={() => {
+        if (triesRef.current >= 3) return;
+        triesRef.current += 1;
+        setTimeout(() => setAttempt((a) => a + 1), 250 * triesRef.current);
+      }}
+    />
+  );
+}
+
 export function FileIcon({
   entry,
   tagHex,
@@ -201,34 +235,44 @@ export function FileIcon({
 }) {
   void tagHex; // tag tint isn't applied to the bundled WhiteSur artwork
   const kind = kindOf(entry);
-  // Called unconditionally (before the customIcon early return) so hook
-  // order stays stable across renders regardless of customIcon presence.
+  // Called unconditionally (before the customIcon branch) so hook order stays
+  // stable across renders regardless of customIcon presence.
   const officeIcon = useOfficeIcon(kind === "office" ? extOf(entry) : null);
+
+  // The artwork, whatever its source: a user-chosen icon (bundled WhiteSur
+  // folder, Tabler symbol, or a bare emoji) or the bundled art for this kind.
+  let art;
   if (customIcon) {
     const wsUrl = customIconUrl(customIcon);
-    if (wsUrl) {
-      return <img className="fileicon-img" src={wsUrl} alt="" draggable={false} />;
-    }
-    const symSvg = symbolIconSvg(customIcon);
-    if (symSvg) {
-      return <span className="symbol-icon" dangerouslySetInnerHTML={{ __html: symSvg }} />;
-    }
-    return <span className="custom-icon-emoji">{customIcon}</span>;
+    const symSvg = wsUrl ? null : symbolIconSvg(customIcon);
+    art = wsUrl ? (
+      <RetryImg className="fileicon-img" src={wsUrl} />
+    ) : symSvg ? (
+      <span className="symbol-icon" dangerouslySetInnerHTML={{ __html: symSvg }} />
+    ) : (
+      <span className="custom-icon-emoji">{customIcon}</span>
+    );
+  } else {
+    const src = kind === "office" ? officeIcon ?? KIND_ICON.office : KIND_ICON[kind];
+    art = <RetryImg className="fileicon-img" src={src} />;
   }
-  const src = kind === "office" ? officeIcon ?? KIND_ICON.office : KIND_ICON[kind];
-  // Vault folders reuse the plain folder art with a small padlock overlaid,
-  // rather than shipping a separate locked-folder asset.
+
+  // Vault folders get a small padlock overlaid on that artwork, rather than
+  // shipping a separate locked-folder asset. Applied to a custom icon too:
+  // "this folder is an encrypted vault" is a property of the folder, not a
+  // style choice, and returning early for custom icons silently dropped the
+  // padlock from exactly the vaults a user cared enough about to restyle.
   if (kind === "folder" && entry.is_vault) {
     return (
       <span className="fileicon-wrap">
-        <img className="fileicon-img" src={src} alt="" draggable={false} />
+        {art}
         <span className="fileicon-lock">
           <LockGlyph size={13} />
         </span>
       </span>
     );
   }
-  return <img className="fileicon-img" src={src} alt="" draggable={false} />;
+  return art;
 }
 
 // ---- UI glyphs (toolbar / sidebar / breadcrumb), authentic Lucide ----
@@ -412,6 +456,40 @@ export function CheckGlyph({ size = 13 }: GlyphProps) {
   return (
     <L size={size} sw={2.2}>
       <path d="M20 6 9 17l-5-5" />
+    </L>
+  );
+}
+
+// Lucide `file-plus` -- mobile toolbar's icon-only "+ File" button.
+export function NewFileGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={1.9}>
+      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+      <path d="M13 2v6h6" />
+      <line x1="9" x2="15" y1="15" y2="15" />
+      <line x1="12" x2="12" y1="12" y2="18" />
+    </L>
+  );
+}
+
+// Same `folder` outline as PlaceGlyph below, plus a "+" -- mobile
+// toolbar's icon-only "+ Folder" button.
+export function NewFolderGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={1.9}>
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      <line x1="9" x2="15" y1="14" y2="14" />
+      <line x1="12" x2="12" y1="11" y2="17" />
+    </L>
+  );
+}
+
+// Lucide `clipboard` -- mobile toolbar's icon-only "Paste" button.
+export function PasteGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={1.9}>
+      <rect width="8" height="4" x="8" y="2" rx="1" ry="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
     </L>
   );
 }

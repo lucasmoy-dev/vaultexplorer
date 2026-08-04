@@ -12,6 +12,8 @@ export function GetInfoSheet({
   customIcon,
   onChangeIcon,
   onClose,
+  opensInEditor,
+  onSetOpensInEditor,
 }: {
   entry: Entry;
   fullPath: string;
@@ -20,6 +22,11 @@ export function GetInfoSheet({
   customIcon?: string;
   onChangeIcon?: () => void;
   onClose: () => void;
+  // Whether this file's *format* is set to open in the built-in text editor
+  // (see textEditorExts in App.tsx). `null` when the question doesn't apply:
+  // a folder, an extensionless file, or a format we know is binary.
+  opensInEditor: boolean | null;
+  onSetOpensInEditor: (on: boolean) => void;
 }) {
   const [realSize, setRealSize] = useState<number | null>(null);
   useEffect(() => {
@@ -112,6 +119,19 @@ export function GetInfoSheet({
               <span>Encrypted</span>
               <span>🔒 Yes (inside the vault)</span>
             </div>
+          )}
+          {opensInEditor !== null && (
+            <label className="info-row checkbox-row">
+              <span>Opens with</span>
+              <span>
+                <input
+                  type="checkbox"
+                  checked={opensInEditor}
+                  onChange={(e) => onSetOpensInEditor(e.target.checked)}
+                />{" "}
+                Text editor — all .{entry.name.toLowerCase().split(".").pop()} files
+              </span>
+            </label>
           )}
           {fileMeta.map(([label, value]) => (
             <div className="info-row" key={label}>

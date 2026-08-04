@@ -1,18 +1,25 @@
 import { useEffect, useState } from "react";
 import { api, formatSize } from "../../api";
-import { ComputerGlyph } from "../../icons";
+import { ComputerGlyph, ChevronLeft } from "../../icons";
+import { Dropdown } from "../../ContextMenu";
 import { RecoverySheet, UnfreezeSheet } from "./vault-sheets";
-import { SensitiveTimeout } from "../../types";
+import {
+  SensitiveTimeout,
+  SENSITIVE_TIMEOUT_CHOICES,
+  sensitiveTimeoutLabel,
+} from "../../types";
 
-const SENSITIVE_TIMEOUTS: { value: SensitiveTimeout; label: string }[] = [
-  { value: 300, label: "5 minutes" },
-  { value: 1200, label: "20 minutes" },
-  { value: 3600, label: "1 hour" },
-  { value: 7200, label: "2 hours" },
-  { value: 18000, label: "5 hours" },
-  { value: 86400, label: "24 hours" },
-  { value: "never", label: "Never" },
-];
+// The same durations the unlock sheet's picker offers (see types.ts) -- the
+// sheet preselects whatever is configured here, so the two lists have to be
+// one list. A value saved under the older, longer list (e.g. 20 minutes) is
+// appended so it still shows accurately instead of looking unset; picking
+// anything else drops it.
+function timeoutOptions(current: SensitiveTimeout): { value: SensitiveTimeout; label: string }[] {
+  const known = SENSITIVE_TIMEOUT_CHOICES.some((o) => o.value === current);
+  return known
+    ? SENSITIVE_TIMEOUT_CHOICES
+    : [...SENSITIVE_TIMEOUT_CHOICES, { value: current, label: sensitiveTimeoutLabel(current) }];
+}
 
 export function ManageTemplatesSheet({
   templates,
@@ -285,7 +292,7 @@ export function FormatDriveSheet({
   );
 }
 
-export function SettingsSheet({
+export function SettingsScreen({
   settings,
   onChange,
   onClose,
@@ -299,6 +306,7 @@ export function SettingsSheet({
     newFolderNameTemplate: string;
     theme: "light" | "dark" | "system";
     sensitiveTimeout: SensitiveTimeout;
+    mobileExternalEditor: boolean;
   };
   mobile: boolean;
   onChange: (next: {
@@ -309,6 +317,7 @@ export function SettingsSheet({
     newFolderNameTemplate: string;
     theme: "light" | "dark" | "system";
     sensitiveTimeout: SensitiveTimeout;
+    mobileExternalEditor: boolean;
   }) => void;
   onClose: () => void;
 }) {
@@ -319,6 +328,25 @@ export function SettingsSheet({
   useEffect(() => {
     api.portalIsEnabled().then(setPortalEnabled).catch(() => {});
   }, []);
+
+  const [autostartEnabled, setAutostartEnabled] = useState(false);
+  const [autostartBusy, setAutostartBusy] = useState(false);
+  const [autostartError, setAutostartError] = useState("");
+  useEffect(() => {
+    api.autostartEnabled().then(setAutostartEnabled).catch(() => {});
+  }, []);
+
+  async function toggleAutostart(checked: boolean) {
+    setAutostartBusy(true);
+    setAutostartError("");
+    try {
+      await api.setAutostart(checked);
+      setAutostartEnabled(checked);
+    } catch (e) {
+      setAutostartError(String(e));
+    }
+    setAutostartBusy(false);
+  }
 
   const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
@@ -347,20 +375,26 @@ export function SettingsSheet({
   }
 
   return (
-    <div className="sheet-overlay" onMouseDown={onClose}>
-      <div className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>Preferences</h3>
-        <div className="settings-tabs">
-          {(["general", "security", ...(mobile ? [] : (["system"] as const))] as const).map((t) => (
-            <button
-              key={t}
-              className={`settings-tab ${tab === t ? "on" : ""}`}
-              onClick={() => setTab(t)}
-            >
-              {t === "general" ? "General" : t === "security" ? "Security" : "System"}
-            </button>
-          ))}
-        </div>
+    <div className="settings-screen">
+      <div className="settings-screen-header">
+        <button className="settings-back-btn" onClick={onClose} aria-label="Back">
+          <ChevronLeft size={18} />
+          Back
+        </button>
+        <h2>Settings</h2>
+      </div>
+      <div className="settings-tabs">
+        {(["general", "security", ...(mobile ? [] : (["system"] as const))] as const).map((t) => (
+          <button
+            key={t}
+            className={`settings-tab ${tab === t ? "on" : ""}`}
+            onClick={() => setTab(t)}
+          >
+            {t === "general" ? "General" : t === "security" ? "Security" : "System"}
+          </button>
+        ))}
+      </div>
+      <div className="settings-screen-body">
 
         {tab === "general" && (
           <>
@@ -392,6 +426,18 @@ export function SettingsSheet({
               />
               Hide file extensions
             </label>
+            {mobile && (
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={settings.mobileExternalEditor}
+                  onChange={(e) =>
+                    onChange({ ...settings, mobileExternalEditor: e.target.checked })
+                  }
+                />
+                Open text files in an external app instead of the built-in editor
+              </label>
+            )}
             <label className="field-label">Default name for new files</label>
             <input
               value={settings.newFileNameTemplate}
@@ -404,7 +450,7 @@ export function SettingsSheet({
               placeholder="untitled folder"
               onChange={(e) => onChange({ ...settings, newFolderNameTemplate: e.target.value })}
             />
-            <p className="hint" style={{ marginTop: -8 }}>
+            <p className="hint" style={{ marginTop: 6 }}>
               Use <code>{"{date}"}</code>, <code>{"{time}"}</code>, or <code>{"{datetime}"}</code> to
               include the current date/time, e.g. <code>{"{datetime}"}</code> → “2026-11-30 16.16hs”.
             </p>
@@ -414,22 +460,15 @@ export function SettingsSheet({
         {tab === "security" && (
           <>
             <label className="field-label">Sensitive files timeout</label>
-            <select
-              className="settings-select"
+            <Dropdown
               value={String(settings.sensitiveTimeout)}
-              onChange={(e) => {
-                const raw = e.target.value;
+              options={timeoutOptions(settings.sensitiveTimeout).map((o) => ({ value: String(o.value), label: o.label }))}
+              onChange={(raw) => {
                 const next: SensitiveTimeout =
                   raw === "never" ? "never" : (Number(raw) as SensitiveTimeout);
                 onChange({ ...settings, sensitiveTimeout: next });
               }}
-            >
-              {SENSITIVE_TIMEOUTS.map((o) => (
-                <option key={String(o.value)} value={String(o.value)}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            />
             <p className="hint" style={{ marginTop: 6 }}>
               After viewing a file marked sensitive, it re-locks after this long and asks for the
               vault password again.
@@ -468,6 +507,20 @@ export function SettingsSheet({
               apps that opt in) — not every app's native dialog.
             </p>
             {portalError && <p className="error">{portalError}</p>}
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={autostartEnabled}
+                disabled={autostartBusy}
+                onChange={(e) => toggleAutostart(e.target.checked)}
+              />
+              Start Vault Explorer at login
+            </label>
+            <p style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: -6 }}>
+              Combine with a vault's "Unlock automatically" (Vault Settings…) so it's ready to use
+              right after you log in.
+            </p>
+            {autostartError && <p className="error">{autostartError}</p>}
             <div className="sheet-actions" style={{ marginBottom: 4 }}>
               {recoveryAvailable ? (
                 <button className="btn-plain" onClick={() => setRecoveryOpen(true)}>
@@ -497,11 +550,6 @@ export function SettingsSheet({
             )}
           </>
         )}
-        <div className="sheet-actions">
-          <button className="btn-primary" onClick={onClose}>
-            Done
-          </button>
-        </div>
       </div>
       {recoveryOpen && <RecoverySheet onClose={() => setRecoveryOpen(false)} />}
       {unfreezePath && (

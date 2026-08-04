@@ -19,7 +19,7 @@ export function ColumnView({
   inVault: boolean;
   root?: string;
   onActivate: (dir: string, entry: Entry) => void;
-  onMenu: (e: React.MouseEvent, entry: Entry) => void;
+  onMenu: (e: React.MouseEvent, dir: string, entry: Entry) => void;
   previewEntry: { dir: string; entry: Entry } | null;
   onSelectFile: (dir: string, entry: Entry) => void;
   cutPaths?: string[];
@@ -73,7 +73,7 @@ export function ColumnView({
                 cut={!!cutPaths?.includes(joinPath(col.dir, entry.name))}
                 onActivate={() => onActivate(col.dir, entry)}
                 onSelect={() => onSelectFile(col.dir, entry)}
-                onMenu={(e) => onMenu(e, entry)}
+                onMenu={(e) => onMenu(e, col.dir, entry)}
               />
             );
           })}

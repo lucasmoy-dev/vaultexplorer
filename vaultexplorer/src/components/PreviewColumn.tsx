@@ -1,9 +1,39 @@
 import { useEffect, useRef, useState } from "react";
-import { Entry, api, joinPath, formatSize, formatDate } from "../api";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { Entry, api, joinPath, parentPath, formatSize, formatDate } from "../api";
 import { Loc } from "../types";
-import { FileIcon } from "../icons";
+import { FileIcon, CopyGlyph, CheckGlyph, kindOf } from "../icons";
 import { kindLabel } from "../entryHelpers";
 import { useThumbnail } from "../hooks/useThumbnail";
+
+// A small copy-to-clipboard button (checkmark swap on success, same
+// pattern as the toolbar breadcrumb's own copy-path button) -- used next
+// to both the file name and the Location value below, since "select the
+// text to copy it" wasn't possible here until `user-select: text` was
+// added (see the .preview-name / .info-path CSS), and a button is faster
+// regardless.
+function CopyButton({ text, title }: { text: string; title: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className={`preview-copy-btn ${copied ? "copied" : ""}`}
+      title={title}
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        } catch {
+          /* ignore */
+        }
+      }}
+    >
+      {copied ? <CheckGlyph size={11} /> : <CopyGlyph size={11} />}
+    </button>
+  );
+}
 
 // A file's own name, shown wherever a preview pane needs it -- click to
 // rename in place (extension hidden while editing, same convention as the
@@ -57,6 +87,110 @@ export function EditableFileName({ name, onRename }: { name: string; onRename?: 
   );
 }
 
+// Video and audio play in place instead of showing a dead poster frame:
+// click the play badge and it plays right here, with the browser's own
+// controls for pause/seek/volume once started.
+//
+// Nothing is created until that click -- no <video> element, and for a vault
+// file no FUSE path resolution either, so merely *selecting* a 2GB video
+// costs nothing. And since the whole preview is keyed by path, selecting
+// another file tears this down: coming back gives a fresh element at 0:00
+// rather than resuming mid-stream, which is what "start from the beginning,
+// only if I press play" means. Playback also stops on its own when you
+// select something else, for the same reason.
+function MediaPreview({
+  entry,
+  fullPath,
+  inVault,
+  poster,
+}: {
+  entry: Entry;
+  fullPath: string;
+  inVault: boolean;
+  poster: string | null;
+}) {
+  const isVideo = kindOf(entry) === "video";
+  const [src, setSrc] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [error, setError] = useState("");
+  const mediaRef = useRef<HTMLVideoElement & HTMLAudioElement>(null);
+
+  async function toggle() {
+    if (src) {
+      const el = mediaRef.current;
+      if (!el) return;
+      if (el.paused) void el.play();
+      else el.pause();
+      return;
+    }
+    try {
+      // A vault file's real bytes only exist behind its FUSE mount; the
+      // vault-relative path means nothing to the webview.
+      const abs = inVault ? await api.openPath(fullPath) : fullPath;
+      setSrc(convertFileSrc(abs));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  // Autoplay once the source lands (the click that set it *was* the play
+  // request), and keep `playing` in sync with the element rather than
+  // assuming -- pausing via the native controls has to swap the badge back.
+  const showBadge = !src || !playing;
+  return (
+    <div className={`preview-media ${isVideo ? "video" : "audio"}`}>
+      {src ? (
+        isVideo ? (
+          <video
+            ref={mediaRef}
+            src={src}
+            poster={poster ?? undefined}
+            autoPlay
+            controls
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onEnded={() => setPlaying(false)}
+            onError={() => setError("Can't play this file")}
+          />
+        ) : (
+          <>
+            {poster ? <img src={poster} alt="" draggable={false} /> : <FileIcon entry={entry} />}
+            <audio
+              ref={mediaRef}
+              src={src}
+              autoPlay
+              controls
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
+              onEnded={() => setPlaying(false)}
+              onError={() => setError("Can't play this file")}
+            />
+          </>
+        )
+      ) : poster ? (
+        <img src={poster} alt="" draggable={false} />
+      ) : (
+        <div className="preview-icon">
+          <FileIcon entry={entry} />
+        </div>
+      )}
+      {showBadge && (
+        <button
+          type="button"
+          className="preview-play-badge"
+          aria-label={src ? "Play" : `Play ${entry.name}`}
+          onClick={toggle}
+        >
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+            <path d="M8 5.5v13l11-6.5z" fill="currentColor" />
+          </svg>
+        </button>
+      )}
+      {error && <p className="preview-media-error">{error}</p>}
+    </div>
+  );
+}
+
 // The rightmost column shown when a file (not a folder) is selected: a
 // bigger preview plus the handful of Get-Info facts, so column view can
 // answer "what is this" without opening a separate sheet.
@@ -66,12 +200,17 @@ export function PreviewColumn({
   inVault,
   root,
   onRename,
+  onEdit,
 }: {
   entry: Entry;
   fullPath: string;
   inVault: boolean;
   root?: string;
   onRename?: (newName: string) => void;
+  // Given only where an editor can actually open (List with Preview's pane --
+  // column view has no editor slot), and only for formats where editing as
+  // text makes sense. Switches this format to the text editor from now on.
+  onEdit?: () => void;
 }) {
   const kind: Loc["kind"] = inVault ? "vault" : "fs";
   const [fileMeta, setFileMeta] = useState<[string, string][]>([]);
@@ -92,27 +231,62 @@ export function PreviewColumn({
     setZoom(1);
     setPan({ x: 0, y: 0 });
   }, [fullPath]);
+  // Video/audio get the inline player below instead of the zoom/pan image
+  // viewer -- scroll-to-zoom over a playing video (and swallowing the wheel
+  // event to do it) isn't a gesture anyone wants there.
+  const isMedia = kindOf(entry) === "video" || kindOf(entry) === "audio";
   const thumbRef = useRef<HTMLDivElement>(null);
+  // The image can never be dragged fully out of view: at a given zoom the
+  // rendered box overhangs the container by (zoom - 1) * size, so half of
+  // that is the farthest either edge can travel from center. Re-clamping
+  // on zoom-out is what pulls a panned image back toward center as it
+  // shrinks, until at 1x it's exactly centered again.
+  function clampPan(p: { x: number; y: number }, z: number) {
+    const el = thumbRef.current;
+    if (!el) return p;
+    const maxX = (el.clientWidth * (z - 1)) / 2;
+    const maxY = (el.clientHeight * (z - 1)) / 2;
+    return {
+      x: Math.min(maxX, Math.max(-maxX, p.x)),
+      y: Math.min(maxY, Math.max(-maxY, p.y)),
+    };
+  }
   useEffect(() => {
     const el = thumbRef.current;
-    if (!el) return;
+    if (!el || isMedia) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      setZoom((z) => Math.min(8, Math.max(1, z - e.deltaY * 0.003)));
+      setZoom((z) => {
+        // Multiplicative steps feel uniform across the whole range
+        // (additive ones crawl when zoomed out and jump when zoomed in).
+        const next = Math.min(8, Math.max(1, z * Math.exp(-e.deltaY * 0.002)));
+        // Zoom toward the cursor: keep the image point under the pointer
+        // stationary by scaling its offset from center along with it.
+        const rect = el.getBoundingClientRect();
+        const cx = e.clientX - rect.left - rect.width / 2;
+        const cy = e.clientY - rect.top - rect.height / 2;
+        setPan((p) =>
+          clampPan({ x: cx - ((cx - p.x) * next) / z, y: cy - ((cy - p.y) * next) / z }, next)
+        );
+        return next;
+      });
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, []);
+  }, [isMedia]);
 
   // Requesting a sharper render as the user zooms in, rather than just
-  // CSS-stretching the same 480px thumbnail -- debounced so a mid-scroll
-  // zoom gesture doesn't fire a fresh request on every tick, only once it
-  // settles.
+  // CSS-stretching the same 480px thumbnail. Snapped to three fixed
+  // buckets instead of a continuous size: a zoom session then re-decodes
+  // the image at most twice, not once per settled scroll position.
   const [thumbSize, setThumbSize] = useState(480);
   useEffect(() => {
-    const t = setTimeout(() => setThumbSize(Math.min(2400, Math.round(480 * Math.max(1, zoom)))), 250);
+    const bucket = zoom > 3 ? 1920 : zoom > 1.2 ? 960 : 480;
+    if (bucket <= thumbSize) return; // never downgrade mid-session; reset comes with the file change
+    const t = setTimeout(() => setThumbSize(bucket), 250);
     return () => clearTimeout(t);
-  }, [zoom]);
+  }, [zoom, thumbSize]);
+  useEffect(() => setThumbSize(480), [fullPath]);
   const thumb = useThumbnail(entry, fullPath, inVault, thumbSize);
 
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
@@ -121,10 +295,15 @@ export function PreviewColumn({
     if (!dragging) return;
     function onMove(e: MouseEvent) {
       if (!dragRef.current) return;
-      setPan({
-        x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
-        y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
-      });
+      setPan(
+        clampPan(
+          {
+            x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
+            y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+          },
+          zoom
+        )
+      );
     }
     function onUp() {
       dragRef.current = null;
@@ -136,15 +315,28 @@ export function PreviewColumn({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [dragging]);
+  }, [dragging, zoom]);
   function onThumbMouseDown(e: React.MouseEvent) {
     if (zoom <= 1 || (e.button !== 0 && e.button !== 1)) return;
     e.preventDefault();
     dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
     setDragging(true);
   }
+  // Double-click: quick in/out toggle, the gesture every image viewer has.
+  function onThumbDoubleClick() {
+    if (isMedia) return;
+    if (zoom > 1) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    } else {
+      setZoom(2);
+    }
+  }
 
   const displayPath = kind === "vault" && root ? joinPath(root, fullPath) : fullPath;
+  // Just the containing folder -- the file's own name is already shown
+  // right above (EditableFileName), repeating it here again was redundant.
+  const displayDir = parentPath(displayPath);
 
   return (
     <div className="column preview-column">
@@ -152,14 +344,23 @@ export function PreviewColumn({
         className="preview-thumb"
         ref={thumbRef}
         onMouseDown={onThumbMouseDown}
+        onDoubleClick={onThumbDoubleClick}
         style={{ cursor: zoom > 1 ? (dragging ? "grabbing" : "grab") : "default" }}
       >
-        {thumb ? (
+        {isMedia ? (
+          <MediaPreview entry={entry} fullPath={fullPath} inVault={inVault} poster={thumb} />
+        ) : thumb ? (
           <img
             src={thumb}
             alt=""
             draggable={false}
-            style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              // The eased transform is what makes wheel-zoom feel smooth,
+              // but during a drag it lags the cursor -- pan must be 1:1.
+              transition: dragging ? "none" : undefined,
+              willChange: zoom > 1 ? "transform" : undefined,
+            }}
           />
         ) : (
           <div className="preview-icon">
@@ -167,7 +368,19 @@ export function PreviewColumn({
           </div>
         )}
       </div>
-      <EditableFileName name={entry.name} onRename={onRename} />
+      <div className="preview-name-row">
+        <EditableFileName name={entry.name} onRename={onRename} />
+        <CopyButton text={entry.name} title="Copy name" />
+      </div>
+      {onEdit && (
+        <button
+          className="btn-plain small preview-edit-btn"
+          title={`Open .${entry.name.toLowerCase().split(".").pop()} files in the text editor from now on (change it in Get Info)`}
+          onClick={onEdit}
+        >
+          Edit as Text
+        </button>
+      )}
       <div className="info-rows">
         <div className="info-row">
           <span>Type</span>
@@ -179,8 +392,11 @@ export function PreviewColumn({
         </div>
         <div className="info-row">
           <span>Location</span>
-          <span className="info-path" title={displayPath}>
-            {displayPath}
+          <span className="info-path-group">
+            <span className="info-path" title={displayDir}>
+              {displayDir}
+            </span>
+            <CopyButton text={displayDir} title="Copy location" />
           </span>
         </div>
         <div className="info-row">

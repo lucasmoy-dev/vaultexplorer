@@ -28,12 +28,21 @@ use std::time::Duration;
 const SAFETY_NET_INTERVAL: Duration = Duration::from_secs(300);
 #[cfg(desktop)]
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(800);
+/// After a watch event fires, keep draining further events until the
+/// folder has been quiet for this long before actually syncing. The
+/// debouncer alone isn't enough: a write burst longer than its window
+/// (e.g. gocryptfs rewriting ciphertext blocks while a file is being
+/// saved inside a mounted vault) still delivers an event mid-burst, and
+/// a bisync started then reads files that change under it -- rclone
+/// aborts the whole run with "corrupted on transfer: md5 hashes differ".
+#[cfg(desktop)]
+const QUIESCENCE_WINDOW: Duration = Duration::from_secs(2);
 
 fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
 }
 
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     Path::new(&home_dir()).join(".config/vaultexplorer")
 }
 
@@ -133,7 +142,39 @@ fn is_transfer_activity(line: &str) -> bool {
         || line.contains(": Renamed")
 }
 
-fn run_bisync(local_path: &str, remote: &str, resync: bool) -> Result<String, String> {
+/// The file a transfer line is about: rclone -v logs `... INFO  : <path>:
+/// Copied (new)`, so the path sits between the log prefix's " : " and the
+/// ": <verb>" marker. Returns the pair-relative (ciphertext) path.
+fn transfer_line_path(line: &str) -> Option<String> {
+    let marker = [": Copied (", ": Deleted", ": Updated", ": Moved", ": Renamed"]
+        .iter()
+        .find_map(|m| line.find(m))?;
+    let head = &line[..marker];
+    let (_, path) = head.rsplit_once(" : ")?;
+    if path.is_empty() {
+        return None;
+    }
+    Some(path.to_string())
+}
+
+/// What each mid-`bisync` pair is transferring right now: the last file a
+/// transfer line mentioned (pair-relative ciphertext path) plus how many
+/// files this pass has touched -- feeds the bottom-right task's label.
+pub struct SyncActivity {
+    pub current: String,
+    pub count: u64,
+}
+
+fn activity_map() -> &'static Mutex<HashMap<String, SyncActivity>> {
+    static ACTIVITY: OnceLock<Mutex<HashMap<String, SyncActivity>>> = OnceLock::new();
+    ACTIVITY.get_or_init(Default::default)
+}
+
+/// On success returns rclone's captured log plus whether this pass did any
+/// real transfer work (the same signal that lights the syncing badge) --
+/// `sync_now` uses that to decide when re-verifying against the cloud is
+/// worth an `rclone check`.
+fn run_bisync(local_path: &str, remote: &str, resync: bool) -> Result<(String, bool), String> {
     // `--create-empty-src-dirs`: rclone otherwise ignores empty directories,
     // so an empty folder (e.g. `.../test`) never propagates. (Requires
     // rclone >= 1.64 for bisync; the app ships/expects a current rclone.)
@@ -172,9 +213,19 @@ fn run_bisync(local_path: &str, remote: &str, resync: bool) -> Result<String, St
     let mut marked = false;
     if let Some(stderr) = child.stderr.take() {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if !marked && is_transfer_activity(&line) {
-                marked = true;
-                syncing_set().lock_safe().insert(local_path.to_string());
+            if is_transfer_activity(&line) {
+                if !marked {
+                    marked = true;
+                    syncing_set().lock_safe().insert(local_path.to_string());
+                }
+                if let Some(path) = transfer_line_path(&line) {
+                    let mut activity = activity_map().lock_safe();
+                    let entry = activity
+                        .entry(local_path.to_string())
+                        .or_insert(SyncActivity { current: String::new(), count: 0 });
+                    entry.current = path;
+                    entry.count += 1;
+                }
             }
             captured.push_str(&line);
             captured.push('\n');
@@ -183,12 +234,13 @@ fn run_bisync(local_path: &str, remote: &str, resync: bool) -> Result<String, St
     let status = child.wait().str_err()?;
     if marked {
         syncing_set().lock_safe().remove(local_path);
+        activity_map().lock_safe().remove(local_path);
     }
     let captured = captured.trim().to_string();
     if !status.success() {
         return Err(captured);
     }
-    Ok(captured)
+    Ok((captured, marked))
 }
 
 fn mark_resynced(local_path: &str) -> Result<(), String> {
@@ -219,16 +271,22 @@ pub fn sync_now(pair: &SyncPair) -> Result<SyncReport, String> {
     // NB: the "syncing" badge flag is managed inside run_bisync now, keyed
     // off actual transfer activity -- not blanket-set for the whole pass, so
     // no-op passes don't light it. (Cleared there on process exit too.)
-    let result = sync_now_inner(pair, &remote);
-    match &result {
-        Ok(_) => {
+    match sync_now_inner(pair, &remote) {
+        Ok((report, transferred)) => {
             last_error_map().lock_safe().remove(&pair.local_path);
+            // Re-checksum against the cloud only when this pass actually
+            // moved something (or nothing was ever verified) -- a no-op
+            // safety-net tick shouldn't re-hit the provider every 5 min.
+            if transferred || !crate::verify::has_result(&pair.local_path) {
+                crate::verify::verify_pair(&pair.local_path, &remote);
+            }
+            Ok(report)
         }
         Err(e) => {
             last_error_map().lock_safe().insert(pair.local_path.clone(), e.clone());
+            Err(e)
         }
     }
-    result
 }
 
 fn syncing_set() -> &'static Mutex<std::collections::HashSet<String>> {
@@ -260,18 +318,37 @@ pub fn drive_sync_last_error(local_path: String) -> Option<String> {
     last_error_map().lock_safe().get(&local_path).cloned()
 }
 
-fn sync_now_inner(pair: &SyncPair, remote: &str) -> Result<SyncReport, String> {
+fn sync_now_inner(pair: &SyncPair, remote: &str) -> Result<(SyncReport, bool), String> {
     match run_bisync(&pair.local_path, remote, !pair.resynced) {
-        Ok(stderr) => {
+        Ok((stderr, transferred)) => {
             if !pair.resynced {
                 mark_resynced(&pair.local_path)?;
             }
-            Ok(SyncReport { summary: extract_summary(&stderr) })
+            Ok((SyncReport { summary: extract_summary(&stderr) }, transferred))
         }
         Err(e) if needs_resync_retry(&e) => {
-            let stderr = run_bisync(&pair.local_path, remote, true)?;
-            mark_resynced(&pair.local_path)?;
-            Ok(SyncReport { summary: extract_summary(&stderr) })
+            // Two attempts, not one: the abort that lands here can be the
+            // transient "corrupted on transfer: md5 hashes differ" case (a
+            // file -- typically gocryptfs ciphertext under a mounted vault
+            // -- changed while rclone was mid-copy). Retrying instantly
+            // against a still-moving source just fails the same way, so
+            // corruption aborts wait out the write burst first; the plain
+            // stale-baseline case keeps its original immediate retry.
+            let mut last = e;
+            for delay in [Duration::from_secs(5), Duration::from_secs(20)] {
+                if is_corruption_error(&last) {
+                    std::thread::sleep(delay);
+                }
+                match run_bisync(&pair.local_path, remote, true) {
+                    Ok((stderr, transferred)) => {
+                        mark_resynced(&pair.local_path)?;
+                        return Ok((SyncReport { summary: extract_summary(&stderr) }, transferred));
+                    }
+                    Err(e2) if needs_resync_retry(&e2) || is_corruption_error(&e2) => last = e2,
+                    Err(e2) => return Err(e2),
+                }
+            }
+            Err(last)
         }
         // A prior run that got killed mid-sync (app force-quit, a `pkexec
         // dpkg -i` upgrade restarting the process, the machine losing
@@ -287,11 +364,11 @@ fn sync_now_inner(pair: &SyncPair, remote: &str) -> Result<SyncReport, String> {
         Err(e) if stale_lock_path(&e).is_some() => {
             let lock_path = stale_lock_path(&e).unwrap();
             let _ = std::fs::remove_file(&lock_path);
-            let stderr = run_bisync(&pair.local_path, remote, !pair.resynced)?;
+            let (stderr, transferred) = run_bisync(&pair.local_path, remote, !pair.resynced)?;
             if !pair.resynced {
                 mark_resynced(&pair.local_path)?;
             }
-            Ok(SyncReport { summary: extract_summary(&stderr) })
+            Ok((SyncReport { summary: extract_summary(&stderr) }, transferred))
         }
         Err(e) => Err(e),
     }
@@ -346,6 +423,15 @@ fn stale_lock_path(err: &str) -> Option<String> {
 /// regardless of how the two ever fell out of sync.
 fn needs_resync_retry(err: &str) -> bool {
     err.to_lowercase().contains("run --resync to recover")
+}
+
+/// rclone's "corrupted on transfer: md5 hashes differ" abort -- in this
+/// app's setup it virtually always means the source file changed while
+/// rclone was mid-copy (gocryptfs rewriting ciphertext under a mounted
+/// vault), not real corruption, so it's worth retrying after the write
+/// burst has settled rather than surfacing straight to the user.
+fn is_corruption_error(err: &str) -> bool {
+    err.to_lowercase().contains("corrupted on transfer")
 }
 
 /// `rclone`'s own `--stats-one-line` summary -- surfaced close to
@@ -412,9 +498,22 @@ pub fn start_loop(state: &DriveSyncState, pair: SyncPair) {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            let _ = rx.recv_timeout(SAFETY_NET_INTERVAL);
+            let woke_by_event = rx.recv_timeout(SAFETY_NET_INTERVAL).is_ok();
             if stop.load(Ordering::Relaxed) {
                 break;
+            }
+            // A watch event may land mid-write-burst (see QUIESCENCE_WINDOW)
+            // -- drain follow-up events until the folder goes quiet so
+            // bisync never reads files still being rewritten under it.
+            if woke_by_event {
+                while rx.recv_timeout(QUIESCENCE_WINDOW).is_ok() {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                }
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
             }
             let Some(fresh) = list_pairs().into_iter().find(|p| p.local_path == key) else {
                 break; // pair was removed from under us
@@ -443,25 +542,34 @@ pub fn drive_list_pairs() -> Vec<SyncPair> {
     list_pairs()
 }
 
+// `state` is unconditional even though only the desktop watch-loop calls
+// use it: `#[tauri::command]`'s handler-generation macro doesn't reconcile
+// a per-parameter `#[cfg(desktop)]` against a call site that's compiled
+// for every platform (the codegen'd wrapper ends up with a fixed arity
+// that mismatches the cfg-stripped signature on mobile) -- it needs the
+// mobile-target vs desktop-target arg count to actually agree; `DriveSyncState`
+// itself is `.manage()`d unconditionally in `lib.rs`, so taking it here on
+// mobile is free, just unused (that half of the call stays desktop-only).
 #[tauri::command]
 pub async fn drive_add_pair(
-    #[cfg(desktop)] state: tauri::State<'_, DriveSyncState>,
+    state: tauri::State<'_, DriveSyncState>,
     provider: String,
     local_path: String,
 ) -> Result<SyncPair, String> {
     let pair = tokio::task::spawn_blocking(move || add_pair(provider, local_path)).await.str_err()??;
     #[cfg(desktop)]
     start_loop(&state, pair.clone());
+    #[cfg(mobile)]
+    let _ = &state;
     Ok(pair)
 }
 
 #[tauri::command]
-pub fn drive_remove_pair(
-    #[cfg(desktop)] state: tauri::State<DriveSyncState>,
-    local_path: String,
-) -> Result<(), String> {
+pub fn drive_remove_pair(state: tauri::State<DriveSyncState>, local_path: String) -> Result<(), String> {
     #[cfg(desktop)]
     stop_loop(&state, &local_path);
+    #[cfg(mobile)]
+    let _ = &state;
     remove_pair(&local_path)
 }
 
@@ -488,6 +596,63 @@ pub async fn drive_sync_now(local_path: String) -> Result<SyncReport, String> {
 #[tauri::command]
 pub fn drive_syncing_now() -> Vec<String> {
     syncing_now()
+}
+
+#[derive(Serialize)]
+pub struct SyncActivityDto {
+    /// Human-readable name of the file being transferred: decrypted when it
+    /// sits inside a currently-unlocked vault, the on-disk name for a plain
+    /// file, `None` when it's ciphertext we can't (or shouldn't) name.
+    pub current: Option<String>,
+    pub count: u64,
+}
+
+/// Any ancestor of `cipher_abs` (up to the pair root) being a vault means
+/// the on-disk name is ciphertext -- never worth showing raw.
+fn inside_vault_ciphertext(pair_root: &Path, cipher_abs: &Path) -> bool {
+    let mut dir = cipher_abs.parent();
+    while let Some(d) = dir {
+        if d.join(".vault.meta").exists() {
+            return true;
+        }
+        if d == pair_root {
+            break;
+        }
+        dir = d.parent();
+    }
+    false
+}
+
+/// Per-pair live transfer detail for the bottom-right task label, keyed by
+/// the pair's local path.
+#[tauri::command]
+pub fn drive_sync_activity(
+    state: tauri::State<crate::AppState>,
+) -> HashMap<String, SyncActivityDto> {
+    let activity = activity_map().lock_safe();
+    let vaults = state.vaults.lock_safe();
+    activity
+        .iter()
+        .map(|(pair_path, act)| {
+            let cipher_abs = Path::new(pair_path).join(&act.current);
+            let decrypted = vaults.values().find_map(|session| {
+                let rel = cipher_abs.strip_prefix(session.vault.root()).ok()?;
+                session.vault.decrypt_rel_path(rel).ok()
+            });
+            let current = decrypted
+                .map(|p| p.to_string_lossy().to_string())
+                .or_else(|| {
+                    if act.current.is_empty()
+                        || inside_vault_ciphertext(Path::new(pair_path), &cipher_abs)
+                    {
+                        None
+                    } else {
+                        Some(act.current.clone())
+                    }
+                });
+            (pair_path.clone(), SyncActivityDto { current, count: act.count })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -532,5 +697,24 @@ mod tests {
     #[test]
     fn needs_resync_retry_is_false_for_unrelated_errors() {
         assert!(!needs_resync_retry("some other rclone failure"));
+    }
+
+    #[test]
+    fn transfer_line_path_extracts_the_file_from_real_rclone_lines() {
+        let copied = "2026/08/03 22:10:01 INFO  : personal/aBrMm/jpgyOBwZ: Copied (new)";
+        assert_eq!(transfer_line_path(copied), Some("personal/aBrMm/jpgyOBwZ".to_string()));
+        let deleted = "2026/08/03 22:10:02 INFO  : old/file.bin: Deleted";
+        assert_eq!(transfer_line_path(deleted), Some("old/file.bin".to_string()));
+        assert_eq!(transfer_line_path("Transferred: 3 files, 12 KiB"), None);
+    }
+
+    /// Real wording from an rclone 1.74 bisync abort when a source file
+    /// changed mid-copy (gocryptfs ciphertext being rewritten while the
+    /// vault was mounted).
+    #[test]
+    fn is_corruption_error_matches_rclones_md5_mismatch_abort() {
+        let real = "2026/08/03 00:01:29 ERROR : personal/4WSGkWfIWC89: corrupted on transfer: md5 hashes differ src(Local file system at /home/linux/Documents/cloud/google_drive) \"eb01f3f6f5b68984f5a96cf97a9e99f5\" vs dst(Google drive root 'VaultExplorer/google_drive') \"1ae9bd45a03fdbdf6942c7a2e46e9d7a\"";
+        assert!(is_corruption_error(real));
+        assert!(!is_corruption_error("some other rclone failure"));
     }
 }

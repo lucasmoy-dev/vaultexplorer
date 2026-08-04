@@ -1,0 +1,10 @@
+[Desktop Entry]
+Categories=System;FileTools;FileManager;
+Comment=File manager with encrypted vaults
+Exec=vaultexplorer %U
+StartupWMClass=vaultexplorer
+Icon=vaultexplorer
+Name=Vault Explorer
+Terminal=false
+Type=Application
+MimeType=inode/directory;x-scheme-handler/vaultexplorer;

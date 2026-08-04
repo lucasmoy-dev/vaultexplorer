@@ -15,7 +15,23 @@ use image::{ExtendedColorType, ImageEncoder};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-fn cache_dir() -> PathBuf {
+/// `$HOME` is unset for this app on Android, so `crate::home_dir()`
+/// (unix `$HOME`-or-`/`) silently resolved to `/.cache/...` -- a path this
+/// app can't write to -- and every `create_dir_all` below failed, meaning
+/// the disk thumbnail cache never actually persisted a single file there;
+/// every folder listing re-decoded every image from scratch. `app_cache_dir()`
+/// is the platform-correct answer (`Context.getCacheDir()` via Tauri's own
+/// resolver) and costs nothing extra on desktop, where it's unused.
+#[cfg(mobile)]
+fn cache_dir(app: &tauri::AppHandle) -> PathBuf {
+    use tauri::Manager;
+    match app.path().app_cache_dir() {
+        Ok(dir) => dir.join("thumbnails"),
+        Err(_) => PathBuf::from(format!("{}/.cache/vaultexplorer/thumbnails", crate::home_dir())),
+    }
+}
+#[cfg(not(mobile))]
+fn cache_dir(_app: &tauri::AppHandle) -> PathBuf {
     PathBuf::from(format!("{}/.cache/vaultexplorer/thumbnails", crate::home_dir()))
 }
 
@@ -46,7 +62,7 @@ fn to_data_uri(jpeg_bytes: &[u8]) -> String {
 }
 
 /// Thumbnail for a real on-disk image file, cached by path+mtime.
-pub fn thumbnail_for_path(path: &str, max_size: u32) -> Result<String, String> {
+pub fn thumbnail_for_path(app: &tauri::AppHandle, path: &str, max_size: u32) -> Result<String, String> {
     let metadata = std::fs::metadata(path).str_err()?;
     let mtime = metadata
         .modified()
@@ -54,7 +70,7 @@ pub fn thumbnail_for_path(path: &str, max_size: u32) -> Result<String, String> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let dir = cache_dir();
+    let dir = cache_dir(app);
     std::fs::create_dir_all(&dir).str_err()?;
     let cache_path = dir.join(cache_key(path, mtime, max_size));
 
@@ -81,7 +97,7 @@ pub fn thumbnail_for_bytes(bytes: &[u8], max_size: u32) -> Result<String, String
 /// ffmpeg needs a real path to read and decrypting a vault video to a
 /// plaintext temp file for it would break the same invariant that scoped
 /// vault-internal audio metadata clearing and media conversion out too.
-pub fn thumbnail_for_video(path: &str, max_size: u32) -> Result<String, String> {
+pub fn thumbnail_for_video(app: &tauri::AppHandle, path: &str, max_size: u32) -> Result<String, String> {
     let metadata = std::fs::metadata(path).str_err()?;
     let mtime = metadata
         .modified()
@@ -89,7 +105,7 @@ pub fn thumbnail_for_video(path: &str, max_size: u32) -> Result<String, String> 
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let dir = cache_dir();
+    let dir = cache_dir(app);
     std::fs::create_dir_all(&dir).str_err()?;
     let cache_path = dir.join(cache_key(&format!("video:{path}"), mtime, max_size));
     if let Ok(cached) = std::fs::read(&cache_path) {
@@ -135,7 +151,7 @@ pub fn thumbnail_for_video(path: &str, max_size: u32) -> Result<String, String> 
 /// tiles opening at once then decode in parallel instead of freezing the
 /// UI one image at a time.
 #[tauri::command]
-pub async fn fs_thumbnail(path: String, max_size: u32) -> Result<String, String> {
+pub async fn fs_thumbnail(app: tauri::AppHandle, path: String, max_size: u32) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let ext = Path::new(&path)
             .extension()
@@ -143,9 +159,9 @@ pub async fn fs_thumbnail(path: String, max_size: u32) -> Result<String, String>
             .unwrap_or("")
             .to_lowercase();
         if matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v") {
-            thumbnail_for_video(&path, max_size)
+            thumbnail_for_video(&app, &path, max_size)
         } else {
-            thumbnail_for_path(&path, max_size)
+            thumbnail_for_path(&app, &path, max_size)
         }
     })
     .await

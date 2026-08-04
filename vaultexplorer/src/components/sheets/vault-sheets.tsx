@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { api, baseName, ENCRYPTED_FILE_EXT } from "../../api";
 import { LockGlyph, EyeGlyph, EyeOffGlyph } from "../../icons";
-import { PendingAction, VaultCreateOptions } from "../../types";
+import {
+  PendingAction,
+  VaultCreateOptions,
+  SensitiveTimeout,
+  SENSITIVE_TIMEOUT_CHOICES,
+  nearestSensitiveChoice,
+} from "../../types";
 import { useShakeOnError } from "../../hooks/useShakeOnError";
 
 // ---------- small modal sheets ----------
@@ -174,15 +180,22 @@ export function UnlockSheet({
 export function SensitiveUnlockSheet({
   name,
   error,
+  defaultTimeout,
   onCancel,
   onSubmit,
 }: {
   name: string;
   error: string;
+  /// What Settings has configured -- the selector starts here, so the common
+  /// case is "type the password, press Enter" with no extra decision.
+  defaultTimeout: SensitiveTimeout;
   onCancel: () => void;
-  onSubmit: (password: string) => void;
+  onSubmit: (password: string, timeout: SensitiveTimeout) => void;
 }) {
   const [pw, setPw] = useState("");
+  const [timeout_, setTimeout_] = useState<SensitiveTimeout>(() =>
+    nearestSensitiveChoice(defaultTimeout)
+  );
   const cardRef = useShakeOnError<HTMLDivElement>(error);
   return (
     <div className="sheet-overlay" onMouseDown={onCancel}>
@@ -192,24 +205,41 @@ export function SensitiveUnlockSheet({
         </div>
         <h3>Sensitive file</h3>
         <p>
-          “{name}” is marked sensitive. Re-enter this vault's password to view it for the
-          configured window.
+          “{name}” is marked sensitive. Re-enter this vault's password to view it, and choose how
+          long the session stays open.
         </p>
         <PasswordInput
           autoFocus
           value={pw}
           onChange={(e) => setPw(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") onSubmit(pw);
+            if (e.key === "Enter") onSubmit(pw, timeout_);
             if (e.key === "Escape") onCancel();
           }}
         />
+        {/* Per-unlock duration, not just the configured default: how long
+            this should stay readable depends on what you're about to do with
+            it, and going to Settings mid-task to change that isn't it. */}
+        <div className="duration-picker" role="radiogroup" aria-label="Keep open for">
+          {SENSITIVE_TIMEOUT_CHOICES.map((o) => (
+            <button
+              key={String(o.value)}
+              type="button"
+              role="radio"
+              aria-checked={timeout_ === o.value}
+              className={`duration-chip ${timeout_ === o.value ? "on" : ""}`}
+              onClick={() => setTimeout_(o.value)}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
         {error && <p className="error">{error}</p>}
         <div className="sheet-actions">
           <button className="btn-plain" onClick={onCancel}>
             Cancel
           </button>
-          <button className="btn-primary" onClick={() => onSubmit(pw)}>
+          <button className="btn-primary" onClick={() => onSubmit(pw, timeout_)}>
             Unlock
           </button>
         </div>
@@ -455,6 +485,125 @@ export function NewVaultSheet({
           </button>
           <button className="btn-primary" onClick={go}>
             Create vault
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/// Editing the same "Sensitive"/"Auto-lock"/"Unlock automatically" options
+/// `NewVaultSheet`'s Advanced section sets at creation time, but for a vault
+/// that already exists -- opened via "Vault Settings…" on any vault folder.
+/// Turning "Unlock automatically" on for the first time needs the vault's
+/// password (this sheet never has it otherwise -- it's never stored in
+/// plaintext anywhere), which `onSave` verifies before it's written to the
+/// OS keyring rather than trusting whatever was typed.
+export function VaultSettingsSheet({
+  name,
+  initial,
+  canAutoUnlock,
+  onSave,
+  onCancel,
+}: {
+  name: string;
+  initial: VaultCreateOptions;
+  canAutoUnlock: boolean;
+  onSave: (opts: VaultCreateOptions, password: string | null) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [sensitive, setSensitive] = useState(initial.sensitive);
+  const [autoLockMinutes, setAutoLockMinutes] = useState(initial.autoLockMinutes || 15);
+  const [autoUnlock, setAutoUnlock] = useState(initial.autoUnlock);
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const cardRef = useShakeOnError<HTMLDivElement>(error);
+
+  // Only need the password when *enabling* auto-unlock -- turning it off,
+  // or leaving an already-enabled vault's toggle checked, changes nothing
+  // that needs re-proving.
+  const needsPassword = autoUnlock && !initial.autoUnlock;
+
+  async function save() {
+    if (needsPassword && pw === "") {
+      setError("Enter the vault password to enable auto-unlock.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await onSave({ sensitive, autoLockMinutes: autoLockMinutes || 15, autoUnlock }, needsPassword ? pw : null);
+    } catch (e) {
+      setError(String(e));
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="sheet-overlay" onMouseDown={onCancel}>
+      <div ref={cardRef} className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="sheet-lock">
+          <LockGlyph size={22} />
+        </div>
+        <h3>Vault Settings — “{name}”</h3>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={sensitive}
+            onChange={(e) => setSensitive(e.target.checked)}
+          />
+          Sensitive (auto-lock, re-authenticate on refocus)
+        </label>
+        {sensitive && (
+          <label className="field-row">
+            <span className="field-label">Auto-lock after (minutes)</span>
+            <input
+              type="number"
+              min={1}
+              value={autoLockMinutes}
+              onChange={(e) => setAutoLockMinutes(parseInt(e.target.value, 10) || 15)}
+            />
+          </label>
+        )}
+        {canAutoUnlock ? (
+          <>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={autoUnlock}
+                onChange={(e) => setAutoUnlock(e.target.checked)}
+              />
+              Unlock automatically when the app starts
+            </label>
+            {needsPassword && (
+              <>
+                <p className="advanced-hint">
+                  Enter the vault password once to store it in your OS keyring.
+                </p>
+                <PasswordInput
+                  autoFocus
+                  placeholder="Vault password"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && save()}
+                />
+              </>
+            )}
+          </>
+        ) : (
+          <p className="hint">
+            Nested vaults can't unlock automatically at startup — their path only exists while the
+            parent vault is open.
+          </p>
+        )}
+        {error && <p className="error">{error}</p>}
+        <div className="sheet-actions">
+          <button className="btn-plain" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn-primary" disabled={busy} onClick={save}>
+            {busy ? "Saving…" : "Save"}
           </button>
         </div>
       </div>

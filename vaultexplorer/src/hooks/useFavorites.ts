@@ -33,18 +33,25 @@ export function useFavorites(home: string, mobile: boolean) {
   // The desktop defaults above are real folders on a normal Linux $HOME,
   // but on Android there's no /usr/share/applications and no
   // ~/Pictures/Downloads/Desktop -- Android sandboxes each app to its own
-  // data dir, so those paths just 404. Swap in ones that live inside that
-  // sandbox instead (created on demand by `browse_root_dir`, so they're
-  // guaranteed to exist and need no storage permission at all), plus the
-  // real shared-storage root -- tapping that one prompts for the "All
-  // files access" permission first if it isn't granted yet (see openFavorite).
+  // data dir, so those paths just 404. An earlier version of this pointed
+  // Documents/Pictures/Downloads at same-named folders *inside* that
+  // sandbox (created on demand by `browse_root_dir`) to dodge needing the
+  // storage permission up front -- but that made every one of them a
+  // permanently-empty decoy, disconnected from the user's real files
+  // (confusingly so: it looks identical to the real folder until you
+  // notice nothing you saved from any other app ever shows up in it).
+  // Pointing these at the real shared-storage locations instead means
+  // they're genuinely the same Documents/Pictures/Downloads any other app
+  // on the phone sees -- at the cost of needing the same "All files
+  // access" prompt `PHONE_STORAGE_PATH` already required (see
+  // `openFavorite`, gated on any path under it, not just the exact root).
   useEffect(() => {
     if (!mobile || hadSavedFavorites.current) return;
     setFavPaths([
       home,
-      joinPath(home, "Documents"),
-      joinPath(home, "Pictures"),
-      joinPath(home, "Downloads"),
+      joinPath(PHONE_STORAGE_PATH, "Documents"),
+      joinPath(PHONE_STORAGE_PATH, "Pictures"),
+      joinPath(PHONE_STORAGE_PATH, "Download"),
       PHONE_STORAGE_PATH,
     ]);
   }, [mobile, home]);

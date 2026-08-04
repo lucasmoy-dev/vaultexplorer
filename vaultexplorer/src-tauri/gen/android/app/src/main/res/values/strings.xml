@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">"vaultexplorer"</string>
-    <string name="main_activity_title">"vaultexplorer"</string>
+    <string name="app_name">"Vault Explorer"</string>
+    <string name="main_activity_title">"Vault Explorer"</string>
 </resources>

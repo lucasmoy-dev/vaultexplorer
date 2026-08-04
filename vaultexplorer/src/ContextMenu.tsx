@@ -3,7 +3,20 @@ import { createPortal } from "react-dom";
 
 export type MenuItem =
   | { type: "separator" }
-  | { type: "submenu"; label: string; disabled?: boolean; items: MenuItem[] }
+  | {
+      type: "submenu";
+      label: string;
+      disabled?: boolean;
+      items?: MenuItem[];
+      // For a submenu whose contents are expensive to compute (e.g. "Open
+      // With…" enumerating every app registered for a file's MIME type) --
+      // fetched once on first hover instead of up front for every right-
+      // click, so opening the menu itself never has to wait on it. Mutually
+      // exclusive with `items`; `MenuRows` shows a disabled "Loading…" row
+      // until this resolves, then caches the result for the rest of this
+      // menu's lifetime.
+      loadItems?: () => Promise<MenuItem[]>;
+    }
   | {
       type?: "item";
       label: string;
@@ -76,9 +89,16 @@ function SubmenuFlyout({
   );
 }
 
+const LOADING_ITEMS: MenuItem[] = [{ label: "Loading…", disabled: true, onClick: () => {} }];
+
 function MenuRows({ items, onClose }: { items: MenuItem[]; onClose: () => void }) {
   const [openSub, setOpenSub] = useState<number | null>(null);
   const wrapperRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  // Cache for `loadItems` submenus -- fetched once per index the first
+  // time it's opened, kept for the rest of this menu instance's lifetime
+  // so re-hovering the same submenu doesn't refire the fetch.
+  const [loadedItems, setLoadedItems] = useState<Record<number, MenuItem[]>>({});
+  const loadingRef = useRef<Set<number>>(new Set());
   // Portaling the submenu to <body> (see above) means it's no longer a DOM
   // descendant of the row that opens it, so a native mouseleave fires the
   // instant the pointer crosses from the row into the (now-sibling-in-the-
@@ -105,6 +125,18 @@ function MenuRows({ items, onClose }: { items: MenuItem[]; onClose: () => void }
         if (item.type === "separator") return <div key={i} className="context-sep" />;
 
         if (item.type === "submenu") {
+          const openSubmenu = () => {
+            if (item.disabled) return;
+            cancelClose();
+            setOpenSub(i);
+            if (item.loadItems && !loadedItems[i] && !loadingRef.current.has(i)) {
+              loadingRef.current.add(i);
+              item.loadItems().then((resolved) => {
+                loadingRef.current.delete(i);
+                setLoadedItems((prev) => ({ ...prev, [i]: resolved }));
+              });
+            }
+          };
           return (
             <div
               key={i}
@@ -112,15 +144,18 @@ function MenuRows({ items, onClose }: { items: MenuItem[]; onClose: () => void }
               ref={(el) => {
                 wrapperRefs.current[i] = el;
               }}
-              onMouseEnter={() => {
-                if (!item.disabled) {
-                  cancelClose();
-                  setOpenSub(i);
-                }
-              }}
+              onMouseEnter={openSubmenu}
               onMouseLeave={() => scheduleClose(i)}
             >
-              <button className="context-item" disabled={item.disabled}>
+              <button
+                className="context-item"
+                disabled={item.disabled}
+                // Hover alone (above) never fires on touch -- tapping the
+                // row is the only way a submenu opens there, so toggle on
+                // click too. Harmless for mouse users: it just means a
+                // click does the same thing hover already did.
+                onClick={() => (openSub === i ? setOpenSub(null) : openSubmenu())}
+              >
                 <span className="context-label-group">
                   <span className="context-label">{item.label}</span>
                 </span>
@@ -128,7 +163,7 @@ function MenuRows({ items, onClose }: { items: MenuItem[]; onClose: () => void }
               </button>
               {openSub === i && wrapperRefs.current[i] && (
                 <SubmenuFlyout
-                  items={item.items}
+                  items={item.loadItems ? loadedItems[i] ?? LOADING_ITEMS : item.items ?? []}
                   onClose={onClose}
                   anchor={wrapperRefs.current[i]!}
                   onEnter={cancelClose}
@@ -163,6 +198,62 @@ function MenuRows({ items, onClose }: { items: MenuItem[]; onClose: () => void }
   );
 }
 
+// Native <select> popups render with the platform's raw (WebKitGTK: plain
+// white) list style that CSS can't reach into on Linux -- this is a themed
+// stand-in for settings-style pickers: a button showing the current value,
+// opening the same dark `.context-menu` popup the app already uses for
+// right-click menus (checkmark on the selected row, same as the view-mode
+// picker in App.tsx).
+export function Dropdown<T extends string>({
+  value,
+  options,
+  onChange,
+  className,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+  className?: string;
+}) {
+  const [menu, setMenu] = useState<MenuState>(null);
+  const current = options.find((o) => o.value === value);
+  return (
+    <>
+      <button
+        type="button"
+        className={`settings-select dropdown-trigger ${className ?? ""}`}
+        onClick={(e) => {
+          // A second click on the trigger while its own menu is already
+          // open closes it -- without this, the window-level "click
+          // outside" listener in ContextMenu (deferred a tick so it can't
+          // self-close on the *opening* click) still doesn't fire until a
+          // tick later, so this same click would otherwise just reopen it
+          // via `setMenu` immediately after that listener's close.
+          if (menu) {
+            setMenu(null);
+            return;
+          }
+          const r = e.currentTarget.getBoundingClientRect();
+          setMenu({
+            x: r.left,
+            y: r.bottom + 4,
+            items: options.map((o) => ({
+              label: o.value === value ? `✓ ${o.label}` : o.label,
+              onClick: () => onChange(o.value),
+            })),
+          });
+        }}
+      >
+        <span>{current?.label ?? value}</span>
+        <span className="dropdown-caret" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      <ContextMenu state={menu} onClose={() => setMenu(null)} />
+    </>
+  );
+}
+
 export function ContextMenu({ state, onClose }: { state: MenuState; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
@@ -181,14 +272,41 @@ export function ContextMenu({ state, onClose }: { state: MenuState; onClose: () 
 
   useEffect(() => {
     if (!state) return;
-    const close = () => onClose();
+    // Target-based, not propagation-based: a submenu flyout is portaled to
+    // <body> as a *sibling* of the root menu, not a DOM descendant, so
+    // `ref.current.contains(e.target)` would miss it -- but both share the
+    // `context-menu` class, so `closest` catches either.
+    //
+    // Listening for `click`, not `mousedown`, is the other half of this:
+    // Android WebView's touch-to-mouse synthesis for a tap fires an "extra"
+    // mousedown with `target` set to something generic (`document`/`body`,
+    // not the actually-tapped element) rather than the real target -- so
+    // even the `closest` check above can't save a mousedown-based listener
+    // from it. Empirically, that extra mousedown has no matching phantom
+    // `click` alongside it, so anchoring on `click` instead sidesteps the
+    // whole class of bug rather than chasing each of its symptoms (this
+    // replaced an earlier rAF-deferred `mousedown` listener that only fixed
+    // the *opening* tap, not later ones -- tapping "More" to open its own
+    // submenu was closing the whole menu instead, on every tap).
+    const closeIfOutside = (e: Event) => {
+      const target = e.target as Element | null;
+      if (target?.closest(".context-menu")) return;
+      onClose();
+    };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("mousedown", close);
-    window.addEventListener("resize", close);
+    // Still deferred one tick: the *opening* tap itself (e.g. the long-press
+    // that first summoned this menu) lands squarely outside `.context-menu`
+    // by definition, so the target-check alone can't save it from a same-
+    // tick phantom click.
+    const attach = requestAnimationFrame(() => {
+      window.addEventListener("click", closeIfOutside);
+      window.addEventListener("resize", onClose);
+    });
     window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("resize", close);
+      cancelAnimationFrame(attach);
+      window.removeEventListener("click", closeIfOutside);
+      window.removeEventListener("resize", onClose);
       window.removeEventListener("keydown", onKey);
     };
   }, [state, onClose]);

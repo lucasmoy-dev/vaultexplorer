@@ -100,6 +100,7 @@ const EDITOR_CANDIDATES: &[&str] =
 /// it as "run", not "edit"). Falls back to `xdg-open` only if none of the
 /// known editors are installed.
 #[tauri::command]
+#[cfg(desktop)]
 pub(crate) fn open_in_editor(path: String) -> Result<(), String> {
     let found = EDITOR_CANDIDATES.iter().find(|bin| {
         std::process::Command::new("which")

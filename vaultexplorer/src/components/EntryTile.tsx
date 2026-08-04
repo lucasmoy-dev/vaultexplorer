@@ -22,6 +22,7 @@ export function EntryTile({
   sensitive,
   syncBadge,
   syncState,
+  mobile,
   editing,
   editValue,
   onEditChange,
@@ -49,7 +50,8 @@ export function EntryTile({
   pinned?: boolean;
   sensitive?: boolean;
   syncBadge?: "git" | "drive" | "local" | null;
-  syncState?: "syncing" | "synced" | null;
+  syncState?: "syncing" | "synced" | "verified" | "pending" | null;
+  mobile?: boolean;
   editing: boolean;
   editValue: string;
   onEditChange: (v: string) => void;
@@ -95,7 +97,12 @@ export function EntryTile({
       } ${entry.is_hidden ? "dimmed" : ""} ${cut ? "cut" : ""}`}
       data-name={entry.name}
       title={editing ? undefined : entry.name}
-      draggable={!editing}
+      // HTML5 drag is dead weight on touch (Android WebView never
+      // synthesizes drag events from a touch gesture, see beginDrag) and
+      // actively harmful: a `draggable` element can swallow the long-press
+      // that's supposed to open the context menu instead. Off entirely on
+      // mobile rather than just unused.
+      draggable={!editing && !mobile}
       onClick={editing ? undefined : onClick}
       onDoubleClick={editing ? undefined : onOpen}
       onContextMenu={editing ? undefined : onMenu}
@@ -113,14 +120,23 @@ export function EntryTile({
         {tagHex && !entry.is_dir && <span className="entry-tag-dot" style={{ background: tagHex }} />}
         {syncBadge && (
           <span
-            className={`entry-tag-dot entry-sync-badge ${syncState === "syncing" ? "syncing" : ""} ${
-              syncState === "synced" ? "synced" : ""
-            }`}
+            className={`entry-tag-dot entry-sync-badge ${syncState ?? ""}`}
+            title={
+              syncState === "verified"
+                ? "Verified in cloud (checksums match)"
+                : syncState === "pending"
+                ? "Not yet verified in cloud"
+                : syncState === "syncing"
+                ? "Syncing…"
+                : undefined
+            }
           >
-            {syncState === "synced" ? (
+            {syncState === "synced" || syncState === "verified" ? (
               <CheckGlyph size={16} />
             ) : syncState === "syncing" ? (
               <RefreshGlyph size={16} />
+            ) : syncState === "pending" ? (
+              <CloudSyncGlyph size={16} />
             ) : syncBadge === "git" ? (
               <GitBranchGlyph size={18} />
             ) : syncBadge === "drive" ? (
@@ -146,6 +162,13 @@ export function EntryTile({
           ref={editRef}
           autoFocus
           rows={1}
+          // Width: a textarea sizes itself from `cols`, not from its content,
+          // so leaving the default (20) made every icon-view rename box come
+          // out at its max width even for a 3-character name. Driving cols
+          // off the text (clamped, and only in icon view -- list rename is a
+          // fixed-width single line) makes the field hug the name, with the
+          // CSS min/max-width as the real bounds.
+          cols={view === "icon" ? Math.max(4, Math.min(14, editValue.length)) : undefined}
           className="entry-name-edit"
           value={editValue}
           onClick={(e) => e.stopPropagation()}

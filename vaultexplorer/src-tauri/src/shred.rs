@@ -35,6 +35,30 @@ fn shred_file(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)
 }
 
+/// Remove `dir` and everything under it, overwriting file contents first.
+/// Best-effort and silent -- for cleanup paths that must not fail loudly or
+/// block on a progress channel (see `MountHandle::drop`, which uses it on a
+/// just-unmounted FUSE mountpoint: anything left inside is plaintext that
+/// landed on the bare directory instead of going through the vault).
+pub(crate) fn purge_dir_securely(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Already gone, or unreadable -- either way there's nothing to do.
+        let _ = std::fs::remove_dir(dir);
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            purge_dir_securely(&path);
+        } else if shred_file(&path).is_err() {
+            // A file we couldn't overwrite (permissions, a live handle) is
+            // still better unlinked than left sitting there.
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
+}
+
 fn shred_recursive(
     path: &Path,
     done: &std::cell::Cell<u64>,

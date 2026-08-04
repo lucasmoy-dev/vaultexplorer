@@ -138,9 +138,67 @@ fn new_request_id() -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Center of the window that asked for the picker, in root-window (physical)
+/// pixels. `parent_window` is the portal spec's handle for the requesting
+/// toplevel: `"x11:0x<xid>"` on X11, and an opaque compositor token on
+/// Wayland (where no client may position its own windows anyway, so there's
+/// nothing to do with it). Read straight off the X server -- GDK's
+/// foreign-window API would mean pulling in the gdk-x11 backend crate, and
+/// this is two round-trips of plain protocol.
+fn x11_parent_center(parent_window: &str) -> Option<(f64, f64)> {
+    use x11rb::protocol::xproto::ConnectionExt;
+    let hex = parent_window.trim().strip_prefix("x11:")?.trim_start_matches("0x");
+    let win = u32::from_str_radix(hex, 16).ok()?;
+    let (conn, _screen) = x11rb::connect(None).ok()?;
+    let geom = conn.get_geometry(win).ok()?.reply().ok()?;
+    // A reparented toplevel's own x/y are relative to the frame the window
+    // manager wrapped it in, not the root, so translate its origin instead
+    // of trusting them.
+    let origin = conn.translate_coordinates(win, geom.root, 0, 0).ok()?.reply().ok()?;
+    Some((
+        f64::from(origin.dst_x) + f64::from(geom.width) / 2.0,
+        f64::from(origin.dst_y) + f64::from(geom.height) / 2.0,
+    ))
+}
+
+/// Top-left (logical, matching the builder's units) that puts a `w`x`h`
+/// picker in the middle of the monitor the *requesting app* is on.
+///
+/// `.center()` can't do this: it centers on whichever monitor the new window
+/// happened to be created on -- the primary, in practice -- which is why a
+/// Save As triggered from a browser on the second screen opened the panel
+/// over on the first one. Applies to Open/Open Folder too; they're all this
+/// one code path.
+///
+/// Must not be called from the main thread: the monitor/cursor queries below
+/// are message-passed to the event loop and block on its reply.
+fn picker_position(app: &AppHandle, parent_window: &str, w: f64, h: f64) -> Option<(f64, f64)> {
+    // Prefer the requesting window's own center. It's the only signal that
+    // stays right when the picker is triggered from the keyboard (Ctrl+S)
+    // with the pointer parked on another screen. The cursor is the fallback:
+    // still correct for the click-driven case, and it's all there is when the
+    // caller sends no usable parent handle (an empty string is legal, and
+    // some apps do exactly that).
+    let (px, py) = x11_parent_center(parent_window)
+        .or_else(|| app.cursor_position().ok().map(|p| (p.x, p.y)))?;
+    let monitor = app
+        .monitor_from_point(px, py)
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    // Monitor geometry is physical; the window builder's position is logical.
+    let scale = monitor.scale_factor();
+    let pos = monitor.position();
+    let size = monitor.size();
+    let x = f64::from(pos.x) / scale + (f64::from(size.width) / scale - w) / 2.0;
+    let y = f64::from(pos.y) / scale + (f64::from(size.height) / scale - h) / 2.0;
+    Some((x, y))
+}
+
 async fn run_picker(
     app: &AppHandle,
     pending: &PickerMap,
+    parent_window: &str,
     mode: &'static str,
     multiple: bool,
     suggested_name: Option<&str>,
@@ -173,6 +231,7 @@ async fn run_picker(
     }
     let app = app.clone();
     let label_for_build = label.clone();
+    let parent_window = parent_window.to_string();
     let title = if mode == "save" { "Save" } else { "Open" };
     // The Save panel starts collapsed (PickerView's own `expanded` state
     // defaults to false for "save"), so it should *start* at that small
@@ -185,10 +244,17 @@ async fn run_picker(
     // exactly this (called here from a tokio task driven by the D-Bus
     // dispatch, not the main thread).
     let build_result = tauri::async_runtime::spawn_blocking(move || {
-        let result = WebviewWindowBuilder::new(&app, &label_for_build, WebviewUrl::App(url.into()))
+        let mut builder = WebviewWindowBuilder::new(&app, &label_for_build, WebviewUrl::App(url.into()))
             .title(title)
-            .inner_size(w, h)
-            .center()
+            .inner_size(w, h);
+        // Falls back to `.center()` when the requesting monitor can't be
+        // worked out at all (no parent handle, no cursor, no monitor list) --
+        // same behaviour as before, just no longer the only behaviour.
+        builder = match picker_position(&app, &parent_window, w, h) {
+            Some((x, y)) => builder.position(x, y),
+            None => builder.center(),
+        };
+        let result = builder
             // Matches the main window's own decorations:false + transparent:true
             // (see tauri.conf.json) -- without this the picker got a plain
             // opaque-white GTK surface: a visible white flash before the
@@ -258,7 +324,7 @@ impl FileChooserIface {
         &self,
         _handle: ObjectPath<'_>,
         _app_id: String,
-        _parent_window: String,
+        parent_window: String,
         _title: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
@@ -276,7 +342,7 @@ impl FileChooserIface {
             .get("directory")
             .and_then(|v| bool::try_from(v.clone()).ok())
             .unwrap_or(false);
-        let uris = run_picker(&self.app, &self.pending, "open", multiple, None, &[], folder.as_deref(), directory).await;
+        let uris = run_picker(&self.app, &self.pending, &parent_window, "open", multiple, None, &[], folder.as_deref(), directory).await;
         uris_result(uris)
     }
 
@@ -284,7 +350,7 @@ impl FileChooserIface {
         &self,
         _handle: ObjectPath<'_>,
         _app_id: String,
-        _parent_window: String,
+        parent_window: String,
         _title: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
@@ -297,7 +363,7 @@ impl FileChooserIface {
             .and_then(|v| String::try_from(v.clone()).ok());
         let filters = options.get("filters").map(parse_filters).unwrap_or_default();
         let folder = options.get("current_folder").and_then(parse_current_folder);
-        let uris = run_picker(&self.app, &self.pending, "save", false, name.as_deref(), &filters, folder.as_deref(), false).await;
+        let uris = run_picker(&self.app, &self.pending, &parent_window, "save", false, name.as_deref(), &filters, folder.as_deref(), false).await;
         uris_result(uris)
     }
 
@@ -305,7 +371,7 @@ impl FileChooserIface {
         &self,
         _handle: ObjectPath<'_>,
         _app_id: String,
-        _parent_window: String,
+        parent_window: String,
         _title: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
@@ -314,7 +380,7 @@ impl FileChooserIface {
             .and_then(|v| String::try_from(v.clone()).ok());
         let filters = options.get("filters").map(parse_filters).unwrap_or_default();
         let folder = options.get("current_folder").and_then(parse_current_folder);
-        let uris = run_picker(&self.app, &self.pending, "save", true, name.as_deref(), &filters, folder.as_deref(), false).await;
+        let uris = run_picker(&self.app, &self.pending, &parent_window, "save", true, name.as_deref(), &filters, folder.as_deref(), false).await;
         uris_result(uris)
     }
 }

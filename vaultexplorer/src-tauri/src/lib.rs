@@ -2,6 +2,8 @@ mod android;
 #[cfg(desktop)]
 mod app_icon;
 mod archive;
+#[cfg(desktop)]
+mod autostart;
 mod archive_browse;
 mod clipboard;
 mod convert;
@@ -35,6 +37,7 @@ mod share;
 mod shred;
 mod sync;
 mod syncthing;
+mod verify;
 mod terminal;
 mod thumbnail;
 #[cfg(desktop)]
@@ -61,7 +64,92 @@ use vaultcore::Vault;
 #[cfg(desktop)]
 struct MountHandle {
     mountpoint: PathBuf,
-    _session: fuser::BackgroundSession,
+    /// `Option` only so `Drop` below can drop the session -- unmounting the
+    /// FUSE filesystem -- *before* trying to remove the (now plain, empty)
+    /// mountpoint directory. Field drop order would run after our own
+    /// `drop()` body, and `remove_dir` on a still-mounted path fails.
+    session: Option<fuser::BackgroundSession>,
+}
+
+/// Whether `path` is currently a mount point, read from the kernel's own
+/// view rather than inferred -- `fuser`'s unmount-on-drop is best-effort and
+/// silently leaves the mount up if anything holds it busy (a shell sitting in
+/// `cd`, an editor with a file open), and "did it actually come down" is the
+/// difference between a locked vault and a still-readable one.
+#[cfg(desktop)]
+fn is_mount_point(path: &Path) -> bool {
+    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    let target = path.to_string_lossy();
+    mountinfo.lines().any(|line| {
+        // mountinfo field 5 is the mount point, space-escaped as \040 etc.
+        line.split(' ')
+            .nth(4)
+            .map(|f| f.replace("\\040", " ") == target)
+            .unwrap_or(false)
+    })
+}
+
+/// Locking a vault drops its session, which is supposed to unmount. Two
+/// things went wrong with just doing that:
+///
+/// 1. The mountpoint directory stayed behind -- an empty
+///    `vaultexplorer-mnt-<pid>-<hash>` per vault ever opened, surviving both
+///    the lock and the app exit.
+/// 2. Worse: if anything held the mount busy, the unmount silently failed and
+///    the vault's *decrypted view stayed readable through that path after the
+///    vault was locked*. Locking has to actually revoke access, so a busy
+///    mount is force-detached (`fusermount -uz`, a lazy unmount: the path
+///    stops resolving immediately, the mount is torn down once the last
+///    holder lets go).
+///
+/// Anything still inside afterwards is a real file on the bare directory --
+/// a write that raced the unmount, or a mount that never came up -- i.e. the
+/// one way plaintext can end up at rest here. Those get shredded, not just
+/// unlinked. (The mountpoint now lives on tmpfs, so in practice they were
+/// never on a disk to begin with; see `mount_base_dir`.)
+#[cfg(desktop)]
+impl Drop for MountHandle {
+    fn drop(&mut self) {
+        drop(self.session.take());
+        let mountpoint = self.mountpoint.clone();
+        // Unmount + cleanup can block (a lazy unmount shells out; shredding
+        // leftovers does real I/O) and `drop` runs on whatever thread locked
+        // the vault, including the UI's command thread -- so hand it off.
+        // Nothing waits on the result; a next-launch sweep is the backstop.
+        std::thread::spawn(move || {
+            for attempt in 0..5 {
+                if !is_mount_point(&mountpoint) {
+                    break;
+                }
+                if attempt == 0 {
+                    // Give fuser's own unmount a moment before forcing it.
+                    std::thread::sleep(std::time::Duration::from_millis(60));
+                    continue;
+                }
+                let forced = std::process::Command::new("fusermount")
+                    .args(["-u", "-z", &mountpoint.to_string_lossy()])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !forced {
+                    let _ = std::process::Command::new("umount")
+                        .args(["-l", &mountpoint.to_string_lossy()])
+                        .status();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
+            if is_mount_point(&mountpoint) {
+                eprintln!(
+                    "vault: mountpoint {} could not be detached; leaving it rather than touching a live mount",
+                    mountpoint.display()
+                );
+                return;
+            }
+            shred::purge_dir_securely(&mountpoint);
+        });
+    }
 }
 #[cfg(mobile)]
 struct MountHandle {
@@ -249,6 +337,34 @@ fn list_dir(state: State<AppState>, rel_path: String) -> Result<Vec<EntryDto>, S
     })
 }
 
+/// Listing for a specific unlocked vault, not necessarily the active one
+/// -- lets the preview pane show a vault's decrypted contents when the
+/// vault folder is selected from the real fs (instead of the raw
+/// ciphertext names `fs_list` would return). Errs while the vault is
+/// locked; the caller renders that as "locked", never falls back to
+/// ciphertext.
+#[tauri::command]
+fn vault_list_dir_at(
+    state: State<AppState>,
+    root: String,
+    rel_path: String,
+) -> Result<Vec<EntryDto>, String> {
+    let map = state.vaults.lock_safe();
+    let session = map.get(&root).ok_or("vault is locked")?;
+    session.vault.list_dir(&rel_path).str_err().map(|entries| {
+        entries
+            .into_iter()
+            .map(|e| EntryDto {
+                name: e.name,
+                is_dir: e.is_dir,
+                is_vault: e.is_vault,
+                size: e.size,
+                mtime: e.mtime,
+            })
+            .collect()
+    })
+}
+
 #[tauri::command]
 fn search_vault(state: State<AppState>, query: String) -> Result<Vec<String>, String> {
     with_vault(&state, |v| v.search(&query))
@@ -263,6 +379,49 @@ fn move_entry(state: State<AppState>, src: String, dest: String) -> Result<(), S
 #[tauri::command]
 fn copy_entry(state: State<AppState>, src: String, dest: String) -> Result<(), String> {
     with_vault(&state, |v| v.copy_path(&src, &dest))
+}
+
+/// Copy a file between two *different* unlocked vaults directly (decrypt
+/// under the source vault's key, re-encrypt under the destination's) --
+/// `move_entry`/`copy_entry` above only make sense within a single vault,
+/// since both go through `with_vault`, which always operates on whichever
+/// root is currently "active" (i.e. wherever the frontend is currently
+/// browsing). Pasting something copied from vault A while browsing vault B
+/// otherwise silently ran the paste against B using a rel path that was
+/// only ever valid in A. Files only, same restriction `import_file`/
+/// `export_file` already have for the fs<->vault boundary.
+#[tauri::command]
+fn vault_to_vault_copy(
+    state: State<AppState>,
+    src_root: String,
+    src_rel: String,
+    dest_root: String,
+    dest_rel: String,
+) -> Result<(), String> {
+    let plaintext = {
+        let map = state.vaults.lock_safe();
+        let session = map.get(&src_root).ok_or("Source vault isn't unlocked")?;
+        session.vault.decrypt_file(&src_rel).str_err()?
+    };
+    let map = state.vaults.lock_safe();
+    let session = map.get(&dest_root).ok_or("Destination vault isn't unlocked")?;
+    session.vault.write_file(&dest_rel, &plaintext).str_err()
+}
+
+/// Same as `vault_to_vault_copy`, then removes the source -- the "cut"
+/// side of a cross-vault paste.
+#[tauri::command]
+fn vault_to_vault_move(
+    state: State<AppState>,
+    src_root: String,
+    src_rel: String,
+    dest_root: String,
+    dest_rel: String,
+) -> Result<(), String> {
+    vault_to_vault_copy(state.clone(), src_root.clone(), src_rel.clone(), dest_root, dest_rel)?;
+    let map = state.vaults.lock_safe();
+    let session = map.get(&src_root).ok_or("Source vault isn't unlocked")?;
+    session.vault.remove_file(&src_rel).str_err()
 }
 
 #[tauri::command]
@@ -299,6 +458,17 @@ fn import_file(state: State<AppState>, src_path: String, dest_rel: String) -> Re
 fn export_file(state: State<AppState>, rel_path: String, dest_fs_path: String) -> Result<(), String> {
     let bytes = with_vault(&state, |v| v.decrypt_file(&rel_path))?;
     std::fs::write(&dest_fs_path, bytes).str_err()
+}
+
+/// Checks `password` against `path`'s on-disk vault metadata without
+/// touching any unlocked-vault state -- used before writing a password to
+/// the OS keyring (enabling "Unlock automatically" on an already-existing
+/// vault via its Vault Settings sheet) so a typo doesn't get stored as an
+/// auto-unlock password that will just silently fail every future launch
+/// (see `auto_unlock_vaults`'s own doc comment on that failure mode).
+#[tauri::command]
+fn verify_vault_password(path: String, password: String) -> Result<(), String> {
+    Vault::unlock(&path, password.as_bytes()).map(|_| ()).str_err()
 }
 
 /// Store `password` in the OS keyring so `root` can be unlocked
@@ -479,19 +649,43 @@ fn fs_encrypt_file(path: String, password: String) -> Result<String, String> {
     Ok(dest.to_string_lossy().to_string())
 }
 
+/// Where a decrypted-for-the-OS-opener file gets scratched to. On desktop
+/// this is `std::env::temp_dir()` (tmpfs on this app's other RAM-backed
+/// scratch dirs, see the FUSE mountpoint doc comment below) -- unchanged
+/// from before. On Android, `temp_dir()` (both the std one and Tauri's own
+/// `path().temp_dir()`, which just wraps it) resolves to `/tmp`, which
+/// doesn't exist in the app's sandboxed filesystem view: `create_dir_all`
+/// fails outright, so this whole decrypt-and-open flow was silently broken
+/// there. `app_cache_dir()` is the one path Android actually grants this app
+/// write access to *and* the one already declared as shareable in
+/// `file_paths.xml`'s `cache-path` entry -- required for the OS opener to
+/// receive a `content://` URI for it at all (a raw path outside that list
+/// is not grantable via `FileProvider`).
+fn scratch_open_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    #[cfg(mobile)]
+    {
+        Ok(app.path().app_cache_dir().str_err()?.join(format!("open-{}", std::process::id())))
+    }
+    #[cfg(not(mobile))]
+    {
+        let _ = app;
+        Ok(std::env::temp_dir().join(format!("vaultexplorer-open-{}", std::process::id())))
+    }
+}
+
 /// Decrypt the `.vlt` file at `path` with `password` into a scratch temp
 /// file (named after the original, extension restored) and return its
 /// path so the caller can hand it to the OS opener. The plaintext never
 /// touches the original directory.
 #[tauri::command]
-fn fs_decrypt_file(path: String, password: String) -> Result<String, String> {
+fn fs_decrypt_file(app: tauri::AppHandle, path: String, password: String) -> Result<String, String> {
     let plaintext = vaultcore::decrypt_file_with_password(&path, password.as_bytes())
         .str_err()?;
     let stem = Path::new(&path)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
-    let dir = std::env::temp_dir().join(format!("vaultexplorer-open-{}", std::process::id()));
+    let dir = scratch_open_dir(&app)?;
     std::fs::create_dir_all(&dir).str_err()?;
     let dest = dir.join(stem);
     std::fs::write(&dest, plaintext).str_err()?;
@@ -523,10 +717,12 @@ fn encrypt_file_in_vault(
 /// OS opener, mirroring `fs_decrypt_file`.
 #[tauri::command]
 fn decrypt_file_in_vault(
+    app: tauri::AppHandle,
     state: State<AppState>,
     rel_path: String,
     password: String,
 ) -> Result<String, String> {
+    let dir = scratch_open_dir(&app)?;
     with_vault(&state, |v| {
         let wrapped = v.decrypt_file(&rel_path)?;
         let plaintext = vaultcore::decrypt_bytes_with_password(&wrapped, password.as_bytes())?;
@@ -534,10 +730,32 @@ fn decrypt_file_in_vault(
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".to_string());
-        let dir = std::env::temp_dir().join(format!("vaultexplorer-open-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         let dest = dir.join(stem);
         std::fs::write(&dest, plaintext)?;
+        Ok(dest.to_string_lossy().to_string())
+    })
+}
+
+/// Mobile-only alternative to `open_path`: decrypts a *regular* vault entry
+/// (not `.vlt`-wrapped -- see `decrypt_file_in_vault` for that layer) into
+/// the same scratch dir, keeping its original filename so the receiving
+/// app can infer its type from the extension. No FUSE/DocumentsProvider
+/// needed: the plaintext exists on disk only transiently, exactly like the
+/// `.vlt` standalone-decrypt flow this mirrors -- registered unconditionally
+/// (harmless on desktop, just unused there since `open_path` already covers
+/// it via FUSE without a throwaway copy).
+#[tauri::command]
+fn vault_decrypt_to_temp(app: tauri::AppHandle, state: State<AppState>, rel_path: String) -> Result<String, String> {
+    let dir = scratch_open_dir(&app)?;
+    with_vault(&state, |v| v.decrypt_file(&rel_path)).and_then(|plaintext| {
+        let name = Path::new(&rel_path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+        std::fs::create_dir_all(&dir).str_err()?;
+        let dest = dir.join(name);
+        std::fs::write(&dest, plaintext).str_err()?;
         Ok(dest.to_string_lossy().to_string())
     })
 }
@@ -649,6 +867,95 @@ fn open_path(state: State<AppState>, rel_path: String) -> Result<String, String>
     Ok(mountpoint.join(&rel_path).to_string_lossy().to_string())
 }
 
+/// Where FUSE mountpoints go. `$XDG_RUNTIME_DIR` first, then `/dev/shm`: both
+/// are tmpfs, i.e. RAM-backed and never written to a disk, and the runtime dir
+/// is additionally per-user 0700 and wiped at logout.
+///
+/// This matters because of what a mountpoint is: while the mount is up, every
+/// byte read under it is served from memory by `fuse_mount.rs` and the only
+/// thing on disk is the vault's ciphertext. But the *directory* is a real
+/// directory, and anything that writes to that path while the mount ISN'T up
+/// (a write racing the unmount, a mount that failed to start) writes
+/// plaintext straight to whatever filesystem it lives on. `/tmp` is not a
+/// tmpfs on every system -- on this one it's the root filesystem -- so the old
+/// `std::env::temp_dir()` location meant that accident put plaintext on a
+/// disk. On tmpfs the same accident stays in RAM and dies with the machine.
+///
+/// Falls back to the temp dir if neither tmpfs path is usable, since a
+/// working mount beats no mount at all -- `MountHandle::drop` shreds leftovers
+/// either way.
+#[cfg(desktop)]
+fn mount_base_dir() -> PathBuf {
+    let candidates = [
+        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
+        Some(PathBuf::from("/dev/shm")),
+    ];
+    for base in candidates.into_iter().flatten() {
+        if !base.is_dir() {
+            continue;
+        }
+        let dir = base.join("vaultexplorer");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            // 0700 rather than whatever the umask gives (0775 here): /dev/shm
+            // is world-readable, so on that fallback the umask default would
+            // leave the directory holding mountpoints listable by other users.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+            return dir;
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// Removes `vaultexplorer-mnt-<pid>-<hash>` directories left behind by earlier
+/// runs. `MountHandle::drop` handles the normal case, but a `kill -9` (or any
+/// build predating that destructor) can't run one, so old ones accumulate.
+/// Scans both the tmpfs base and the legacy temp-dir location. Runs once at
+/// startup.
+#[cfg(desktop)]
+fn sweep_stale_mountpoints() {
+    let mut bases = vec![mount_base_dir()];
+    let temp = std::env::temp_dir();
+    if !bases.contains(&temp) {
+        bases.push(temp);
+    }
+    for base in bases {
+        let Ok(read_dir) = std::fs::read_dir(&base) else { continue };
+        for entry in read_dir.flatten() {
+            let name = entry.file_name();
+            let Some(rest) = name.to_str().and_then(|n| n.strip_prefix("vaultexplorer-mnt-")) else {
+                continue;
+            };
+            let Some(pid) = rest.split('-').next().and_then(|p| p.parse::<u32>().ok()) else {
+                continue;
+            };
+            // Another *live* instance owns its own mountpoints -- two copies
+            // of this app can run at once (including the portal-activated
+            // one), and one must never pull the rug out from under the other.
+            if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                continue;
+            }
+            let path = entry.path();
+            // A dead process can leave its mount still attached. Detaching it
+            // is the whole point (that mount is a readable decrypted view
+            // nobody is watching any more), but only ever lazily, and only
+            // for a pid that's gone.
+            if is_mount_point(&path) {
+                let _ = std::process::Command::new("fusermount")
+                    .args(["-u", "-z", &path.to_string_lossy()])
+                    .status();
+                if is_mount_point(&path) {
+                    continue; // still live -- leave it strictly alone
+                }
+            }
+            shred::purge_dir_securely(&path);
+        }
+    }
+}
+
 #[cfg(desktop)]
 fn short_hash(s: &str) -> String {
     use std::hash::{Hash, Hasher};
@@ -673,18 +980,26 @@ fn ensure_mounted(state: &State<AppState>) -> Result<PathBuf, String> {
         return Ok(m.mountpoint.clone());
     }
 
-    let mountpoint = std::env::temp_dir().join(format!(
+    let mountpoint = mount_base_dir().join(format!(
         "vaultexplorer-mnt-{}-{}",
         std::process::id(),
         short_hash(&root)
     ));
     std::fs::create_dir_all(&mountpoint).str_err()?;
+    // 0700: the decrypted view is this user's business only. FUSE mounts
+    // default to owner-only access anyway, but the *directory* under it (what
+    // a stray write would land in) inherits the umask otherwise.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&mountpoint, std::fs::Permissions::from_mode(0o700));
+    }
     let fuse_session =
         vaultcore::fuse_mount::spawn(session.vault.clone(), &mountpoint).str_err()?;
     let mountpoint_clone = mountpoint.clone();
     *mount_guard = Some(MountHandle {
         mountpoint,
-        _session: fuse_session,
+        session: Some(fuse_session),
     });
     Ok(mountpoint_clone)
 }
@@ -900,9 +1215,23 @@ async fn fs_delete(path: String) -> Result<(), String> {
 /// Rename or move a real file/dir (dest is the full destination path).
 #[tauri::command]
 async fn fs_rename(src: String, dest: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || std::fs::rename(&src, &dest).str_err())
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        // rename(2) with an existing dest either silently clobbers a file
+        // or fails with the kernel's raw "Directory not empty (os error
+        // 39)" for a non-empty directory -- neither is what a user
+        // renaming in the UI should see. Refuse up front with a clear
+        // message instead. (`src != dest` keeps a same-path no-op safe.)
+        if src != dest && Path::new(&dest).exists() {
+            let name = Path::new(&dest)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| dest.clone());
+            return Err(format!("\"{name}\" already exists here"));
+        }
+        std::fs::rename(&src, &dest).str_err()
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -928,9 +1257,123 @@ fn fs_create_shortcut(target: String, dest: String) -> Result<(), String> {
     std::os::unix::fs::symlink(&target, &dest).str_err()
 }
 
+/// Frozen-folder remounts plus every configured sync watch loop --
+/// everything a real user launch resumes in the background. Split out of
+/// `setup()` so (a) it runs off the main thread (freeze remounts do
+/// blocking FUSE mounts, which used to stall the first paint), and (b) a
+/// formerly portal-activated primary instance can start it lazily when a
+/// real launch gets forwarded to it by the single-instance plugin. Runs at
+/// most once per process -- the loops themselves also no-op when already
+/// active, this guard just avoids re-walking the freeze remounts.
+#[cfg(desktop)]
+fn start_background_loops(handle: tauri::AppHandle) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        // Re-mount every frozen folder fresh, from a discarded shadow --
+        // this *is* the "back to how it was after a restart" guarantee
+        // (see freeze.rs): only holds while VaultExplorer's mount is
+        // alive, so each launch re-establishes it from scratch rather
+        // than resuming whatever was left dangling.
+        let freeze_state = handle.state::<FreezeState>();
+        for meta in freeze::list_frozen() {
+            if let Err(e) = freeze::discard_shadow(&meta.original_path) {
+                eprintln!("freeze: failed to discard shadow for {}: {e}", meta.original_path);
+                continue;
+            }
+            if std::fs::create_dir_all(&meta.original_path).is_err() {
+                continue;
+            }
+            match freeze::spawn(&meta.original_path, Path::new(&meta.original_path)) {
+                Ok(session) => {
+                    freeze_state.mounts.lock_safe().insert(meta.original_path, session);
+                }
+                Err(e) => eprintln!("freeze: failed to remount {}: {e}", meta.original_path),
+            }
+        }
+        // ...and every sync pair's event-driven watch loop -- without
+        // this, a pair only actually kept syncing until the app was next
+        // closed, since nothing else ever calls the start_loops again.
+        let local_sync_state = handle.state::<local_sync::LocalSyncState>();
+        for pair in local_sync::list_pairs() {
+            local_sync::start_loop(&local_sync_state, pair.folder_a, pair.folder_b);
+        }
+        let drive_sync_state = handle.state::<sync::DriveSyncState>();
+        for pair in sync::list_pairs() {
+            sync::start_loop(&drive_sync_state, pair);
+        }
+        let git_sync_state = handle.state::<git_sync::GitSyncState>();
+        for pair in git_sync::list_pairs() {
+            git_sync::start_loop(&git_sync_state, pair.local_path);
+        }
+    });
+}
+
+/// A second launch of the binary, forwarded here by the single-instance
+/// plugin: open another Explorer window in this already-running process
+/// (near-instant) instead of letting a whole second app boot (seconds).
+#[cfg(desktop)]
+fn open_extra_explorer_window(app: &tauri::AppHandle) {
+    // If this primary instance was a portal-activated picker server, its
+    // main window exists but was never shown (and no sync loops run) -- a
+    // real launch forwarded here means the user wants the full app now.
+    if let Some(main) = app.get_webview_window("main") {
+        if !main.is_visible().unwrap_or(true) {
+            let _ = main.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)));
+            let _ = main.show();
+            let _ = main.set_focus();
+            start_background_loops(app.clone());
+            return;
+        }
+    }
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2);
+    let label = format!("main-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    // Mirrors the main window's tauri.conf.json declaration (minus
+    // visible:false -- there's no pre-show work to hide here).
+    match tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::App("index.html".into()))
+        .title("VaultExplorer")
+        .inner_size(1040.0, 680.0)
+        .min_inner_size(720.0, 480.0)
+        .decorations(false)
+        .transparent(true)
+        .build()
+    {
+        Ok(w) => {
+            // Same WebKitGTK opaque-background workaround as the main
+            // window (see setup()).
+            let _ = w.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)));
+            let _ = w.set_focus();
+        }
+        Err(e) => eprintln!("single-instance: failed to open a new window: {e}"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Must be the first plugin registered (its own documented requirement)
+    // so a second launch is intercepted before anything else initializes.
+    // A `--portal-activated` D-Bus activation is never forwarded into a
+    // window: if one races in while this instance runs, the portal service
+    // here already owns the bus name and will serve the request.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        if argv.iter().any(|a| a == "--portal-activated") {
+            return;
+        }
+        // A forwarded launch carrying a directory (OBS "Show Recordings" →
+        // xdg-open → this binary as the inode/directory handler): open the
+        // new window right there -- pending-reveal is drained by whichever
+        // window mounts next, which is the one created just below.
+        if let Some(dir) = argv.iter().skip(1).find_map(|a| filemanager1::cli_dir_arg(a)) {
+            filemanager1::set_pending_reveal(dir, None);
+        }
+        open_extra_explorer_window(app);
+    }));
+    let builder = builder
         .manage(AppState::default())
         .manage(ops::OpRegistry::default())
         .manage(git_sync::GitSyncState::default())
@@ -961,17 +1404,51 @@ pub fn run() {
             // can gate on it, on both desktop and mobile (always false on mobile,
             // which has no portal).
             let portal_activated = std::env::args().any(|a| a == "--portal-activated");
-            // Best-effort, idempotent: registers this app as the handler
-            // for `vaultexplorer://` links (used by the P2P sync "share a
-            // link" flow) every launch, the same defensive-registration
-            // pattern as the portal service above -- harmless if it's
-            // already registered, and covers e.g. an AppImage that wasn't
-            // registered by its launcher. Mobile doesn't need (or expose)
-            // this at runtime at all -- the scheme is registered via the
-            // Android manifest/iOS Info.plist at build time instead.
+            // Cold start with a directory argument (xdg-open/gio launching
+            // this binary as the inode/directory handler, or a plain
+            // `vaultexplorer ~/some/dir`): queue it so the main window
+            // opens there once the frontend mounts and drains the slot.
             #[cfg(desktop)]
-            if let Err(e) = tauri_plugin_deep_link::DeepLinkExt::deep_link(app).register_all() {
-                eprintln!("deep-link: failed to register vaultexplorer:// scheme: {e}");
+            if let Some(dir) = std::env::args().skip(1).find_map(|a| filemanager1::cli_dir_arg(&a)) {
+                filemanager1::set_pending_reveal(dir, None);
+            }
+            // Best-effort, idempotent housekeeping that nothing in this
+            // launch depends on -- moved off the main thread because it
+            // used to run (blocking) before the first paint:
+            // - deep-link registration: registers this app as the handler
+            //   for `vaultexplorer://` links every launch (harmless if
+            //   already registered; covers e.g. an unregistered AppImage).
+            //   The plugin shells out to `update-desktop-database` +
+            //   `xdg-mime` unconditionally, often the single most
+            //   expensive startup item. Mobile registers the scheme via
+            //   the Android manifest/iOS Info.plist at build time instead.
+            // - stale-mountpoint sweep: only touches `vaultexplorer-mnt-
+            //   <pid>-*` dirs of dead pids, so this process's own mounts
+            //   (all created later, under its own live pid) can't race it.
+            // - portal/filemanager1 registration self-heal: only rewrites
+            //   on drift, and its worst case (`pkexec` prompting for the
+            //   admin password after a rebuild changed the binary path)
+            //   now pops over a usable app instead of blocking the launch.
+            #[cfg(desktop)]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = tauri_plugin_deep_link::DeepLinkExt::deep_link(&handle).register_all() {
+                        eprintln!("deep-link: failed to register vaultexplorer:// scheme: {e}");
+                    }
+                    sweep_stale_mountpoints();
+                    if portal::is_enabled() && !portal_activated {
+                        if let Ok(exe) = std::env::current_exe() {
+                            let exe = exe.to_string_lossy();
+                            if let Err(e) = portal::write_registration(&exe) {
+                                eprintln!("portal: failed to refresh service registration: {e}");
+                            }
+                            if let Err(e) = filemanager1::write_registration(&exe) {
+                                eprintln!("filemanager1: failed to refresh service registration: {e}");
+                            }
+                        }
+                    }
+                });
             }
             #[cfg(desktop)]
             {
@@ -990,24 +1467,10 @@ pub fn run() {
                 // serve the request (start_service, below). `portal_activated`
                 // is computed once at the top of this setup closure.
                 if portal::is_enabled() {
-                    // Re-write the D-Bus service file on a normal launch (not
-                    // an activation), not just when the user first flips the
-                    // toggle -- it hardcodes this binary's own Exec line
-                    // (including the `--portal-activated` marker), so if that
-                    // ever drifts (a rebuild, a reinstalled binary path) this
-                    // self-heals it instead of quietly D-Bus-activating a
-                    // stale Exec forever.
-                    if !portal_activated {
-                        if let Ok(exe) = std::env::current_exe() {
-                            let exe = exe.to_string_lossy();
-                            if let Err(e) = portal::write_registration(&exe) {
-                                eprintln!("portal: failed to refresh service registration: {e}");
-                            }
-                            if let Err(e) = filemanager1::write_registration(&exe) {
-                                eprintln!("filemanager1: failed to refresh service registration: {e}");
-                            }
-                        }
-                    }
+                    // (The service-file registration self-heal that used to
+                    // sit here runs in the housekeeping thread above -- the
+                    // D-Bus name claims below don't read those files, only
+                    // future D-Bus *activations* do.)
                     let app_handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
                         let state = app_handle.state::<portal::PortalState>();
@@ -1063,57 +1526,19 @@ pub fn run() {
                 // mounts or start any background sync watcher (see the hoisted
                 // `portal_activated` comment -- double Drive loops = double
                 // `rclone bisync` = the "prior lock file found" failure). Those
-                // are the real launch's job.
+                // are the real launch's job -- started off the main thread so
+                // the blocking freeze remounts never stall the first paint.
                 if !portal_activated {
-                // Re-mount every frozen folder fresh, from a discarded shadow
-                // -- this *is* the "back to how it was after a restart"
-                // guarantee (see freeze.rs): only holds while VaultExplorer's
-                // mount is alive, so each launch re-establishes it from
-                // scratch rather than resuming whatever was left dangling.
-                let freeze_state = app.state::<FreezeState>();
-                for meta in freeze::list_frozen() {
-                    if let Err(e) = freeze::discard_shadow(&meta.original_path) {
-                        eprintln!("freeze: failed to discard shadow for {}: {e}", meta.original_path);
-                        continue;
-                    }
-                    if std::fs::create_dir_all(&meta.original_path).is_err() {
-                        continue;
-                    }
-                    match freeze::spawn(&meta.original_path, Path::new(&meta.original_path)) {
-                        Ok(session) => {
-                            freeze_state.mounts.lock_safe().insert(meta.original_path, session);
-                        }
-                        Err(e) => eprintln!("freeze: failed to remount {}: {e}", meta.original_path),
-                    }
-                }
-                // ...and every local-folder pair's event-driven watch loop --
-                // without this, a pair only actually kept syncing until the
-                // app was next closed, since nothing else ever calls
-                // `local_sync::start_loop` again after the one time it's
-                // created.
-                let local_sync_state = app.state::<local_sync::LocalSyncState>();
-                for pair in local_sync::list_pairs() {
-                    local_sync::start_loop(&local_sync_state, pair.folder_a, pair.folder_b);
-                }
-                // ...and every Drive pair's own watch loop, same reason:
-                // otherwise a pair only auto-synced until the app was next
-                // closed.
-                let drive_sync_state = app.state::<sync::DriveSyncState>();
-                for pair in sync::list_pairs() {
-                    sync::start_loop(&drive_sync_state, pair);
-                }
-                } // end if !portal_activated
-            }
-            // Resume every git-synced folder's background poll loop too --
-            // git itself works fine cross-platform (just `std::process::
-            // Command`), so this one isn't desktop-gated. Still skipped for a
-            // portal-activated picker server -- same reason as the loops above.
-            if !portal_activated {
-                let git_sync_state = app.state::<git_sync::GitSyncState>();
-                for pair in git_sync::list_pairs() {
-                    git_sync::start_loop(&git_sync_state, pair.local_path);
+                    start_background_loops(app.handle().clone());
                 }
             }
+            // NOTE: no mobile equivalent of the above -- `git_sync`'s loop
+            // shells out to the `git` binary (see git_sync.rs), which
+            // doesn't exist on Android/iOS. An earlier version of this
+            // resumed it there anyway on the mistaken premise that "git is
+            // cross-platform" (true of the Rust code, not of a `git`
+            // binary to exec); it started a loop that could only ever fail
+            // every tick. Desktop's copy lives inside start_background_loops.
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -1126,15 +1551,19 @@ pub fn run() {
             create_vault,
             convert_folder_to_vault,
             unlock_vault,
+            verify_vault_password,
             lock_vault,
             set_active_vault,
             set_vault_auto_unlock,
             clear_vault_auto_unlock,
             auto_unlock_vaults,
             list_dir,
+            vault_list_dir_at,
             search_vault,
             move_entry,
             copy_entry,
+            vault_to_vault_copy,
+            vault_to_vault_move,
             delete_file,
             delete_dir,
             make_dir,
@@ -1151,6 +1580,20 @@ pub fn run() {
             thumbnail::vault_thumbnail,
             #[cfg(desktop)]
             app_icon::app_icon_for_ext,
+            #[cfg(desktop)]
+            app_icon::list_apps_for_path,
+            #[cfg(desktop)]
+            filemanager1::take_pending_reveal,
+            #[cfg(desktop)]
+            app_icon::list_all_apps,
+            #[cfg(desktop)]
+            app_icon::app_icons,
+            #[cfg(desktop)]
+            app_icon::open_with,
+            #[cfg(desktop)]
+            autostart::autostart_enabled,
+            #[cfg(desktop)]
+            autostart::set_autostart,
             metadata::fs_clear_metadata,
             metadata::vault_clear_metadata,
             info::fs_file_info,
@@ -1185,6 +1628,7 @@ pub fn run() {
             terminal::open_terminal,
             #[cfg(desktop)]
             terminal::run_shell_script,
+            #[cfg(desktop)]
             terminal::open_in_editor,
             is_mobile_platform,
             browse_root_dir,
@@ -1192,6 +1636,8 @@ pub fn run() {
             android::android_storage_access_granted,
             #[cfg(target_os = "android")]
             android::android_request_storage_access,
+            #[cfg(target_os = "android")]
+            android::android_pin_folder_shortcut,
             fs_list,
             fs_is_vault,
             fs_set_readonly,
@@ -1271,6 +1717,7 @@ pub fn run() {
             fs_decrypt_file,
             encrypt_file_in_vault,
             decrypt_file_in_vault,
+            vault_decrypt_to_temp,
             rclone::rclone_installed,
             rclone::rclone_providers,
             rclone::rclone_is_connected,
@@ -1281,7 +1728,10 @@ pub fn run() {
             sync::drive_remove_pair,
             sync::drive_sync_now,
             sync::drive_syncing_now,
+            sync::drive_sync_activity,
             sync::drive_sync_last_error,
+            verify::drive_verifying_now,
+            verify::sync_verify_states,
             #[cfg(desktop)]
             sync::drive_sync_is_active,
             #[cfg(desktop)]

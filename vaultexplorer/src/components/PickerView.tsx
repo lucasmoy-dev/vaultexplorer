@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalSize } from "@tauri-apps/api/dpi";
-import { Entry, api, joinPath, parentPath, baseName } from "../api";
-import { FileIcon, PlaceGlyph, DiskGlyph } from "../icons";
+import { Entry, api, joinPath, parentPath, baseName, TAG_COLORS } from "../api";
+import { FileIcon, PlaceGlyph, DiskGlyph, customIconUrl, symbolIconSvg, RetryImg } from "../icons";
 import { ContextMenu, MenuState } from "../ContextMenu";
 import { useFavorites } from "../hooks/useFavorites";
 
@@ -68,7 +68,20 @@ export function PickerView({
   const dragNameRef = useRef<string | null>(null);
   const skipBlurCommitRef = useRef(false);
 
-  const { favPaths } = useFavorites(home ?? "", mobile);
+  const { favPaths, favTags } = useFavorites(home ?? "", mobile);
+
+  // Same per-path custom icons (WhiteSur "ws:", Tabler "sym:", emoji) the
+  // main window's sidebar shows -- read-only here; the picker never edits
+  // them, it just renders whatever the main window saved.
+  const [customIcons] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem("vaultexplorer:custom-icons");
+      if (raw) return JSON.parse(raw);
+    } catch {
+      /* ignore */
+    }
+    return {};
+  });
 
   const skipMountResizeRef = useRef(true);
   useEffect(() => {
@@ -122,8 +135,11 @@ export function PickerView({
     api.isMobilePlatform().then(setMobile).catch(() => {});
   }, [initialFolder, mode]);
 
-  function refresh(d: string) {
-    api
+  // Returns the promise so callers that need the fresh listing in state
+  // before continuing (createFolder arming the inline rename on a row
+  // that must exist first) can await it.
+  function refresh(d: string): Promise<void> {
+    return api
       .fsList(d, false)
       .then((list) => {
         setEntries([...list].sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name) : a.is_dir ? -1 : 1)));
@@ -187,7 +203,11 @@ export function PickerView({
     while (existing.has(name)) name = `New Folder ${n++}`;
     try {
       await api.fsMkdir(joinPath(dir, name));
-      refresh(dir);
+      // Await: the rename input renders inside the new folder's row, so
+      // that row has to be in `entries` before arming `renaming` -- firing
+      // both in the same tick left the input unmounted (and the user's
+      // typing going nowhere) until the listing happened to land.
+      await refresh(dir);
       setSelected(new Set([name]));
       setRenaming({ name, value: name });
     } catch (e) {
@@ -321,6 +341,21 @@ export function PickerView({
     </div>
   );
 
+  // Mirrors the main window's sidebar icon logic (App.tsx favorites):
+  // custom image icon > symbol icon > emoji > disk glyph for "/" > place
+  // glyph tinted by the favorite's tag -- so the picker's favorites look
+  // identical to the ones the user set up in the main window.
+  function favIcon(path: string) {
+    const icon = customIcons[path];
+    const imgUrl = icon && customIconUrl(icon);
+    if (imgUrl) return <RetryImg className="picker-fav-img" src={imgUrl} />;
+    const sym = icon && symbolIconSvg(icon);
+    if (sym) return <span className="symbol-icon picker-fav-sym" dangerouslySetInnerHTML={{ __html: sym }} />;
+    if (icon) return <span className="picker-fav-emoji">{icon}</span>;
+    if (path === "/") return <DiskGlyph size={16} />;
+    return <PlaceGlyph size={16} color={TAG_COLORS.find((c) => c.key === favTags[path])?.hex} />;
+  }
+
   const sidebar = (
     <div className="picker-sidebar">
       <div className="picker-sidebar-label">Favorites</div>
@@ -330,7 +365,7 @@ export function PickerView({
           className={`picker-sidebar-item ${dir === path ? "active" : ""}`}
           onClick={() => navigateTo(path)}
         >
-          {path === "/" ? <DiskGlyph size={16} /> : <PlaceGlyph size={16} />}
+          {favIcon(path)}
           <span>{favLabel(path, home ?? "")}</span>
         </div>
       ))}
@@ -339,17 +374,24 @@ export function PickerView({
 
   const fileList = (
     <div className="picker-list">
-      {entries.map((e) => (
+      {entries.map((e) => {
+        const editing = renaming?.name === e.name;
+        return (
         <div
           key={e.name}
           className={`picker-row ${selected.has(e.name) ? "selected" : ""} ${dragOver === e.name ? "drag-over" : ""}`}
-          draggable
-          onClick={(ev) => {
+          // All interaction comes off the row while its name is being
+          // edited (same as the main window's EntryTile): on WebKitGTK a
+          // `draggable` ancestor swallows mousedown/caret placement into a
+          // descendant <input>, which made typing into the rename field do
+          // nothing.
+          draggable={!editing}
+          onClick={editing ? undefined : (ev) => {
             ev.stopPropagation();
             click(e);
           }}
-          onDoubleClick={() => open(e)}
-          onContextMenu={(ev) => rowMenu(ev, e)}
+          onDoubleClick={editing ? undefined : () => open(e)}
+          onContextMenu={editing ? undefined : (ev) => rowMenu(ev, e)}
           onDragStart={(ev) => {
             dragNameRef.current = e.name;
             // WebKitGTK (this app's Linux webview) won't reliably fire
@@ -367,11 +409,20 @@ export function PickerView({
           onDrop={(ev) => onDrop(ev, e)}
         >
           <FileIcon entry={e} />
-          {renaming?.name === e.name ? (
+          {editing && renaming ? (
             <input
               className="picker-inline-rename"
               autoFocus
               value={renaming.value}
+              // Select the stem (whole name for folders) on focus, same as
+              // the main window's rename field -- rAF because WebKitGTK
+              // applies autoFocus before the value is laid out.
+              onFocus={(ev) => {
+                const el = ev.currentTarget;
+                const dot = renaming.value.lastIndexOf(".");
+                const end = dot > 0 ? dot : renaming.value.length;
+                requestAnimationFrame(() => el.setSelectionRange(0, end));
+              }}
               onClick={(ev) => ev.stopPropagation()}
               onChange={(ev) => setRenaming({ name: e.name, value: ev.target.value })}
               onKeyDown={(ev) => {
@@ -402,7 +453,8 @@ export function PickerView({
             <span>{e.name}</span>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 

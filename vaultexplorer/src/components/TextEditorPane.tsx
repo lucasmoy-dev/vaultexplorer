@@ -839,17 +839,42 @@ function FolderPreview({
   fullPath,
   inVault,
   onRename,
+  onChildActivate,
+  onChildMenu,
+  reloadKey = 0,
 }: {
   entry: Entry;
   fullPath: string;
   inVault: boolean;
   onRename?: (newName: string) => void;
+  // Double-click on a listed child: navigate into it (folder) or open it
+  // (file) -- wired by App.tsx to the same `activate` the main grid uses.
+  onChildActivate?: (child: Entry) => void;
+  // Right-click on a listed child -- App.tsx shows its path-based menu.
+  onChildMenu?: (e: React.MouseEvent, child: Entry) => void;
+  // Bumped by the parent when a menu action changed this folder's
+  // contents (the fs watcher only covers the browsed dir, not this one).
+  reloadKey?: number;
 }) {
   const [items, setItems] = useState<Entry[] | null>(null);
+  const [lockedVault, setLockedVault] = useState(false);
+  // A vault folder previews its DECRYPTED top level when unlocked, and a
+  // lock notice otherwise -- never the raw ciphertext names fs_list sees.
+  const isVaultEntry = !!entry.is_vault;
   useEffect(() => {
-    const call = inVault ? api.listDir(fullPath) : api.fsList(fullPath, false);
-    call.then(setItems).catch(() => setItems([]));
-  }, [fullPath, inVault]);
+    setLockedVault(false);
+    const call = isVaultEntry
+      ? inVault
+        ? Promise.reject(new Error("nested vault")) // no root key available here
+        : api.vaultListDirAt(fullPath, "")
+      : inVault
+      ? api.listDir(fullPath)
+      : api.fsList(fullPath, false);
+    call.then(setItems).catch(() => {
+      setLockedVault(isVaultEntry);
+      setItems([]);
+    });
+  }, [fullPath, inVault, isVaultEntry, reloadKey]);
   const sorted = (items ?? [])
     .slice()
     .sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name) : a.is_dir ? -1 : 1));
@@ -859,11 +884,23 @@ function FolderPreview({
         <EditableFileName name={entry.name} onRename={onRename} />
       </div>
       <p className="hint" style={{ marginTop: 2 }}>
-        {items === null ? "…" : `${items.length} item${items.length === 1 ? "" : "s"}`}
+        {lockedVault
+          ? "🔒 Locked vault — unlock it to preview its contents"
+          : items === null
+          ? "…"
+          : `${items.length} item${items.length === 1 ? "" : "s"}`}
       </p>
       <div className="folder-preview-list">
         {sorted.map((e) => (
-          <div className="folder-preview-item" key={e.name}>
+          <div
+            className="folder-preview-item"
+            key={e.name}
+            // Children of a previewed vault live in vault space, not under
+            // this fs path -- activating/right-clicking them as fs entries
+            // would target paths that don't exist. Enter the vault instead.
+            onDoubleClick={onChildActivate && !isVaultEntry ? () => onChildActivate(e) : undefined}
+            onContextMenu={onChildMenu && !isVaultEntry ? (ev) => onChildMenu(ev, e) : undefined}
+          >
             <FileIcon entry={e} />
             <span>{e.name}</span>
           </div>
@@ -878,11 +915,26 @@ export function FilePreviewPane({
   inVault,
   root,
   onRename,
+  textEditorExts,
+  onOpenInEditor,
+  onChildActivate,
+  onChildMenu,
+  reloadKey,
 }: {
   target: { dir: string; entry: Entry } | null;
   inVault: boolean;
   root?: string;
   onRename?: (newName: string) => void;
+  // Extensions the user chose to edit as text even though `kindOf` doesn't
+  // classify them as text (see App.tsx). Lowercase, no dot.
+  textEditorExts: Set<string>;
+  // Called by the preview's "Edit" button: remembers this format so it (and
+  // every later file of it) lands in the editor instead of the info panel.
+  onOpenInEditor: (ext: string) => void;
+  // Folder-preview interactions, threaded to FolderPreview (see it).
+  onChildActivate?: (child: Entry) => void;
+  onChildMenu?: (e: React.MouseEvent, child: Entry) => void;
+  reloadKey?: number;
 }) {
   if (!target) {
     return (
@@ -896,14 +948,32 @@ export function FilePreviewPane({
   const ext = entry.name.toLowerCase().split(".").pop() ?? "";
 
   if (entry.is_dir) {
-    return <FolderPreview key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} onRename={onRename} />;
+    return (
+      <FolderPreview
+        key={fullPath}
+        entry={entry}
+        fullPath={fullPath}
+        inVault={inVault}
+        onRename={onRename}
+        onChildActivate={onChildActivate}
+        onChildMenu={onChildMenu}
+        reloadKey={reloadKey}
+      />
+    );
   }
   if (ext === "md") {
     return <MarkdownEditorPane key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} onRename={onRename} />;
   }
-  if (kindOf(entry) === "text") {
+  const kind = kindOf(entry);
+  if (kind === "text" || textEditorExts.has(ext)) {
     return <TextEditorPane key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} onRename={onRename} />;
   }
+  // Which formats are worth offering "Edit" for at all: source/config files
+  // (kind "code") and anything unrecognised, which is where an extension the
+  // app has never heard of lands. Deliberately not offered for the kinds we
+  // know are binary -- image/video/audio/pdf/archive/office -- since loading
+  // those into a text editor and saving would corrupt them.
+  const editable = kind === "code" || kind === "generic";
   // Unlike the other branches above, PreviewColumn is also used as-is by
   // ColumnView's genuine Miller columns, where its `.column` class's fixed
   // 390px width is correct (every column there is fixed-width). Wrapping
@@ -912,7 +982,15 @@ export function FilePreviewPane({
   // of inheriting that same fixed 390px meant for a different layout.
   return (
     <div className="preview-pane">
-      <PreviewColumn key={fullPath} entry={entry} fullPath={fullPath} inVault={inVault} root={root} onRename={onRename} />
+      <PreviewColumn
+        key={fullPath}
+        entry={entry}
+        fullPath={fullPath}
+        inVault={inVault}
+        root={root}
+        onRename={onRename}
+        onEdit={editable && ext ? () => onOpenInEditor(ext) : undefined}
+      />
     </div>
   );
 }

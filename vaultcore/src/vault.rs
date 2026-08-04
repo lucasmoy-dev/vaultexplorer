@@ -229,7 +229,7 @@ impl Vault {
     /// independently (AES-SIV, keyed to its parent's plaintext path), so
     /// the on-disk name gives no hint of the original -- only the tree
     /// shape (nesting, entry count) stays visible.
-    fn encrypted_path(&self, rel_path: &Path) -> Result<PathBuf> {
+    pub fn encrypted_path(&self, rel_path: &Path) -> Result<PathBuf> {
         let mut plain_parent = PathBuf::new();
         let mut out = self.root.clone();
         for component in rel_path.components() {
@@ -243,6 +243,24 @@ impl Vault {
             plain_parent.push(name);
         }
         Ok(out)
+    }
+
+    /// Inverse of `encrypted_path`: maps a ciphertext-relative path (as it
+    /// sits on disk under the vault root) back to the plaintext relative
+    /// path. Fails on any component that doesn't decrypt (not written by
+    /// this vault, e.g. a sync tool's `.conflict` copy).
+    pub fn decrypt_rel_path(&self, cipher_rel: &Path) -> Result<PathBuf> {
+        let mut plain = PathBuf::new();
+        for component in cipher_rel.components() {
+            let Component::Normal(os_name) = component else {
+                return Err(VaultError::BadHeader);
+            };
+            let encoded = os_name.to_str().ok_or(VaultError::BadHeader)?;
+            let aad = plain.to_string_lossy().to_string();
+            let name = name::decrypt_name(&self.name_key, aad.as_bytes(), encoded)?;
+            plain.push(name);
+        }
+        Ok(plain)
     }
 
     fn unwrap_fek_with_master_key(&self, wrapped_keys: &[WrappedKey]) -> Result<Key32> {
@@ -499,6 +517,12 @@ impl Vault {
     /// full recursive walk -- what a FUSE `readdir` call needs.
     pub fn list_dir(&self, rel_path: impl AsRef<Path>) -> Result<Vec<DirEntry>> {
         let rel_path = rel_path.as_ref();
+        // A sensitive folder's listing (names, sizes, shape) is content --
+        // enforced here, not only in the UI, so every consumer (preview
+        // pane, FUSE readdir, search) hits the same wall as decrypt_file.
+        if self.is_sensitive(rel_path) && !self.sensitive_unlocked() {
+            return Err(VaultError::SensitiveLocked);
+        }
         let enc_dir = self.encrypted_path(rel_path)?;
         let aad = rel_path.to_string_lossy();
         let mut out = Vec::new();
@@ -507,12 +531,21 @@ impl Vault {
             if is_reserved_name(&entry.file_name()) {
                 continue;
             }
-            let encoded = entry
-                .file_name()
-                .to_str()
-                .ok_or(VaultError::BadHeader)?
-                .to_string();
-            let plain_name = name::decrypt_name(&self.name_key, aad.as_bytes(), &encoded)?;
+            let Some(encoded) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            // A name that doesn't decrypt isn't necessarily vault damage --
+            // the common case is a foreign file dropped into the vault dir
+            // by something outside VaultExplorer (most often a cloud-sync
+            // conflict copy, e.g. rclone bisync's `<name>.conflict1`/
+            // `.conflict2` suffix, which breaks the AES-SIV ciphertext+tag).
+            // Skip it rather than failing the whole listing -- one stray
+            // file shouldn't make an otherwise-healthy vault look corrupt.
+            let Ok(plain_name) = name::decrypt_name(&self.name_key, aad.as_bytes(), &encoded)
+            else {
+                eprintln!("vault: skipping undecryptable entry {encoded:?} in {aad:?}");
+                continue;
+            };
             let path = entry.path();
             let is_dir = path.is_dir();
             let metadata = entry.metadata()?;
@@ -804,7 +837,21 @@ impl Vault {
         }
         if src.is_dir() {
             let mut leaves = Vec::new();
-            self.walk_decrypt(&src, src_rel, &mut leaves)?;
+            let mut dirs = Vec::new();
+            self.walk_decrypt_all(&src, src_rel, &mut leaves, &mut dirs)?;
+            // The destination directories are created explicitly rather than
+            // left to fall out of moving files into them. `relocate_single_file`
+            // only creates the parents of a file it actually moves, so a
+            // directory with no files under it had nothing to imply it: an
+            // EMPTY directory was "moved" by creating nothing at all and then
+            // deleting the source below -- i.e. renaming a freshly created
+            // folder inside a vault made it vanish. Same for every empty
+            // subdirectory of a tree being moved.
+            self.create_dir(dest_rel)?;
+            for dir in &dirs {
+                let rel_under = dir.strip_prefix(src_rel).expect("walked under src_rel");
+                self.create_dir(dest_rel.join(rel_under))?;
+            }
             for leaf in &leaves {
                 let rel_under = leaf.strip_prefix(src_rel).expect("walked under src_rel");
                 self.relocate_single_file(leaf, &dest_rel.join(rel_under), remove_src)?;
@@ -833,23 +880,43 @@ impl Vault {
     }
 
     fn walk_decrypt(&self, enc_dir: &Path, plain_prefix: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        let mut dirs = Vec::new();
+        self.walk_decrypt_all(enc_dir, plain_prefix, out, &mut dirs)
+    }
+
+    /// Like [`Vault::walk_decrypt`], but also reports the directories it
+    /// walked through (in plaintext-path form, parents before children) --
+    /// what a caller needs to mirror a tree's shape, empty directories
+    /// included, instead of only its files.
+    fn walk_decrypt_all(
+        &self,
+        enc_dir: &Path,
+        plain_prefix: &Path,
+        out: &mut Vec<PathBuf>,
+        dirs: &mut Vec<PathBuf>,
+    ) -> Result<()> {
         for entry in fs::read_dir(enc_dir)? {
             let entry = entry?;
             if is_reserved_name(&entry.file_name()) {
                 continue;
             }
-            let encoded = entry
-                .file_name()
-                .to_str()
-                .ok_or(VaultError::BadHeader)?
-                .to_string();
+            let Some(encoded) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
             let aad = plain_prefix.to_string_lossy();
-            let plain_name = name::decrypt_name(&self.name_key, aad.as_bytes(), &encoded)?;
+            // See the matching skip in `list_dir` -- a foreign/conflict
+            // file shouldn't fail a whole recursive walk either.
+            let Ok(plain_name) = name::decrypt_name(&self.name_key, aad.as_bytes(), &encoded)
+            else {
+                eprintln!("vault: skipping undecryptable entry {encoded:?} in {aad:?}");
+                continue;
+            };
             let plain_path = plain_prefix.join(&plain_name);
 
             let path = entry.path();
             if path.is_dir() {
-                self.walk_decrypt(&path, &plain_path, out)?;
+                dirs.push(plain_path.clone());
+                self.walk_decrypt_all(&path, &plain_path, out, dirs)?;
             } else {
                 out.push(plain_path);
             }
@@ -1028,4 +1095,47 @@ pub fn decrypt_file_as_recipient(
         }
     }
     Err(VaultError::NoMatchingKey)
+}
+
+#[cfg(test)]
+mod relocate_tests {
+    use super::*;
+
+    /// Renaming an EMPTY directory used to delete it: `relocate` mirrored a
+    /// directory by moving the files under it, and an empty directory has
+    /// none, so nothing was created at the destination before the source was
+    /// removed. This is the regression guard for that -- it silently
+    /// destroyed user data (a folder created in the app, then renamed).
+    #[test]
+    fn renaming_an_empty_dir_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::create(dir.path(), b"pw").unwrap();
+        vault.create_dir("untitled folder").unwrap();
+
+        vault.move_path("untitled folder", "notes").unwrap();
+
+        let names: Vec<String> = vault.list_dir("").unwrap().into_iter().map(|e| e.name).collect();
+        assert!(names.contains(&"notes".to_string()), "renamed dir missing: {names:?}");
+        assert!(!names.contains(&"untitled folder".to_string()), "old name left behind: {names:?}");
+    }
+
+    /// Same shape one level down: a subdirectory that holds nothing must
+    /// survive its parent being moved.
+    #[test]
+    fn moving_a_tree_keeps_empty_subdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = tempfile::tempdir().unwrap();
+        let file = plain.path().join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+
+        let vault = Vault::create(dir.path(), b"pw").unwrap();
+        vault.create_dir("src/empty").unwrap();
+        vault.encrypt_file(&file, "src/a.txt").unwrap();
+
+        vault.move_path("src", "dst").unwrap();
+
+        let top: Vec<String> = vault.list_dir("dst").unwrap().into_iter().map(|e| e.name).collect();
+        assert!(top.contains(&"a.txt".to_string()), "file lost: {top:?}");
+        assert!(top.contains(&"empty".to_string()), "empty subdir lost: {top:?}");
+    }
 }

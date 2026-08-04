@@ -123,6 +123,100 @@ function renderListForest(items: ListItem[]): string {
   return `<${tag}${cls}>${items.map(renderListItem).join("")}</${tag}>`;
 }
 
+// ---- Fenced code blocks (```lang ... ```) ----
+// Hand-rolled tokenizer, same "not CommonMark-complete, just what the
+// toolbar/typing can produce" scope as the rest of this file -- no
+// highlight.js/Prism dependency, just enough to color JSON (the vault's
+// most common fenced-code payload) and give other languages a reasonable
+// generic pass (strings/numbers/comments/keywords).
+function highlightJson(code: string): string {
+  // Group 1 is a quoted string; group 2, if present, is the `\s*:` right
+  // after it -- that's what tells a key apart from a string *value*
+  // (`{"a": "a"}` needs the left "a" blue and the right one green).
+  const re = /("(?:\\.|[^"\\])*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false|null)\b|([{}[\],:])/g;
+  let out = "";
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code))) {
+    out += escapeHtml(code.slice(last, m.index));
+    const [, str, colonAfter, num, bool, punct] = m;
+    if (str !== undefined) {
+      const cls = colonAfter ? "tok-key" : "tok-str";
+      out += `<span class="${cls}">${escapeHtml(str)}</span>`;
+      if (colonAfter) out += `<span class="tok-punct">${escapeHtml(colonAfter)}</span>`;
+    } else if (num !== undefined) {
+      out += `<span class="tok-num">${escapeHtml(num)}</span>`;
+    } else if (bool !== undefined) {
+      out += `<span class="tok-kw">${escapeHtml(bool)}</span>`;
+    } else if (punct !== undefined) {
+      out += `<span class="tok-punct">${escapeHtml(punct)}</span>`;
+    }
+    last = re.lastIndex;
+  }
+  out += escapeHtml(code.slice(last));
+  return out;
+}
+
+// Comment syntax varies enough across languages that a single `//` guess
+// would wrongly eat things like CSS `#fff` or Python `#` strings-that-
+// aren't-comments-in-other-langs -- pick the right marker(s) for the
+// fence's language tag instead of guessing one for everybody.
+function commentRe(lang: string): string {
+  if (/^(py|python|rb|ruby|sh|bash|shell|zsh|ya?ml|toml|pl|perl|r|dockerfile|makefile|elixir|ex)$/.test(lang)) {
+    return "#[^\\n]*";
+  }
+  if (/^(sql|lua|hs|haskell)$/.test(lang)) return "--[^\\n]*";
+  if (/^(html|xml|svg|vue)$/.test(lang)) return "<!--[\\s\\S]*?-->";
+  return "//[^\\n]*|/\\*[\\s\\S]*?\\*/";
+}
+
+const GENERIC_KEYWORDS = new Set(
+  (
+    "function const let var return if else for while switch case break continue class extends new " +
+    "import from export default async await try catch finally throw typeof instanceof in of do yield " +
+    "static public private protected interface type enum implements as namespace void null undefined " +
+    "true false this super def elif except with pass lambda is not and or None True False self fn " +
+    "struct impl trait use mod pub match loop unsafe where dyn Self " +
+    "select from where insert into update delete create table alter drop join on group by order limit " +
+    "and or not null as"
+  ).split(/\s+/)
+);
+
+function highlightGeneric(code: string, lang: string): string {
+  const re = new RegExp(
+    `(${commentRe(lang)})|("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\`(?:\\\\.|[^\`\\\\])*\`)|` +
+      `(-?\\b\\d+\\.?\\d*(?:[eE][+-]?\\d+)?\\b)|\\b([A-Za-z_][A-Za-z0-9_]*)\\b`,
+    "g"
+  );
+  let out = "";
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code))) {
+    out += escapeHtml(code.slice(last, m.index));
+    const [full, comment, str, num, word] = m;
+    if (comment !== undefined) {
+      out += `<span class="tok-com">${escapeHtml(comment)}</span>`;
+    } else if (str !== undefined) {
+      out += `<span class="tok-str">${escapeHtml(str)}</span>`;
+    } else if (num !== undefined) {
+      out += `<span class="tok-num">${escapeHtml(num)}</span>`;
+    } else if (word !== undefined && GENERIC_KEYWORDS.has(word.toLowerCase())) {
+      out += `<span class="tok-kw">${escapeHtml(word)}</span>`;
+    } else {
+      out += escapeHtml(full);
+    }
+    last = re.lastIndex;
+  }
+  out += escapeHtml(code.slice(last));
+  return out;
+}
+
+function highlightCode(code: string, lang: string): string {
+  const l = lang.toLowerCase();
+  if (l === "json" || l === "jsonc" || (!l && /^\s*[[{]/.test(code))) return highlightJson(code);
+  return highlightGeneric(code, l);
+}
+
 // ---- GFM pipe tables ----
 // `| a | b |` header, then a `|---|---|` delimiter row (only "-", ":" and
 // "|"), then any number of `| ... | ... |` body rows. No escaped-pipe
@@ -184,6 +278,22 @@ export function renderMarkdownToHtml(src: string): string {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const fence = line.match(/^```(\S*)\s*$/);
+    if (fence) {
+      flushParagraph();
+      flushList();
+      const lang = fence[1] || "";
+      const body: string[] = [];
+      let j = i + 1;
+      while (j < lines.length && !/^```\s*$/.test(lines[j])) {
+        body.push(lines[j]);
+        j++;
+      }
+      const code = body.join("\n");
+      html.push(`<pre class="md-code" data-md-lang="${escapeHtml(lang)}"><code>${highlightCode(code, lang)}</code></pre>`);
+      i = j;
+      continue;
+    }
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     // A table is recognized by its delimiter row -- the line *after* this
     // one -- so needs one line of lookahead the other block types don't.
@@ -248,6 +358,18 @@ function htmlNodeToMarkdown(node: Node): string {
       return children.trim() ? `~~${children}~~` : children;
     case "CODE":
       return children.trim() ? `\`${children}\`` : children;
+    case "PRE": {
+      // Read raw text straight off the DOM instead of reusing `children`
+      // (computed above) -- that recursion would run the CODE case on the
+      // inner <code> and wrap the whole block in backticks, and the
+      // highlight <span>s would each get flattened through the generic
+      // default case too. textContent skips all of that and hands back
+      // exactly what was fenced.
+      const codeEl = el.querySelector(":scope > code");
+      const lang = el.getAttribute("data-md-lang") ?? "";
+      const raw = (codeEl ?? el).textContent ?? "";
+      return "\n```" + lang + "\n" + raw.replace(/\n$/, "") + "\n```\n\n";
+    }
     case "A":
       return `[${children}](${el.getAttribute("href") ?? ""})`;
     case "IMG": {

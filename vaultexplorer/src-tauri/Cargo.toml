@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,6 +51,12 @@ qrcode = "0.14.1"
 # made to work there regardless of how they're wired up; see the mobile
 # scoping note in `lib.rs`.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Second launches forward to the running process (which opens a new window
+# in ~no time) instead of cold-booting a whole second app -- also kills the
+# two-instances-double-bisync hazard. The "deep-link" feature re-emits a
+# forwarded launch's vaultexplorer:// URL through the deep-link plugin, so
+# share links keep working when the app is already open.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 fuser = "0.14"
 trash = "5.2.6"
 zbus = { version = "5.17.0", default-features = false, features = ["tokio"] }
@@ -61,6 +67,11 @@ tauri-plugin-drag = "2"
 # Cargo.lock) -- pinning it as a direct dep just gives app_icon.rs a name
 # to `use gtk::...` under, not a second GTK copy.
 gtk = "0.18.2"
+# Reading the geometry of *another* app's window (portal.rs: which monitor
+# the app that asked for the file picker is on). GDK can't do that without
+# the gdk-x11 backend crate; this is the same pure-Rust X client the
+# dependency tree already builds for the clipboard, used directly.
+x11rb = "0.13"
 
 # "All files access" (MANAGE_EXTERNAL_STORAGE) has no Rust-side API --
 # granting/checking it means calling the plain Android SDK (Environment,

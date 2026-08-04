@@ -56,6 +56,11 @@
   --row-alt: rgba(0, 0, 0, 0.035);
   --selection-bg: #3b82e0;
   --sidebar-sel-bg: rgba(0, 0, 0, 0.10);
+  --tok-str: #0a7d3f;
+  --tok-num: #b35900;
+  --tok-kw: #a626a4;
+  --tok-key: #0550ae;
+  --tok-com: #6e7781;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -81,6 +86,11 @@
     --row-alt: rgba(255, 255, 255, 0.045);
     --selection-bg: #2f6fc7;
     --sidebar-sel-bg: rgba(255, 255, 255, 0.14);
+    --tok-str: #7ee787;
+    --tok-num: #f2cc60;
+    --tok-kw: #d2a8ff;
+    --tok-key: #79c0ff;
+    --tok-com: #8b949e;
   }
 }
 
@@ -118,6 +128,11 @@
   --row-alt: rgba(0, 0, 0, 0.035);
   --selection-bg: #3b82e0;
   --sidebar-sel-bg: rgba(0, 0, 0, 0.10);
+  --tok-str: #0a7d3f;
+  --tok-num: #b35900;
+  --tok-kw: #a626a4;
+  --tok-key: #0550ae;
+  --tok-com: #6e7781;
 }
 :root[data-theme="dark"] {
   --win-bg: #1e1e1e;
@@ -141,6 +156,11 @@
   --row-alt: rgba(255, 255, 255, 0.045);
   --selection-bg: #2f6fc7;
   --sidebar-sel-bg: rgba(255, 255, 255, 0.14);
+  --tok-str: #7ee787;
+  --tok-num: #f2cc60;
+  --tok-kw: #d2a8ff;
+  --tok-key: #79c0ff;
+  --tok-com: #8b949e;
 }
 :root[data-theme="light"] .unlock-screen {
   background: linear-gradient(160deg, #f3f4f7 0%, #e6e8ee 100%);
@@ -330,7 +350,8 @@ button:disabled {
 
 .traffic-lights {
   display: flex;
-  gap: 9px;
+  /* 8px between 12px circles = macOS's 20px center-to-center pitch. */
+  gap: 8px;
   padding-left: 13px;
   align-items: center;
   z-index: 5;
@@ -367,15 +388,29 @@ button:disabled {
 }
 
 .tl {
-  width: 15px;
-  height: 15px;
+  /* 12px, macOS's actual traffic-light diameter -- 15px read as oversized
+     next to everything else in the chrome. */
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  border: 0.5px solid rgba(0, 0, 0, 0.18);
+  /* No 0.5px border: a half-pixel edge can't land on a device pixel at
+     dpr 1, so WebKit spread it into a soft grey halo around each circle --
+     that fuzz was the "blur". An inset ring darkens the rim within the
+     circle's own antialiased edge instead. */
+  border: none;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   line-height: 0;
+}
+/* The hover glyph is drawn in a 12-unit viewBox at the circle's own size, so
+   its 2-unit strokes land on whole pixels. */
+.tl svg {
+  width: 12px;
+  height: 12px;
+  display: block;
 }
 .tl-close {
   background: #ff5f57;
@@ -703,6 +738,22 @@ button:disabled {
 .sync-badge.synced {
   color: #1fae63;
 }
+/* Checksum-verified states (drive pairs): persistent green check = the
+   cloud copy's checksum matched this file and nothing changed locally
+   since; amber cloud = changed/new here, not yet proven in the cloud.
+   Styled on the svg itself: the `.entry-sync-badge svg` default above
+   sets color directly on the element, which inheritance from the span
+   can't override. */
+.entry-sync-badge.synced svg,
+.sync-badge.synced svg,
+.entry-sync-badge.verified svg,
+.sync-badge.verified svg {
+  color: #1fae63;
+}
+.entry-sync-badge.pending svg,
+.sync-badge.pending svg {
+  stroke: #ff9f0a;
+}
 /* Unlocked-vault row icon: just an open padlock, no colored box. Amber so
    it reads as "this is open right now" (don't forget to lock it). */
 .sidebar-ico.vault-open {
@@ -890,6 +941,18 @@ button:disabled {
 }
 
 /* ---- error bar ---- */
+.error-bar,
+.info-bar {
+  animation: bar-slide-down 0.16s ease-out;
+}
+@keyframes bar-slide-down {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
 .error-bar {
   background: #ffefef;
   color: #d70015;
@@ -1104,7 +1167,7 @@ button:disabled {
   border-radius: 5px;
   overflow-wrap: anywhere;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1113,9 +1176,15 @@ button:disabled {
   color: #fff;
 }
 .entry.icon .entry-name-edit {
+  /* A textarea's `width: auto` resolves to its `cols` intrinsic width, NOT
+     to its content -- with the default cols=20 every rename box came out at
+     the 132px cap regardless of how short the name was, which is the "blue
+     box is way too wide" complaint. EntryTile now sets `cols` from the
+     actual text length, so this only has to bound it: no narrower than a
+     few characters, no wider than a tile. */
   width: auto;
-  min-width: 92px;
-  max-width: 132px;
+  min-width: 44px;
+  max-width: calc(96px * var(--icon-scale, 1));
   text-align: center;
   /* Show the whole (wrapped) filename while renaming instead of clamping
      to a couple of lines -- the textarea auto-grows its height in JS
@@ -1139,6 +1208,11 @@ button:disabled {
   padding: 1px 4px;
   outline: none;
   resize: none;
+  /* Opt out of body's user-select: none -- WebKitGTK otherwise blocks
+     caret placement/typing in the rename editor. */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.25;
@@ -1153,11 +1227,87 @@ button:disabled {
   color: inherit;
 }
 /* Settings sheet: tab bar + native-looking select */
+/* Preferences is a full-screen takeover, not a floating dialog -- same on
+   desktop and mobile, since a small centered card for something with this
+   many rows/tabs (General/Security/System) always felt cramped, and on a
+   phone a "sheet" that doesn't fill the screen just wastes the width. */
+.settings-screen,
+.mobile-editor-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 700;
+  background: var(--win-bg);
+  display: flex;
+  flex-direction: column;
+  animation: screen-push-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes screen-push-in {
+  from {
+    transform: translateX(6%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+/* Mobile's full-screen text/markdown editor -- desktop's `.preview-pane`
+   assumes a split-view parent (fixed height from `.list-preview-split`,
+   `min-width: 380px` since there's always a file list beside it); this
+   reuses the pane itself but gives it the whole screen, and drops that
+   min-width since a phone's viewport can be narrower than it. */
+.mobile-editor-screen .preview-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border-left: none;
+}
+.settings-screen-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(env(safe-area-inset-top, 16px) + 10px) 16px 10px;
+  border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+  flex-shrink: 0;
+}
+.settings-screen-header h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  /* Centered against the whole header row, not just the leftover space
+     next to the back button, so it doesn't visibly drift right when the
+     button's own label width changes (localization, icon-only, etc). */
+  text-align: center;
+  margin-right: 56px;
+}
+.settings-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 15px;
+  padding: 4px 6px;
+  flex-shrink: 0;
+}
+.settings-screen-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  max-width: 560px;
+  width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
 .settings-tabs {
   display: flex;
   gap: 4px;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+  padding: 0 16px;
+  flex-shrink: 0;
 }
 .settings-tab {
   appearance: none;
@@ -1190,6 +1340,27 @@ button:disabled {
 }
 .settings-select:focus {
   border-color: var(--accent);
+}
+/* `.dropdown-trigger` is a <button> standing in for a <select> (see
+   ContextMenu.tsx's `Dropdown`) -- it inherits `.settings-select`'s box
+   but needs button resets + its own label/caret layout on top. */
+.dropdown-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: inherit;
+  text-align: left;
+}
+.dropdown-trigger span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dropdown-caret {
+  color: var(--text-2, #888);
+  font-size: 10px;
+  flex-shrink: 0;
 }
 /* Folder preview (listPreview view) */
 .folder-preview-list {
@@ -1454,6 +1625,41 @@ button:disabled {
   font-weight: 600;
   margin-bottom: 14px;
   word-break: break-word;
+  user-select: text;
+}
+/* A file's own name/path are exactly the kind of text worth copying --
+   button included below for one-click copy, but plain text selection
+   should work too (this overrides `body`'s app-wide `user-select: none`,
+   there for icon/drag interactions elsewhere). */
+.preview-copy-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  opacity: 0.7;
+  cursor: pointer;
+}
+.preview-copy-btn:hover {
+  background: var(--row-hover);
+  color: var(--accent);
+  opacity: 1;
+}
+.preview-copy-btn.copied {
+  color: #2fa84f;
+  opacity: 1;
+}
+.info-path-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 .preview-column .info-rows {
   flex: 0 0 auto;
@@ -1724,6 +1930,46 @@ li.md-task[draggable="true"] {
   color: var(--accent);
 }
 
+/* ---- Fenced code blocks (```lang ... ```) ---- */
+.markdown-rendered pre.md-code {
+  background: var(--code-bg);
+  border: 0.5px solid var(--code-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 0.8em;
+  overflow-x: auto;
+}
+.markdown-rendered pre.md-code code {
+  display: block;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.88em;
+  line-height: 1.5;
+  white-space: pre;
+}
+.markdown-rendered .tok-str {
+  color: var(--tok-str);
+}
+.markdown-rendered .tok-num {
+  color: var(--tok-num);
+}
+.markdown-rendered .tok-kw {
+  color: var(--tok-kw);
+  font-weight: 600;
+}
+.markdown-rendered .tok-key {
+  color: var(--tok-key);
+}
+.markdown-rendered .tok-com {
+  color: var(--tok-com);
+  font-style: italic;
+}
+.markdown-rendered .tok-punct {
+  color: var(--text-2);
+}
+
 /* ---- GFM tables ---- */
 .markdown-rendered table.md-table {
   border-collapse: collapse;
@@ -1791,6 +2037,8 @@ li.md-task[draggable="true"] {
 
 /* ---- statusbar / path bar ---- */
 .statusbar {
+  /* positioned so the actions popover can anchor to the window edge */
+  position: relative;
   height: 26px;
   min-height: 26px;
   display: flex;
@@ -1857,6 +2105,18 @@ li.md-task[draggable="true"] {
   border: 0.5px solid var(--menu-border);
   border-radius: 8px;
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.28);
+  animation: menu-pop 0.14s ease-out;
+  transform-origin: top left;
+}
+@keyframes menu-pop {
+  from {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 .context-item-wrapper {
   position: relative;
@@ -2134,6 +2394,12 @@ li.md-task[draggable="true"] {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
 }
+/* Get-Info/preview values (Type, Size, Location, Modified, ...) are worth
+   selecting to copy -- opt back into text selection here since `body`
+   defaults every element to `user-select: none` app-wide. */
+.info-row > span:last-child {
+  user-select: text;
+}
 .qr-code {
   display: flex;
   justify-content: center;
@@ -2223,10 +2489,22 @@ li.md-task[draggable="true"] {
   font-size: 13px;
   margin-bottom: 10px;
   cursor: pointer;
+  /* Hug the checkbox+label instead of stretching to the sheet's full
+     width (the default for a block-level flex container) -- a short
+     label otherwise leaves a big empty clickable strip beside it. */
+  width: max-content;
+  max-width: 100%;
 }
 .checkbox-row input {
   width: auto;
   margin: 0;
+  /* `.sheet-card input`'s text-field padding (8px 10px) must be cleared, not
+     just overridden in width: with `box-sizing: border-box`, padding+border
+     is a FLOOR on the used size, so a 16px-square checkbox that still
+     carried that padding came out 22x18 -- a visibly wide rectangle, which
+     is the "checkbox looks too wide" report. Setting width alone can't fix
+     it; the padding is what has to go. */
+  padding: 0;
 }
 /* macOS-style checkbox: native checkboxes render tiny and inconsistently
    across platforms, so this replaces the browser control's appearance
@@ -2285,12 +2563,24 @@ li.md-task[draggable="true"] {
   resize: vertical;
 }
 .advanced-toggle {
+  /* `.sheet-card`'s `text-align: center` (for the alert-style title/
+     description text above) also centers this button, since a plain
+     inline-block button still participates in that -- `display: block`
+     (sized to content, not stretched) opts it out, so it sits at the
+     sheet's left edge like the checkbox/field rows it discloses. */
+  display: block;
+  width: fit-content;
   margin: -6px 0 10px;
   padding: 0;
   color: var(--accent);
   font-size: 12px;
 }
 .advanced-options {
+  /* Same `.sheet-card` centering as the toggle button above -- its rows
+     are block-level so their own position is unaffected, but wrapped
+     label/hint text inside them would still center per this rule unless
+     reset here. */
+  text-align: left;
   background: var(--field-bg);
   border-radius: 8px;
   padding: 10px 12px;
@@ -2590,9 +2880,10 @@ li.md-task[draggable="true"] {
    that expands upward into a popover listing running tasks, each with a
    progress bar, percentage, and a cancel X (VS Code style). */
 .actions-indicator {
-  position: relative;
+  /* static, not relative: the popover anchors to the statusbar so it
+     sits flush against the window's right edge, wherever the chip is */
   margin-left: auto;
-  margin-right: 12px;
+  margin-right: 0;
   display: flex;
   align-items: center;
 }
@@ -2633,9 +2924,11 @@ li.md-task[draggable="true"] {
   }
 }
 .actions-popover {
+  /* Anchored to the statusbar (nearest positioned ancestor), flush with
+     the window's right edge -- not to the chip, which floats mid-footer. */
   position: absolute;
-  right: 0;
-  bottom: 26px;
+  right: 6px;
+  bottom: 30px;
   width: 300px;
   max-height: 320px;
   overflow-y: auto;
@@ -2892,6 +3185,37 @@ li.md-task[draggable="true"] {
   background: var(--field-bg);
   color: inherit;
   outline: none;
+  /* body sets user-select: none app-wide; without an explicit opt-out
+     WebKitGTK also refuses caret placement/typing in this field. */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+/* Picker sidebar favorites -- same icon sources as the main window's
+   sidebar (custom WhiteSur image / Tabler symbol / emoji), at the picker's
+   16px scale. */
+.picker-fav-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  flex-shrink: 0;
+  -webkit-user-drag: none;
+}
+.picker-fav-sym {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.picker-fav-emoji {
+  font-size: 14px;
+  line-height: 1;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+  font-family: var(--emoji-font);
+}
+.picker-sidebar-item.active .symbol-icon {
+  color: #fff;
 }
 .picker-view .sheet-actions-spacer {
   flex: 1;
@@ -3004,16 +3328,82 @@ input[type="range"]::-webkit-slider-thumb {
    is_mobile_platform() resolves) turns the sidebar into an off-canvas
    drawer and enlarges every tappable target to a touch-friendly size.
    ============================================================ */
-/* The Android/iOS status bar draws on top of the webview's edge-to-edge
-   content, not above it -- without this the titlebar's own buttons render
-   half-hidden behind (and un-tappable under) the system status bar. */
-.is-mobile .titlebar {
-  height: calc(40px + env(safe-area-inset-top, 24px));
-  min-height: calc(40px + env(safe-area-inset-top, 24px));
+/* The action toolbar (back/forward/new file/paste/view switcher) moves
+   down here, and the breadcrumb up to where the toolbar used to be --
+   thumbs reach the bottom of a phone far more easily than the top, and
+   the breadcrumb is scanned more than it's tapped, so it loses less by
+   sitting somewhere less reachable. `order` (both siblings inside
+   `.main`'s flex column) does the reordering without touching the DOM;
+   the safe-area-inset-top treatment that used to belong to the toolbar
+   (it needed to clear the system status bar, being first) moves with it
+   to whatever's first now -- see `.is-mobile .breadcrumb-bar` below. */
+.is-mobile .titlebar.toolbar {
+  order: 3;
+  border-bottom: none;
+  border-top: 0.5px solid var(--toolbar-border);
+}
+.is-mobile .breadcrumb-bar {
+  order: -1;
+  height: calc(30px + env(safe-area-inset-top, 24px));
+  min-height: calc(30px + env(safe-area-inset-top, 24px));
   padding-top: env(safe-area-inset-top, 24px);
+  border-top: none;
+  border-bottom: 0.5px solid var(--toolbar-border);
   box-sizing: border-box;
 }
+/* Bottom tab bar (Menu/Search/Home/Vaults/Settings) -- only ever in the DOM
+   when the JS `mobile` flag is true (see App.tsx), so it doesn't need the
+   `.is-mobile` class gate the rest of this file uses for CSS-only mobile
+   overrides on always-present desktop elements. `.main`'s own padding
+   below still needs that gate, since `.main` renders on every platform. */
+.is-mobile .main {
+  padding-bottom: calc(56px + max(env(safe-area-inset-bottom, 0px), 16px));
+}
+.mobile-tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  /* `max(env(...), 16px)` rather than the raw inset alone: Android's
+     gesture-nav swipe-up-for-home zone (`mandatorySystemGestures`, seen via
+     `dumpsys window`) runs taller than what some WebView builds report back
+     through `env(safe-area-inset-bottom)`, so a button sitting right at the
+     reported inset boundary could still have its lower edge inside that
+     zone -- taps there get eaten by the OS home gesture instead of reaching
+     this bar (confirmed: a tap on "Settings" here launched the home screen
+     instead). The 16px floor is pure insurance for when the inset reports
+     smaller than the real unsafe zone; harmless overshoot otherwise. */
+  height: calc(56px + max(env(safe-area-inset-bottom, 0px), 16px));
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 16px);
+  background: var(--win-bg);
+  border-top: 0.5px solid var(--toolbar-border);
+  z-index: 480;
+  box-sizing: border-box;
+}
+.mobile-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.mobile-tab:active {
+  opacity: 0.6;
+}
 .is-mobile .sidebar {
+  /* `--sidebar-bg` is ~68% opacity by design on desktop -- it sits over
+     this app's own blurred, transparent window background there. On
+     mobile this drawer is a fixed overlay directly on top of the file
+     listing instead, so that same value let the list underneath show
+     through distractingly. Fully opaque here, same as the status/
+     breadcrumb bars already are on this platform. */
+  background: var(--win-bg);
   position: fixed;
   top: 0;
   bottom: 0;
@@ -3063,7 +3453,7 @@ input[type="range"]::-webkit-slider-thumb {
   display: none;
 }
 .is-mobile .entry.icon {
-  --icon-scale: 1.15;
+  --icon-scale: 1.3;
 }
 .is-mobile .entry.list,
 .is-mobile .entry.list.compact {
@@ -3072,8 +3462,51 @@ input[type="range"]::-webkit-slider-thumb {
 .is-mobile .entry-name {
   font-size: 14.5px;
 }
+/* List view's Date/Size/Kind columns were eating most of a phone's width
+   (170+90+130px of fixed columns on a ~360-400px screen) before the name
+   even got a look-in -- same fix `.compact` already applies for the
+   List+Preview split (those columns are visible in `list-header`'s own
+   sort clicks, but not worth the space here), plus a bigger icon since
+   grid view already gets one (`--icon-scale` above) and list view didn't. */
+.is-mobile .list-header,
+.is-mobile .entry.list {
+  grid-template-columns: 30px 1fr;
+}
+.is-mobile .list-header .lh-date,
+.is-mobile .list-header .lh-size,
+.is-mobile .list-header .lh-kind,
+.is-mobile .entry.list .entry-date,
+.is-mobile .entry.list .entry-size,
+.is-mobile .entry.list .entry-kind {
+  display: none;
+}
+.is-mobile .entry.list .entry-icon {
+  width: 26px;
+  height: 26px;
+  font-size: 20px;
+}
 .is-mobile .search-field input {
   font-size: 15px;
+}
+/* On mobile this was rendering inline in the toolbar at a fixed 180px --
+   next to the toolbar title (also fixed-width) that's most of a phone's
+   width already claimed before the field even gets room to grow, reading
+   as the screen split in half. Floating it as its own pill above the tab
+   bar (like a search sheet, not a toolbar field) sidesteps competing for
+   toolbar space entirely. */
+.is-mobile .search-field {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(56px + max(env(safe-area-inset-bottom, 0px), 16px) + 10px);
+  width: auto;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 22px;
+  background: var(--win-bg);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  border: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.25));
+  z-index: 495;
 }
 /* Context menus open via long-press on mobile (the browser already
    fires a native `contextmenu` event on touch-and-hold) -- just make
@@ -3090,4 +3523,278 @@ input[type="range"]::-webkit-slider-thumb {
 .is-mobile .btn-plain {
   min-height: 42px;
   font-size: 15px;
+}
+
+/* ---- Open With… > Other Application… picker ---- */
+.open-with-card {
+  width: 420px;
+  display: flex;
+  flex-direction: column;
+}
+.open-with-card .open-with-file {
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.open-with-card .open-with-search {
+  margin-bottom: 10px;
+}
+.app-choice-list {
+  /* Fixed height rather than max-height: the list shrinking and growing as
+     you type turns filtering into a jumping dialog. */
+  height: 320px;
+  overflow-y: auto;
+  border: 0.5px solid var(--toolbar-border);
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 14px;
+}
+.app-choice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: default;
+}
+.app-choice.active {
+  background: var(--accent);
+  color: #fff;
+}
+.app-choice-icon {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.app-choice-icon img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+.app-choice-fallback {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--hover-bg, rgba(127, 127, 127, 0.25));
+}
+.app-choice-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.app-choice-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-choice-comment {
+  font-size: 11px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-choice.active .app-choice-comment {
+  color: rgba(255, 255, 255, 0.75);
+}
+.app-choice-empty {
+  padding: 12px 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.is-mobile .open-with-card {
+  width: min(94vw, 460px);
+}
+
+/* ---- inline video/audio player in the preview pane ---- */
+.preview-media {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.preview-media video {
+  width: 100%;
+  height: 100%;
+  /* Same contain-in-both-axes reasoning as .preview-thumb img: a landscape
+     clip reaches full width, a portrait one is bounded by the height the
+     flex layout left over, neither forces a scroll. */
+  object-fit: contain;
+  border-radius: 6px;
+  background: #000;
+}
+/* Audio has nothing to show, so the artwork/icon stays put and the controls
+   sit under it rather than over it. */
+.preview-media.audio {
+  flex-direction: column;
+  gap: 10px;
+}
+.preview-media.audio img {
+  max-height: 70%;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.preview-media.audio audio {
+  width: 100%;
+  max-width: 320px;
+}
+.preview-play-badge {
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  border: none;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Dark disc regardless of theme -- it sits on top of arbitrary video
+     frames, so it can't borrow the app's background color and stay legible. */
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.preview-play-badge:hover {
+  background: rgba(0, 0, 0, 0.72);
+  transform: scale(1.06);
+}
+.preview-media.audio .preview-play-badge {
+  /* Centered on the artwork, not on the artwork+controls stack. */
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -60%);
+}
+.preview-media.audio .preview-play-badge:hover {
+  transform: translate(-50%, -60%) scale(1.06);
+}
+.preview-media-error {
+  position: absolute;
+  bottom: 6px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+/* ---- render-crash fallback (see components/ErrorBoundary.tsx) ---- */
+.crash-pane {
+  /* Opaque on purpose: the window is transparent, so a crash pane that
+     inherited that would be as unreadable as the blank pane it replaces. */
+  background: var(--win-bg);
+  color: var(--text);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 28px 32px;
+  font-size: 13px;
+  overflow: auto;
+}
+.crash-pane h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.crash-msg {
+  margin: 0;
+  color: var(--text-2);
+  user-select: text;
+}
+.crash-details {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.crash-details pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+/* "Edit as Text" in the file preview: switches this format to the built-in
+   editor (see textEditorExts in App.tsx). Centered under the name row, like
+   Get Info's own "Change Icon…" button. */
+.preview-edit-btn {
+  align-self: center;
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+}
+
+/* List/List-with-Preview rows: the icon box is only 18px, but the sync badge
+   was rendering its glyph at the size prop the component passes (18px) plus
+   padding and a ring -- a cloud badge that covered the folder art completely.
+   Only the icon grid has room for a badge that size; here it has to shrink to
+   a corner marker. Same for the pin/sensitive badges, which share the base
+   class and had the same problem in miniature. */
+.entry.list .entry-sync-badge svg,
+.entry.list .entry-pin-badge svg,
+.entry.list .entry-sensitive-badge svg {
+  width: 9px;
+  height: 9px;
+}
+.entry.list .entry-sync-badge {
+  /* Flush to the corner: at 18px there's no room for the grid's 3px inset. */
+  top: -3px;
+  right: -4px;
+  padding: 1px;
+  box-shadow: 0 0 0 1px var(--win-bg);
+}
+.entry.list .entry-pin-badge,
+.entry.list .entry-sensitive-badge {
+  padding: 1px;
+}
+/* Collapsed favorites rail: `.sidebar-ico` shrinks 34px -> 28px, so the
+   badge's 5px inset put it nearly centered over the icon (the "cloud icon
+   goes too far left" report). Hug the corner instead, and shrink it so it
+   marks the icon rather than covering it. */
+.sidebar-item.icon-only .sync-badge {
+  right: -2px;
+  bottom: -2px;
+}
+.sidebar-item.icon-only .sync-badge svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* Horizontal duration selector in the sensitive-file unlock sheet: one row of
+   chips acting as radio buttons, so the session length is a visible choice at
+   the moment it matters rather than a Settings round-trip. */
+.duration-picker {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+.duration-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 2px;
+  font-family: var(--font);
+  font-size: 11.5px;
+  white-space: nowrap;
+  border-radius: 6px;
+  border: 1px solid var(--toolbar-border, rgba(127, 127, 127, 0.25));
+  background: var(--win-bg);
+  color: var(--text-2);
+  cursor: default;
+}
+.duration-chip:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+}
+.duration-chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
 }

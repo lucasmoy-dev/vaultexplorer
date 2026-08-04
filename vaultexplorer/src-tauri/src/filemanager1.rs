@@ -36,6 +36,49 @@ pub struct ShowInFolderPayload {
     pub select: Option<String>,
 }
 
+/// Last reveal request, kept so a *cold start* isn't lost. `reveal()` emits
+/// an event, and an event has no listeners when D-Bus activation is what
+/// started the process: the JS side hasn't mounted (let alone registered its
+/// listener) by the time ShowItems is serviced, so the emit goes nowhere and
+/// the app just opens on its default folder. The frontend drains this on
+/// mount instead; the emit stays as the path for an already-running app.
+fn pending_reveal() -> &'static Mutex<Option<ShowInFolderPayload>> {
+    static PENDING: std::sync::OnceLock<Mutex<Option<ShowInFolderPayload>>> =
+        std::sync::OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(None))
+}
+
+/// Drained once by the frontend as it mounts. Returns `None` for an app that
+/// was already running when the request arrived (the event handled it).
+#[tauri::command]
+pub fn take_pending_reveal() -> Option<ShowInFolderPayload> {
+    pending_reveal().lock().ok().and_then(|mut slot| slot.take())
+}
+
+/// Queue a reveal for the next window that mounts (same slot ShowItems
+/// uses for cold starts) -- lets a directory CLI argument reuse the whole
+/// drain path.
+pub fn set_pending_reveal(path: String, select: Option<String>) {
+    if let Ok(mut slot) = pending_reveal().lock() {
+        *slot = Some(ShowInFolderPayload { path, select });
+    }
+}
+
+/// Resolve a CLI argument to an existing directory, accepting both a plain
+/// path and the `file://` URI a `%U` Exec field code delivers. This is how
+/// "open a folder with VaultExplorer" arrives when the caller went through
+/// xdg-open/gio (OBS's "Show Recordings", a double-clicked folder once
+/// VaultExplorer is the inode/directory default) rather than through the
+/// org.freedesktop.FileManager1 service above (Chrome-style "Show in
+/// folder", which only works while a VaultExplorer process owns the name).
+pub fn cli_dir_arg(arg: &str) -> Option<String> {
+    if arg.starts_with('-') || (arg.contains("://") && !arg.starts_with("file://")) {
+        return None;
+    }
+    let path = uri_to_path(arg).unwrap_or_else(|| arg.to_string());
+    std::path::Path::new(&path).is_dir().then_some(path)
+}
+
 /// Minimal percent-decoder for the `file://` URIs callers hand us (a
 /// filename with a space becomes `%20`, etc.) -- pulling in a whole crate
 /// for this one call site isn't worth it, matching `portal.rs`'s own
@@ -84,7 +127,11 @@ impl FileManager1Iface {
             // fallback that actually gets noticed.
             let _ = main.request_user_attention(Some(tauri::UserAttentionType::Critical));
         }
-        let _ = self.app.emit("show-in-folder", ShowInFolderPayload { path, select });
+        let payload = ShowInFolderPayload { path, select };
+        if let Ok(mut slot) = pending_reveal().lock() {
+            *slot = Some(payload.clone());
+        }
+        let _ = self.app.emit("show-in-folder", payload);
     }
 }
 

@@ -24,6 +24,8 @@ export const api = {
     invoke<void>("convert_folder_to_vault", { path, password }),
   unlockVault: (path: string, password: string) =>
     invoke<void>("unlock_vault", { path, password }),
+  verifyVaultPassword: (path: string, password: string) =>
+    invoke<void>("verify_vault_password", { path, password }),
   lockVault: (root: string) => invoke<void>("lock_vault", { root }),
   setActiveVault: (root: string) => invoke<void>("set_active_vault", { root }),
   setVaultAutoUnlock: (root: string, password: string) =>
@@ -33,9 +35,15 @@ export const api = {
 
   // vault-internal (operate on the currently unlocked vault)
   listDir: (relPath: string) => invoke<Entry[]>("list_dir", { relPath }),
+  vaultListDirAt: (root: string, relPath: string) =>
+    invoke<Entry[]>("vault_list_dir_at", { root, relPath }),
   search: (query: string) => invoke<string[]>("search_vault", { query }),
   moveEntry: (src: string, dest: string) => invoke<void>("move_entry", { src, dest }),
   copyEntry: (src: string, dest: string) => invoke<void>("copy_entry", { src, dest }),
+  vaultToVaultCopy: (srcRoot: string, srcRel: string, destRoot: string, destRel: string) =>
+    invoke<void>("vault_to_vault_copy", { srcRoot, srcRel, destRoot, destRel }),
+  vaultToVaultMove: (srcRoot: string, srcRel: string, destRoot: string, destRel: string) =>
+    invoke<void>("vault_to_vault_move", { srcRoot, srcRel, destRoot, destRel }),
   deleteFile: (relPath: string) => invoke<void>("delete_file", { relPath }),
   deleteDir: (relPath: string) => invoke<void>("delete_dir", { relPath }),
   makeDir: (relPath: string) => invoke<void>("make_dir", { relPath }),
@@ -73,6 +81,8 @@ export const api = {
   isMobilePlatform: () => invoke<boolean>("is_mobile_platform"),
   androidStorageAccessGranted: () => invoke<boolean>("android_storage_access_granted"),
   androidRequestStorageAccess: () => invoke<void>("android_request_storage_access"),
+  androidPinFolderShortcut: (id: string, label: string, url: string, iconBase64?: string) =>
+    invoke<void>("android_pin_folder_shortcut", { id, label, url, iconBase64 }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>
@@ -119,6 +129,28 @@ export const api = {
   portalIsEnabled: () => invoke<boolean>("portal_is_enabled"),
   portalEnable: () => invoke<void>("portal_enable"),
   portalDisable: () => invoke<void>("portal_disable"),
+  autostartEnabled: () => invoke<boolean>("autostart_enabled"),
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  listAppsForPath: (path: string) =>
+    invoke<{ id: string; name: string; icon: string | null; is_default: boolean }[]>(
+      "list_apps_for_path",
+      { path }
+    ),
+  // A "Show in folder" request that arrived before the UI existed (D-Bus
+  // activation starting the app); null when the app was already running and
+  // the `show-in-folder` event handled it. See filemanager1.rs.
+  takePendingReveal: () =>
+    invoke<{ path: string; select: string | null } | null>("take_pending_reveal"),
+  // Every installed app (not just this file's registered handlers), for the
+  // "Other Application…" picker. Icons come back as theme names and are
+  // resolved in batches by `appIcons` for the rows actually on screen.
+  listAllApps: () =>
+    invoke<{ id: string; name: string; comment: string | null; icon_name: string | null }[]>(
+      "list_all_apps"
+    ),
+  appIcons: (icons: string[]) => invoke<(string | null)[]>("app_icons", { icons }),
+  openWith: (path: string, desktopId: string) =>
+    invoke<void>("open_with", { path, desktopId }),
   portalResolve: (requestId: string, uris: string[]) =>
     invoke<void>("portal_resolve", { requestId, uris }),
   portalCancel: (requestId: string) => invoke<void>("portal_cancel", { requestId }),
@@ -243,6 +275,10 @@ export const api = {
     invoke<string>("encrypt_file_in_vault", { relPath, password }),
   decryptFileInVault: (relPath: string, password: string) =>
     invoke<string>("decrypt_file_in_vault", { relPath, password }),
+  // Mobile-only alternative to openPath: no FUSE mount exists on Android, so
+  // handing a vault file to another app means decrypting it to a throwaway
+  // copy in the app's cache dir (shareable via FileProvider) instead.
+  vaultDecryptToTemp: (relPath: string) => invoke<string>("vault_decrypt_to_temp", { relPath }),
 
   // Cloud sync (Google Drive, OneDrive, Dropbox, ...), via rclone (see
   // rclone.rs) -- no client ID/secret setup step, rclone's own bundled
@@ -261,6 +297,11 @@ export const api = {
   driveSyncingNow: () => invoke<string[]>("drive_syncing_now"),
   driveSyncIsActive: (localPath: string) => invoke<boolean>("drive_sync_is_active", { localPath }),
   driveSyncLastError: (localPath: string) => invoke<string | null>("drive_sync_last_error", { localPath }),
+  driveVerifyingNow: () => invoke<string[]>("drive_verifying_now"),
+  driveSyncActivity: () =>
+    invoke<Record<string, { current: string | null; count: number }>>("drive_sync_activity"),
+  syncVerifyStates: (kind: string, dir: string, names: string[]) =>
+    invoke<string[]>("sync_verify_states", { kind, dir, names }),
   fsWatchSet: (path: string | null) => invoke<void>("fs_watch_set", { path }),
   gitSyncListPairs: () => invoke<GitSyncPair[]>("git_sync_list_pairs"),
   gitSyncIsActive: (localPath: string) => invoke<boolean>("git_sync_is_active", { localPath }),

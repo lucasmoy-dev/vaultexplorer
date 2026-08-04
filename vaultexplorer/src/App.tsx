@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
-import { Channel } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { openPath as osOpen } from "@tauri-apps/plugin-opener";
 import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { onBackButtonPress } from "@tauri-apps/api/app";
 import {
   api,
   Entry,
@@ -41,17 +42,23 @@ import {
   CloudSyncGlyph,
   LocalSyncGlyph,
   SettingsGlyph,
+  LockGlyph,
+  NewFileGlyph,
+  NewFolderGlyph,
+  PasteGlyph,
+  RetryImg,
   kindOf,
   customIconUrl,
+  CUSTOM_ICON_PREFIX,
   symbolIconSvg,
 } from "./icons";
 import { Loc, Clipboard, View, ProgressOp, PendingAction, VaultCreateOptions, SensitiveTimeout } from "./types";
 import { ProgressPanel } from "./components/ProgressPanel";
-import { kindLabel } from "./entryHelpers";
+import { kindLabel, editorExtOf } from "./entryHelpers";
 import { EntryTile } from "./components/EntryTile";
 import { MyComputerView } from "./components/MyComputerView";
 import { SearchResults } from "./components/SearchResults";
-import { FilePreviewPane } from "./components/TextEditorPane";
+import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
 import { buildSyncSubmenu } from "./menus";
@@ -67,6 +74,7 @@ import {
   EncryptFileSheet,
   NewVaultSheet,
   UnfreezeSheet,
+  VaultSettingsSheet,
 } from "./components/sheets/vault-sheets";
 import {
   GitStatusSheet,
@@ -87,9 +95,10 @@ import {
   ManageTemplatesSheet,
   MachineInfoSheet,
   FormatDriveSheet,
-  SettingsSheet,
+  SettingsScreen,
 } from "./components/sheets/system-sheets";
 import { GetInfoSheet, MultiInfoSheet } from "./components/sheets/info-sheets";
+import { OpenWithSheet } from "./components/sheets/open-with-sheet";
 import "./App.css";
 
 // Expands {date}/{time}/{datetime} tokens in a user-configured default
@@ -112,6 +121,81 @@ function formatNameTemplate(template: string): string {
 const ARCHIVE_EXT_RE = /\.(zip|tar\.gz|tgz)$/i;
 function startPath(home: string): string {
   return localStorage.getItem(DEFAULT_START_KEY) || home;
+}
+
+// A home-screen shortcut's pinned Intent can only carry a plain URL, not a
+// live `Loc` object -- this is the deep link that round-trips one, both
+// directions. Mirrors `vaultexplorer://add-device` (sync-sheets.tsx) but
+// for "open this folder", not pairing.
+function buildOpenFolderLink(loc: Loc): string {
+  const params =
+    loc.kind === "vault"
+      ? new URLSearchParams({ kind: "vault", root: loc.root, rel: loc.rel })
+      : new URLSearchParams({ kind: "fs", path: loc.path });
+  return `vaultexplorer://open-folder?${params.toString()}`;
+}
+function parseOpenFolderLink(url: string): Loc | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "vaultexplorer:" || parsed.hostname !== "open-folder") return null;
+    const kind = parsed.searchParams.get("kind");
+    if (kind === "vault") {
+      const root = parsed.searchParams.get("root");
+      if (!root) return null;
+      return { kind: "vault", root, rel: parsed.searchParams.get("rel") || "" };
+    }
+    const path = parsed.searchParams.get("path");
+    if (!path) return null;
+    return { kind: "fs", path };
+  } catch {
+    return null;
+  }
+}
+// Stable per-folder id for the pinned shortcut (Android scopes shortcut
+// IDs per-package): a short, non-cryptographic hash of the deep link is
+// enough to make re-adding the same folder update its existing pin
+// instead of piling up duplicates, with no server/crypto round-trip.
+function hashForShortcutId(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+  return `folder-${(h >>> 0).toString(36)}`;
+}
+
+// A folder's custom icon is either an emoji (plain string) or a bundled
+// WhiteSur icon ("ws:<key>", see icons.tsx) -- only the emoji case can
+// become an actual bitmap for a pinned shortcut's `Icon.createWithBitmap`
+// entirely on the JS side (rendering it to a canvas); a WhiteSur icon is a
+// frontend-bundled SVG asset with no plain native filesystem path for the
+// JNI side to read, so that case just falls back to the app's own icon
+// (see `android_pin_folder_shortcut`) rather than not shipping this at all.
+function renderEmojiIconPng(emoji: string): string | undefined {
+  const size = 108; // Android's adaptive-icon canvas size
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return undefined;
+  ctx.font = `${Math.round(size * 0.62)}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(emoji, size / 2, size / 2 + size * 0.05);
+  const dataUrl = canvas.toDataURL("image/png");
+  const comma = dataUrl.indexOf(",");
+  return comma < 0 ? undefined : dataUrl.slice(comma + 1);
+}
+
+// Mobile's in-app editor covers exactly the two extensions desktop's own
+// listPreview always treats as plain text (see `editorExtOf` -- it
+// deliberately returns `null`, not a toggleable entry, for these same
+// two), not the wider user-configurable `textEditorExts` set -- keeps the
+// mobile handoff decision a plain yes/no instead of needing that whole
+// per-extension picker UI to exist on a phone too.
+function isPlainTextEntry(entry: Entry): boolean {
+  if (entry.is_dir) return false;
+  const dot = entry.name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  const ext = entry.name.slice(dot + 1).toLowerCase();
+  return ext === "txt" || ext === "md" || ext === "markdown";
 }
 
 // A translucent drag-image for the native OS-level drag (see beginDrag) --
@@ -167,11 +251,44 @@ function Explorer({ home }: { home: string }) {
   // formatting) or don't make sense there (floating-window chrome).
   const [mobile, setMobile] = useState(false);
   useEffect(() => {
-    api.isMobilePlatform().then((v) => {
-      setMobile(v);
-      document.documentElement.classList.toggle("is-mobile", v);
-    }).catch(() => {});
+    let cancelled = false;
+    // A cold start can race the IPC bridge (seen in practice on Android,
+    // worse on a freshly-booted/cold emulator than a warm one: the very
+    // first invoke can keep rejecting for several seconds before the
+    // bridge finishes attaching). This result is a compile-time constant
+    // (`cfg!(mobile)`), never actually false-negative on retry, so giving
+    // up too early meant `mobile` got permanently stuck at its `false`
+    // default: the sidebar defaults to the *desktop* shape (My Computer
+    // visible, no hamburger, docked layout) on a phone for the rest of
+    // that session, with no user-visible error to explain why. Keeps
+    // retrying every 500ms for up to ~20s -- comfortably past the worst
+    // cold-start delay seen -- before actually giving up; each attempt is
+    // a single cheap round-trip with nothing else waiting on it.
+    async function detect() {
+      for (let i = 0; i < 40 && !cancelled; i++) {
+        if (i) await new Promise((r) => setTimeout(r, 500));
+        try {
+          const v = await api.isMobilePlatform();
+          if (cancelled) return;
+          setMobile(v);
+          document.documentElement.classList.toggle("is-mobile", v);
+          return;
+        } catch {
+          // keep retrying
+        }
+      }
+    }
+    detect();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+  // Touch has no ⌘/⇧-click, so multi-select needs its own explicit mode:
+  // entered via "Select" in the long-press menu (see entryMenu), then a
+  // plain tap toggles membership instead of opening/activating. The
+  // auto-exit-when-empty effect is below, once `selected` (from
+  // useSelection()) is actually in scope.
+  const [selectionMode, setSelectionMode] = useState(false);
   // The desktop sidebar is a permanently docked column -- on a phone-width
   // screen that eats half the usable width, so on mobile it becomes an
   // off-canvas drawer instead, opened via the hamburger button and closed
@@ -196,6 +313,7 @@ function Explorer({ home }: { home: string }) {
     newFolderNameTemplate: string;
     theme: "light" | "dark" | "system";
     sensitiveTimeout: SensitiveTimeout;
+    mobileExternalEditor: boolean;
   }>(() => {
     const defaults = {
       showHiddenFiles: false,
@@ -205,6 +323,7 @@ function Explorer({ home }: { home: string }) {
       newFolderNameTemplate: "untitled folder",
       theme: "system" as const,
       sensitiveTimeout: 1200 as SensitiveTimeout,
+      mobileExternalEditor: false,
     };
     try {
       const raw = localStorage.getItem("vaultexplorer:app-settings");
@@ -237,19 +356,25 @@ function Explorer({ home }: { home: string }) {
   // `onOpenUrl` covers the live case wherever the platform supports it.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    const handle = (url: string) => {
+      const device = parseAddDeviceLink(url);
+      if (device) {
+        setIncomingDevice(device);
+        return;
+      }
+      // A tap on a pinned home-screen folder shortcut (see
+      // `addFolderShortcut`) arrives the same way -- launch args on
+      // Linux/Windows, a live `onOpenUrl` event on Android.
+      const folder = parseOpenFolderLink(url);
+      if (folder) go(folder);
+    };
     getCurrentDeepLinks()
       .then((urls) => {
-        for (const url of urls ?? []) {
-          const parsed = parseAddDeviceLink(url);
-          if (parsed) setIncomingDevice(parsed);
-        }
+        for (const url of urls ?? []) handle(url);
       })
       .catch(() => {});
     onOpenUrl((urls) => {
-      for (const url of urls) {
-        const parsed = parseAddDeviceLink(url);
-        if (parsed) setIncomingDevice(parsed);
-      }
+      for (const url of urls) handle(url);
     })
       .then((fn) => {
         unlisten = fn;
@@ -307,12 +432,13 @@ function Explorer({ home }: { home: string }) {
     state: "working" | "done" | "error";
     message?: string;
   } | null>(null);
-  async function shareFile(entry: Entry) {
+  // `dir` defaults to the folder on screen; search results pass their own,
+  // since a hit can live anywhere under the search root.
+  async function shareFile(entry: Entry, dir?: string) {
+    const full = joinPath(dir ?? curDir, entry.name);
     setShareStatus({ label: entry.name, state: "working" });
     try {
-      const url = inVault
-        ? await api.vaultShareFile(joinPath(curDir, entry.name))
-        : await api.fsShareFile(joinPath(curDir, entry.name));
+      const url = inVault ? await api.vaultShareFile(full) : await api.fsShareFile(full);
       await navigator.clipboard.writeText(url);
       setShareStatus({ label: entry.name, state: "done", message: url });
       setTimeout(() => setShareStatus((s) => (s?.label === entry.name ? null : s)), 5000);
@@ -333,6 +459,32 @@ function Explorer({ home }: { home: string }) {
   useEffect(() => {
     localStorage.setItem("vaultexplorer:vault-settings", JSON.stringify(vaultSettings));
   }, [vaultSettings]);
+  // "Vault Settings…" (any vault folder's context menu) -- editing the
+  // same options NewVaultSheet's Advanced section sets at creation time,
+  // for a vault that already exists. `canAutoUnlock` false for a nested
+  // vault opened while browsing inside another vault (its FUSE path is
+  // per-session, so it can't be keyed for startup auto-unlock).
+  const [vaultSettingsTarget, setVaultSettingsTarget] = useState<{
+    root: string;
+    canAutoUnlock: boolean;
+  } | null>(null);
+  async function saveVaultSettings(
+    root: string,
+    opts: VaultCreateOptions,
+    password: string | null
+  ) {
+    if (opts.autoUnlock && password !== null) {
+      // Verify before persisting -- storing a mistyped password would just
+      // silently fail every future auto-unlock attempt instead of erroring
+      // now, while the user can still fix it.
+      await api.verifyVaultPassword(root, password);
+      await api.setVaultAutoUnlock(root, password);
+    } else if (!opts.autoUnlock) {
+      await api.clearVaultAutoUnlock(root).catch(() => {});
+    }
+    setVaultSettings((prev) => ({ ...prev, [root]: opts }));
+    setVaultSettingsTarget(null);
+  }
   const [reauthPrompt, setReauthPrompt] = useState<{ root: string; name: string } | null>(null);
   const [reauthError, setReauthError] = useState("");
 
@@ -636,22 +788,67 @@ function Explorer({ home }: { home: string }) {
   useEffect(() => {
     let cancelled = false;
     let prev = new Set<string>();
+    let prevVerifying = new Set<string>();
     // Drive's background auto-sync loop is entirely best-effort (same as
     // git/local sync's loops) -- a pair stuck failing every tick (e.g.
     // rclone's own "too many deletes" safety abort) would otherwise fail
     // silently forever with nothing ever telling the user. Tracked per
     // path so the same failure doesn't re-show the banner every poll.
     const shownDriveErrors = new Map<string, string>();
+    // Background sync/verify activity also shows as rows in the bottom-right
+    // progress panel, same as any user-started operation -- synthetic ops
+    // (no Channel, no cancel), keyed per path so a row updates in place.
+    const taskIds = new Map<string, number>();
+    function beginTask(key: string, label: string) {
+      if (taskIds.has(key)) {
+        // Refresh the label in place -- the sync row narrates the current
+        // file as the pass moves through them.
+        const id = taskIds.get(key)!;
+        setProgressOps((ops) => ops.map((p) => (p.id === id && p.label !== label ? { ...p, label } : p)));
+        return;
+      }
+      const id = ++progressIdRef.current;
+      taskIds.set(key, id);
+      setProgressOps((ops) => [...ops, { id, label, done: 0, total: 1, status: "running" }]);
+    }
+    function endTask(key: string) {
+      const id = taskIds.get(key);
+      if (id == null) return;
+      taskIds.delete(key);
+      // Show 100% for a beat before dropping the row, beginProgress's rhythm.
+      setProgressOps((ops) => ops.map((p) => (p.id === id ? { ...p, done: 1, total: 1 } : p)));
+      setTimeout(() => setProgressOps((ops) => ops.filter((p) => p.id !== id)), 1000);
+    }
     function poll() {
       Promise.all([
         api.gitSyncSyncingNow().catch(() => []),
         api.localSyncSyncingNow().catch(() => []),
         api.driveSyncingNow().catch(() => []),
         api.syncthingSyncingNow().catch(() => []),
+        api.driveVerifyingNow().catch(() => []),
+        api.driveSyncActivity().catch(() => ({}) as Record<string, { current: string | null; count: number }>),
       ]).then((results) => {
         if (cancelled) return;
-        const next = new Set(results.flat());
+        const verifying = new Set(results[4] as string[]);
+        const activity = results[5] as Record<string, { current: string | null; count: number }>;
+        const next = new Set((results.slice(0, 4) as string[][]).flat());
         const justFinished = [...prev].filter((p) => !next.has(p));
+        for (const p of next) {
+          // Narrate the specific file mid-transfer when the backend can name
+          // it (decrypted for unlocked vaults); fall back to the folder.
+          const act = activity[p];
+          const label = act?.current
+            ? `Syncing "${baseName(act.current)}"`
+            : act?.count
+            ? `Syncing "${baseName(p)}" · ${act.count} ${act.count === 1 ? "file" : "files"}`
+            : `Syncing "${baseName(p)}"`;
+          beginTask(`sync:${p}`, label);
+        }
+        for (const p of prev) if (!next.has(p)) endTask(`sync:${p}`);
+        for (const p of verifying)
+          if (!prevVerifying.has(p)) beginTask(`verify:${p}`, `Verifying "${baseName(p)}" in cloud`);
+        for (const p of prevVerifying) if (!verifying.has(p)) endTask(`verify:${p}`);
+        prevVerifying = verifying;
         prev = next;
         setSyncingPaths(next);
         if (justFinished.length) {
@@ -692,6 +889,12 @@ function Explorer({ home }: { home: string }) {
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const { selected, setSelected, lastClicked, setLastClicked, selectOnly, toggle, selectRange: selectRangeByNames } =
     useSelection();
+  // See the `selectionMode` declaration above -- exits on its own once
+  // nothing is left selected, same convention as Google Files/Photos, so
+  // there's no separate "still in select mode with 0 picked" limbo state.
+  useEffect(() => {
+    if (selectionMode && selected.size === 0) setSelectionMode(false);
+  }, [selectionMode, selected]);
   // Shift+Arrow range selection: `arrowAnchorRef` is the fixed end of the
   // range (set once when a shift-arrow sequence begins), `arrowFocusRef`
   // is the end that moves with each press -- same anchor+focus model
@@ -712,6 +915,40 @@ function Explorer({ home }: { home: string }) {
   const [searchExpanded, setSearchExpanded] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchResults, setSearchResults] = useState<string[] | null>(null);
+  // Absolute path whose "Other Application…" picker is open (null = closed).
+  const [openWithTarget, setOpenWithTarget] = useState<string | null>(null);
+
+  // Extensions the user has decided to open in the text editor, even though
+  // `kindOf` doesn't call them "text". A `.js` is kind "code", so the preview
+  // pane showed it as a read-only info panel with no way to edit it -- the
+  // "Edit" button there adds its extension here, which switches this file to
+  // the editor immediately and every later file of that format too. Undone
+  // from Get Info (the per-format switch lives there, since it's a property
+  // of the format rather than of the file you happen to have selected).
+  // Stored lowercase, without the dot.
+  const [textEditorExts, setTextEditorExts] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem("vaultexplorer:text-editor-exts");
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch {
+      /* ignore */
+    }
+    return new Set();
+  });
+  useEffect(() => {
+    localStorage.setItem("vaultexplorer:text-editor-exts", JSON.stringify([...textEditorExts]));
+  }, [textEditorExts]);
+  function setExtOpensInEditor(ext: string, on: boolean) {
+    const key = ext.toLowerCase();
+    if (!key) return;
+    setTextEditorExts((prev) => {
+      if (prev.has(key) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
   const [error, setError] = useState("");
   const [infoMsg, setInfoMsg] = useState("");
   useEffect(() => {
@@ -764,6 +1001,13 @@ function Explorer({ home }: { home: string }) {
     fullPath: string;
     kind: Loc["kind"];
     root?: string;
+  } | null>(null);
+  // The mobile in-app text/markdown editor (full-screen, unlike desktop's
+  // split listPreview pane -- there's no room for a split on a phone).
+  const [mobileEditorTarget, setMobileEditorTarget] = useState<{
+    entry: Entry;
+    fullPath: string;
+    inVault: boolean;
   } | null>(null);
   const [iconScale, setIconScale] = useState(1);
   const [trashPath, setTrashPath] = useState<string | null>(null);
@@ -938,6 +1182,44 @@ function Explorer({ home }: { home: string }) {
   const inVault = loc.kind === "vault";
   const curDir = inVault ? loc.rel : loc.path; // dir key in the active space
 
+  // Per-entry "truly synced" state for the folder on screen: "verified"
+  // means the last `rclone check` matched this file's checksum against the
+  // cloud copy AND nothing changed locally since -- a strictly stronger
+  // claim than "a sync pass ran". Entries inside an unlocked vault are
+  // covered too (the backend maps them to their ciphertext files). Polled
+  // on the same rhythm as the syncing badges.
+  const [verifyStates, setVerifyStates] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    const treeRoot = loc.kind === "vault" ? loc.root : loc.path;
+    function poll() {
+      const covered =
+        entries.length > 0 &&
+        [...driveSyncedPaths].some((p) => treeRoot === p || treeRoot.startsWith(p + "/"));
+      if (!covered) {
+        setVerifyStates((cur) => (cur.size ? new Map() : cur));
+        return;
+      }
+      api
+        .syncVerifyStates(
+          loc.kind,
+          curDir,
+          entries.map((e) => e.name)
+        )
+        .then((states) => {
+          if (cancelled) return;
+          setVerifyStates(new Map(entries.map((e, i) => [e.name, states[i]])));
+        })
+        .catch(() => {});
+    }
+    poll();
+    const interval = setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [entries, loc, curDir, driveSyncedPaths]);
+
   // "Show in folder"-type actions from other apps (Chrome's Downloads
   // panel, OBS's "Show Recordings") when VaultExplorer is the system's
   // org.freedesktop.FileManager1 (see filemanager1.rs) -- navigates here,
@@ -948,50 +1230,122 @@ function Explorer({ home }: { home: string }) {
   const pendingRevealSelectRef = useRef<{ dir: string; name: string } | null>(null);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    listen<{ path: string; select: string | null }>("show-in-folder", (event) => {
-      const { path, select } = event.payload;
+    const applyReveal = ({ path, select }: { path: string; select: string | null }) => {
       go({ kind: "fs", path });
       pendingRevealSelectRef.current = select ? { dir: path, name: select } : null;
-    })
+    };
+    listen<{ path: string; select: string | null }>("show-in-folder", (event) =>
+      applyReveal(event.payload)
+    )
       .then((fn) => {
         unlisten = fn;
+      })
+      .catch(() => {});
+    // A request that arrived *before* this listener existed -- i.e. D-Bus
+    // activation launching the app for a "Show in folder" (Chrome's Downloads
+    // panel with VaultExplorer not already running). The backend's emit had
+    // no listeners then, so the app just opened on its default folder; it
+    // parks the request instead and this drains it. See filemanager1.rs.
+    api
+      .takePendingReveal()
+      .then((pending) => {
+        if (pending) applyReveal(pending);
       })
       .catch(() => {});
     return () => unlisten?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Set (by `refresh()` or the effect below) once the reveal target has been
+  // selected but not yet scrolled to -- the two halves have to happen at
+  // different moments: selecting belongs in the same `refresh()` that loads
+  // the listing (so its own selection reset can't clobber it), while
+  // scrolling can only happen after React has committed those entries and
+  // the tile actually exists in the DOM.
+  const pendingRevealScrollRef = useRef<string | null>(null);
   useEffect(() => {
     const pending = pendingRevealSelectRef.current;
-    if (!pending || curDir !== pending.dir) return;
-    if (entries.some((e) => e.name === pending.name)) {
+    // Fallback for a reveal that arrives when `refresh()` isn't the thing
+    // that loads the folder (it consumes the ref itself when it is).
+    if (pending && curDir === pending.dir && entries.some((e) => e.name === pending.name)) {
       selectOnly(pending.name);
       pendingRevealSelectRef.current = null;
-      // Tile isn't in the DOM yet the same tick entries lands -- wait a
-      // frame so the scroll targets the actual rendered position.
-      requestAnimationFrame(() => {
-        document
-          .querySelector(`.entries [data-name="${CSS.escape(pending.name)}"]`)
-          ?.scrollIntoView({ block: "center" });
-      });
+      pendingRevealScrollRef.current = pending.name;
     }
+    const name = pendingRevealScrollRef.current;
+    if (!name || !entries.some((e) => e.name === name)) return;
+    pendingRevealScrollRef.current = null;
+    // Only icon/list views tag their rows with data-name (column view rows
+    // don't), so a reveal into column view selects without scrolling.
+    const find = () =>
+      document.querySelector(`.entries [data-name="${CSS.escape(name)}"]`) as HTMLElement | null;
+    const inView = (el: HTMLElement) => {
+      const box = el.getBoundingClientRect();
+      const scroller = contentRef.current?.getBoundingClientRect();
+      return !!scroller && box.top >= scroller.top && box.bottom <= scroller.bottom;
+    };
+    // Retried, not fired once: on a cold start (Chrome's "Show in folder"
+    // launching the app) the icon grid's column count is still being measured
+    // from the live content width when the first scroll lands, so the tile
+    // moves right after -- and a file deep in a big folder ends up off-screen
+    // again, which is exactly the "selected but not scrolled to" report. The
+    // later passes are no-ops once the row is genuinely in view.
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const attempt = () => {
+      const el = find();
+      if (!el) return;
+      if (!inView(el)) el.scrollIntoView({ block: "center" });
+    };
+    const raf = requestAnimationFrame(attempt);
+    timers.push(setTimeout(attempt, 150), setTimeout(attempt, 450));
+    return () => {
+      cancelAnimationFrame(raf);
+      timers.forEach(clearTimeout);
+    };
   }, [entries, curDir, selectOnly]);
 
   // Column view: a single click on a file selects it (and shows the info
   // preview column on the right) instead of opening it -- opening still
   // takes a double click, matching every other view.
   const [previewEntry, setPreviewEntry] = useState<{ dir: string; entry: Entry } | null>(null);
+  // Bumped after an action from the preview pane's own context menu
+  // changes the previewed folder's contents (e.g. Move to Trash) -- the
+  // fs watcher only covers curDir, so the pane needs its own reload cue.
+  const [previewReloadKey, setPreviewReloadKey] = useState(0);
   const locKey = inVault ? loc.root + "::" + loc.rel : loc.path;
   useEffect(() => {
     setPreviewEntry(null);
   }, [locKey]);
 
-  // Remember view mode + icon zoom per folder (Finder-like), so e.g.
-  // Pictures can stay a zoomed-in icon grid while Workspaces stays a list.
-  const [folderViewPrefs, setFolderViewPrefs] = useState<
-    Record<string, { view: View; iconScale: number }>
-  >(() => {
+  // View mode + icon zoom: ONE global setting that follows you from folder
+  // to folder, plus an explicit per-folder pin as the escape hatch.
+  //
+  // This used to be implicitly per-folder (every folder you ever touched
+  // silently remembered its own view), which is what Finder does and what
+  // made navigating feel unstable: walking down a tree flipped between
+  // icon/list/columns and between zoom levels at folders you didn't
+  // consciously configure, and there was no way to tell why. A view that
+  // stays put unless you change it is the more predictable default; the
+  // "one folder genuinely wants a different view" case (a photo folder as
+  // big thumbnails) is rarer, so it's opt-in via "Always Open in This
+  // View" and only that folder is affected -- leaving it drops you back to
+  // the global view instead of dragging the pinned one along.
+  type ViewPrefs = { view: View; iconScale: number };
+  const [defaultViewPrefs, setDefaultViewPrefs] = useState<ViewPrefs>(() => {
     try {
-      const raw = localStorage.getItem("vaultexplorer:folder-view");
+      const raw = localStorage.getItem("vaultexplorer:view-default");
+      if (raw) return JSON.parse(raw);
+    } catch {
+      /* ignore */
+    }
+    return { view: "icon", iconScale: 1 };
+  });
+  const [pinnedViewPrefs, setPinnedViewPrefs] = useState<Record<string, ViewPrefs>>(() => {
+    // The old implicit per-folder map is deliberately dropped rather than
+    // migrated -- it's a record of views the user never chose on purpose,
+    // so importing it would just reproduce the jumpiness under a new key.
+    localStorage.removeItem("vaultexplorer:folder-view");
+    try {
+      const raw = localStorage.getItem("vaultexplorer:view-pins");
       if (raw) return JSON.parse(raw);
     } catch {
       /* ignore */
@@ -999,31 +1353,69 @@ function Explorer({ home }: { home: string }) {
     return {};
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:folder-view", JSON.stringify(folderViewPrefs));
-  }, [folderViewPrefs]);
-  const folderViewPrefsRef = useRef(folderViewPrefs);
+    localStorage.setItem("vaultexplorer:view-default", JSON.stringify(defaultViewPrefs));
+  }, [defaultViewPrefs]);
   useEffect(() => {
-    folderViewPrefsRef.current = folderViewPrefs;
-  }, [folderViewPrefs]);
-  // Restore the saved view/zoom on navigation -- keyed only on locKey so
-  // this doesn't re-fire every time the map below is written to.
+    localStorage.setItem("vaultexplorer:view-pins", JSON.stringify(pinnedViewPrefs));
+  }, [pinnedViewPrefs]);
+  const viewPrefsRef = useRef({ def: defaultViewPrefs, pinned: pinnedViewPrefs });
   useEffect(() => {
-    const pref = folderViewPrefsRef.current[locKey];
-    setView(pref?.view ?? "icon");
-    setIconScale(pref?.iconScale ?? 1);
-  }, [locKey]);
-  // Persist whenever the current folder's view/zoom actually changes --
-  // keyed only on [view, iconScale] (not locKey) so a navigation that
-  // restores identical values for the new folder is a no-op, and one that
-  // changes them fires with the already-committed new locKey.
+    viewPrefsRef.current = { def: defaultViewPrefs, pinned: pinnedViewPrefs };
+  }, [defaultViewPrefs, pinnedViewPrefs]);
+  // Whatever the last navigation *restored*, so the persist effect below can
+  // tell a restore apart from the user actually picking something.
+  const restoredViewRef = useRef<ViewPrefs | null>(null);
+  const liveViewRef = useRef<ViewPrefs>({ view, iconScale });
   useEffect(() => {
-    setFolderViewPrefs((prev) => {
-      const existing = prev[locKey];
-      if (existing && existing.view === view && existing.iconScale === iconScale) return prev;
-      return { ...prev, [locKey]: { view, iconScale } };
-    });
+    liveViewRef.current = { view, iconScale };
+  });
+  // Apply the pin (if this folder has one) or the global view on navigation.
+  // Keyed only on locKey so it doesn't re-fire when the maps are written to.
+  useEffect(() => {
+    // Column view owns the whole navigation path -- clicking a folder there
+    // extends the columns via this same `loc` update instead of replacing
+    // the pane -- so pins are ignored while it's active. Otherwise walking
+    // into a pinned subfolder would kick you out of the view you're
+    // browsing in, which is exactly the old bug in miniature.
+    if (liveViewRef.current.view === "column") return;
+    const { def, pinned } = viewPrefsRef.current;
+    const target = pinned[locKey] ?? def;
+    restoredViewRef.current = target;
+    // A pin/default saved from a desktop session (or a settings sync)
+    // can still name "column"/"listPreview" -- the view-menu no longer
+    // offers switching TO them on mobile, but a stored preference bypasses
+    // that menu entirely, so it needs its own fallback here.
+    const restoredView =
+      mobile && (target.view === "column" || target.view === "listPreview") ? "icon" : target.view;
+    setView(restoredView);
+    setIconScale(target.iconScale);
+  }, [locKey, mobile]);
+  // Persist a real change: into this folder's pin if it has one, otherwise
+  // into the global view. Keyed only on [view, iconScale] (not locKey) so a
+  // navigation that restores identical values is a no-op, and a change fires
+  // with the already-committed locKey.
+  useEffect(() => {
+    const restored = restoredViewRef.current;
+    if (restored && restored.view === view && restored.iconScale === iconScale) return;
+    restoredViewRef.current = null;
+    if (viewPrefsRef.current.pinned[locKey]) {
+      setPinnedViewPrefs((prev) => ({ ...prev, [locKey]: { view, iconScale } }));
+    } else {
+      setDefaultViewPrefs({ view, iconScale });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, iconScale]);
+  const viewPinned = pinnedViewPrefs[locKey] !== undefined;
+  function toggleViewPin(): void {
+    setPinnedViewPrefs((prev) => {
+      const next = { ...prev };
+      if (locKey in next) delete next[locKey];
+      // Unpinning leaves the current view on screen (snapping back would be
+      // its own jolt); it just means later changes go to the global view.
+      else next[locKey] = { view, iconScale };
+      return next;
+    });
+  }
 
   // Declared here (rather than down by its render usage) because the
   // Shift+Arrow keydown handler below needs it, and hook dependency
@@ -1212,11 +1604,56 @@ function Explorer({ home }: { home: string }) {
     searchQuery,
   ]);
 
+  // Real `Entry` for each search hit, keyed by path. Search itself only
+  // returns paths, and the results list was building a stand-in entry with
+  // `is_dir: false` from the filename alone -- which is why a folder in the
+  // results showed a blank/wrong icon (`FileIcon` picks by kind, and the
+  // stand-in claimed "file with no known extension") and why nothing ever
+  // got a thumbnail. Resolved by listing each distinct parent directory
+  // once, rather than a new per-path stat command: hits cluster into few
+  // folders, and both spaces (fs and vault) already have a listing call.
+  const [searchEntries, setSearchEntries] = useState<Record<string, Entry>>({});
   const listDir = useCallback(
     (dir: string, kind: Loc["kind"]) =>
       kind === "vault" ? api.listDir(dir) : api.fsList(dir, appSettings.showHiddenFiles),
     [appSettings.showHiddenFiles]
   );
+
+  useEffect(() => {
+    if (searchResults === null || searchResults.length === 0) {
+      setSearchEntries({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const byDir = new Map<string, string[]>();
+      for (const p of searchResults) {
+        const dir = parentPath(p);
+        const names = byDir.get(dir);
+        if (names) names.push(baseName(p));
+        else byDir.set(dir, [baseName(p)]);
+      }
+      const resolved: Record<string, Entry> = {};
+      for (const [dir, names] of byDir) {
+        try {
+          const list = await listDir(dir, loc.kind);
+          if (cancelled) return;
+          const wanted = new Set(names);
+          for (const en of list) {
+            if (wanted.has(en.name)) resolved[joinPath(dir, en.name)] = en;
+          }
+        } catch {
+          /* unreadable folder -- those rows keep the fallback icon */
+        }
+        // Publish as each folder lands so a long result list fills in
+        // progressively instead of staying iconless until the last listing.
+        if (!cancelled) setSearchEntries({ ...resolved });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchResults, loc.kind, listDir]);
 
   const refresh = useCallback(async () => {
     if (loc.kind === "vault") {
@@ -1238,6 +1675,9 @@ function Explorer({ home }: { home: string }) {
         setSelected(new Set([reveal.name]));
         setLastClicked(reveal.name);
         pendingRevealSelectRef.current = null;
+        // Hand the scroll off to the effect that watches `entries` -- doing it
+        // here would target a DOM that doesn't have the row yet.
+        pendingRevealScrollRef.current = reveal.name;
       } else {
         // Preserve selection across SAME-folder reloads -- the instant
         // "fs-changed" watch (and the 20s poll) call refresh() whenever the
@@ -1369,6 +1809,25 @@ function Explorer({ home }: { home: string }) {
   }
 
   async function go(target: Loc, push = true) {
+    // Real shared storage (as opposed to this app's own sandbox) needs the
+    // "All files access" permission -- checked here, not just on the
+    // initial sidebar tap, so it also covers double-clicking into a
+    // subfolder, the breadcrumb, and back/forward: any of those landing on
+    // a shared-storage path with the permission since revoked (or never
+    // granted -- e.g. a saved favorite/history entry from before it was)
+    // would otherwise 404 with a raw "permission denied" instead of the
+    // proper request prompt.
+    if (mobile && target.kind === "fs" && target.path.startsWith(PHONE_STORAGE_PATH)) {
+      try {
+        const granted = await api.androidStorageAccessGranted();
+        if (!granted) {
+          await api.androidRequestStorageAccess();
+          return;
+        }
+      } catch {
+        /* command not available (non-Android mobile) -- fall through */
+      }
+    }
     setShowMyComputer(false);
     cancelPendingRenameClick();
     if (target.kind === "vault") {
@@ -1421,6 +1880,62 @@ function Explorer({ home }: { home: string }) {
     go({ kind: "fs", path: parentPath(loc.path) });
   }
   const canGoUp = loc.kind === "vault" || loc.path !== "/";
+  // Android's physical back button and the gesture-nav back-swipe are the
+  // same OS event, and Tauri's own `app` plugin already exposes it as
+  // `onBackButtonPress` for exactly this -- subscribing to it is also what
+  // tells that plugin's native side to stop applying its own default
+  // (WebView `goBack()`/exit, which this app never wants since it doesn't
+  // use real browser history for folder navigation). Closest layer wins: a
+  // context menu, then Settings, then the favorites drawer, then an
+  // expanded search field, then folder-history "up" -- only once none of
+  // those apply does a *second* back within 2s actually exit (the standard
+  // double-back-to-exit pattern, via the plugin's own `exit` command), so a
+  // single stray back press at the root never loses the app by accident.
+  const lastBackAt = useRef(0);
+  useEffect(() => {
+    if (!mobile) return;
+    let listener: { unregister: () => Promise<void> } | undefined;
+    onBackButtonPress(() => {
+      if (mobileEditorTarget) {
+        setMobileEditorTarget(null);
+        return;
+      }
+      if (menu) {
+        setMenu(null);
+        return;
+      }
+      if (settingsOpen) {
+        setSettingsOpen(false);
+        return;
+      }
+      if (sidebarOpen) {
+        setSidebarOpen(false);
+        return;
+      }
+      if (searchExpanded) {
+        setSearchExpanded(false);
+        return;
+      }
+      if (canGoUp) {
+        goUp();
+        return;
+      }
+      const now = Date.now();
+      if (now - lastBackAt.current < 2000) {
+        invoke("plugin:app|exit").catch(() => {});
+        return;
+      }
+      lastBackAt.current = now;
+      setInfoMsg("Toca atrás otra vez para salir");
+    })
+      .then((l) => {
+        listener = l;
+      })
+      .catch(() => {});
+    return () => {
+      listener?.unregister();
+    };
+  }, [mobile, mobileEditorTarget, menu, settingsOpen, sidebarOpen, searchExpanded, canGoUp]);
   // Best-effort: flush every still-mounted archive back to its file when
   // the window closes, so quitting mid-browse doesn't usually strand
   // edits in a scratch directory that's about to be orphaned. Deliberately
@@ -1449,7 +1964,7 @@ function Explorer({ home }: { home: string }) {
       loc.kind === "vault"
         ? baseName(loc.root)
         : loc.path === "/"
-          ? "VaultExplorer"
+          ? "Vault Explorer"
           : baseName(loc.path) || loc.path;
     getCurrentWebviewWindow()
       .setTitle(name)
@@ -1648,18 +2163,17 @@ function Explorer({ home }: { home: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [marquee !== null]);
 
-  const timeoutSecs = (): number | null =>
-    appSettings.sensitiveTimeout === "never" ? null : appSettings.sensitiveTimeout;
-
   // Schedule the sensitive session to auto-relock when the window expires:
   // re-lock in the backend and drop any open preview so a sensitive file
   // stops being visible the moment the timer lapses ("walked away" safety).
-  function scheduleSensitiveRelock() {
+  // `secs` is what the unlock sheet's duration picker chose for THIS session
+  // (defaulted from Settings), not the configured value -- the two differ
+  // whenever the user picks a different window for one file.
+  function scheduleSensitiveRelock(secs: number | null) {
     if (sensitiveTimerRef.current) {
       clearTimeout(sensitiveTimerRef.current);
       sensitiveTimerRef.current = null;
     }
-    const secs = timeoutSecs();
     if (secs === null) return; // "never" -- no auto-relock
     sensitiveTimerRef.current = setTimeout(() => {
       sensitiveTimerRef.current = null;
@@ -1705,13 +2219,14 @@ function Explorer({ home }: { home: string }) {
     setSensitivePrompt({ path: fullPath, proceed, error: "" });
   }
 
-  async function submitSensitive(password: string) {
+  async function submitSensitive(password: string, timeout: SensitiveTimeout) {
     if (!sensitivePrompt) return;
+    const secs = timeout === "never" ? null : timeout;
     try {
-      await api.vaultUnlockSensitive(password, timeoutSecs());
+      await api.vaultUnlockSensitive(password, secs);
       const proceed = sensitivePrompt.proceed;
       setSensitivePrompt(null);
-      scheduleSensitiveRelock();
+      scheduleSensitiveRelock(secs);
       proceed();
     } catch {
       setSensitivePrompt((s) => (s ? { ...s, error: "Contraseña incorrecta" } : s));
@@ -1770,6 +2285,14 @@ function Explorer({ home }: { home: string }) {
         // straight back up instead of re-prompting every time (see
         // task #106: this unconditional-prompt path, not the leave-vault
         // lock logic in `go()`, was the actual bug).
+        // No FUSE on Android, so a vault nested inside another vault has no
+        // real on-disk path to unlock at all -- unlike a single file, a
+        // whole live/mutable nested vault can't be satisfied by a one-shot
+        // decrypted copy. Needs its own DocumentsProvider-shaped solution.
+        if (mobile) {
+          setError("Nested vaults aren't supported on mobile yet.");
+          return;
+        }
         try {
           const resolvedRoot = await api.openPath(joinPath(dir, entry.name));
           go({ kind: "vault", root: resolvedRoot, rel: "" });
@@ -1778,12 +2301,25 @@ function Explorer({ home }: { home: string }) {
         }
         return;
       }
-      if (entry.is_dir) return go({ kind: "vault", root: loc.root, rel: joinPath(dir, entry.name) });
+      if (entry.is_dir) {
+        // Entering a sensitive folder is gated the same as opening a
+        // sensitive file -- even the listing (names/sizes) stays hidden
+        // until re-auth, not just file contents.
+        const full = joinPath(dir, entry.name);
+        withSensitive(full, () => go({ kind: "vault", root: loc.root, rel: full }));
+        return;
+      }
       if (entry.name.toLowerCase().endsWith(ENCRYPTED_FILE_EXT)) {
         setDecryptPrompt({ entry, error: "", mode: "open" });
         return;
       }
       if (ARCHIVE_EXT_RE.test(entry.name)) {
+        // Browsing an archive as a folder needs the same FUSE mount a
+        // nested vault would -- not a single decrypted file.
+        if (mobile) {
+          setError("Browsing archives inside a vault isn't supported on mobile yet.");
+          return;
+        }
         // Browse a vault-internal archive like a folder, same as on fs.
         const full = joinPath(dir, entry.name);
         withSensitive(full, () => mountArchive(dir, entry));
@@ -1792,8 +2328,14 @@ function Explorer({ home }: { home: string }) {
       {
         const full = joinPath(dir, entry.name);
         withSensitive(full, async () => {
+          if (mobile && !appSettings.mobileExternalEditor && isPlainTextEntry(entry)) {
+            setMobileEditorTarget({ entry, fullPath: full, inVault: true });
+            return;
+          }
           try {
-            const abs = await api.openPath(full);
+            // No FUSE mount on Android -- open a throwaway decrypted copy
+            // instead of the in-place virtual-filesystem path desktop uses.
+            const abs = mobile ? await api.vaultDecryptToTemp(full) : await api.openPath(full);
             await osOpen(abs);
           } catch (e) {
             setError(String(e));
@@ -1818,6 +2360,10 @@ function Explorer({ home }: { home: string }) {
     }
     if (ARCHIVE_EXT_RE.test(entry.name)) {
       return mountArchive(dir, entry);
+    }
+    if (mobile && !appSettings.mobileExternalEditor && isPlainTextEntry(entry)) {
+      setMobileEditorTarget({ entry, fullPath: full, inVault: false });
+      return;
     }
     try {
       await osOpen(full);
@@ -1871,7 +2417,9 @@ function Explorer({ home }: { home: string }) {
   function copySel(entry?: Entry) {
     const names = selected.size ? [...selected] : entry ? [entry.name] : [];
     const paths = names.map((n) => joinPath(curDir, n));
-    if (paths.length) setClipboard({ paths, mode: "copy", kind: loc.kind });
+    if (paths.length) {
+      setClipboard({ paths, mode: "copy", kind: loc.kind, root: inVault ? loc.root : undefined });
+    }
     // Also put real image bytes on the *system* clipboard so it's
     // pasteable outside the app (a browser, another native app) --
     // best-effort only, so a decode failure here (e.g. an unsupported
@@ -1888,16 +2436,48 @@ function Explorer({ home }: { home: string }) {
   }
   function cutSel(entry?: Entry) {
     const paths = selectedPaths(entry?.name);
-    if (paths.length) setClipboard({ paths, mode: "cut", kind: loc.kind });
+    if (paths.length) {
+      setClipboard({ paths, mode: "cut", kind: loc.kind, root: inVault ? loc.root : undefined });
+    }
   }
   async function paste() {
     if (!clipboard) return;
+    // Two *different* vaults, both `kind: "vault"` -- move_entry/copy_entry
+    // and export_file/delete_file below all operate on whichever vault is
+    // currently "active" server-side, which tracks navigation, not
+    // clipboard history. Pasting into a different vault than the one the
+    // files were copied from needs the dedicated cross-vault commands
+    // instead (decrypt under the source vault's key, re-encrypt under the
+    // destination's) -- files only, same as the fs<->vault boundary below.
+    if (clipboard.kind === "vault" && loc.kind === "vault" && clipboard.root && clipboard.root !== loc.root) {
+      const srcRoot = clipboard.root;
+      try {
+        for (const src of clipboard.paths) {
+          const dest = joinPath(curDir, baseName(src));
+          if (clipboard.mode === "copy") {
+            await api.vaultToVaultCopy(srcRoot, src, loc.root, dest);
+          } else {
+            await api.vaultToVaultMove(srcRoot, src, loc.root, dest);
+          }
+        }
+        setClipboard(null);
+        refresh();
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
+    }
     // Cut/copy across the vault boundary -- clipboard.kind is whichever
     // space the files were cut/copied *from*, loc.kind is where they're
     // now being pasted. Files only (not folders): importFile/exportFile
     // are both single-file encrypt/decrypt, not recursive.
     if (clipboard.kind !== loc.kind) {
       try {
+        if (clipboard.kind === "vault" && clipboard.root) {
+          // Same "active vault tracks navigation, not clipboard" issue as
+          // above -- export_file/delete_file need the source vault active.
+          await api.setActiveVault(clipboard.root);
+        }
         for (const src of clipboard.paths) {
           const dest = joinPath(curDir, baseName(src));
           if (clipboard.kind === "fs" && inVault) {
@@ -2048,6 +2628,10 @@ function Explorer({ home }: { home: string }) {
   // disk, the same constraint that keeps vault compression zip-only.
   async function mountArchive(dir: string, entry: Entry, password: string | null = null) {
     const rel = joinPath(dir, entry.name);
+    if (inVault && mobile) {
+      setError("Browsing archives inside a vault isn't supported on mobile yet.");
+      return;
+    }
     try {
       // Inside a vault the archive only exists decrypted through the FUSE
       // mount -- resolve to that real path so it can be opened/browsed like
@@ -2134,6 +2718,10 @@ function Explorer({ home }: { home: string }) {
   // in place, reusing the same primitive as "New Vault...".
   async function encryptFolder(entry: Entry, password: string) {
     const relOrAbs = joinPath(curDir, entry.name);
+    if (inVault && mobile) {
+      setError("Encrypting a folder inside a vault isn't supported on mobile yet.");
+      return;
+    }
     try {
       // create_vault needs a real fs path; inside a vault that means
       // resolving the target through this vault's own FUSE mount first --
@@ -2237,6 +2825,34 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
+  // Android-only "Add to Home Screen": pins a launcher icon whose Intent is
+  // this folder's `vaultexplorer://open-folder` deep link, resolved back
+  // through the same handler `go()`-navigates a shared add-device link
+  // with. Covers a plain fs folder, a vault sitting unopened in fs view
+  // (pins straight to its root), and a folder nested inside an open vault.
+  async function addFolderShortcut(entry: Entry) {
+    const rel = joinPath(curDir, entry.name);
+    const target: Loc = inVault
+      ? { kind: "vault", root: loc.root, rel }
+      : entry.is_vault
+        ? { kind: "vault", root: rel, rel: "" }
+        : { kind: "fs", path: rel };
+    const url = buildOpenFolderLink(target);
+    // Only the plain-fs custom-icon map applies here (vaults have their own
+    // separate icon system) -- and only an emoji renders to a bitmap on the
+    // JS side; a WhiteSur icon just falls back to the app's icon.
+    const customIcon = !inVault ? customIcons[rel] : undefined;
+    const iconBase64 =
+      customIcon && !customIcon.startsWith(CUSTOM_ICON_PREFIX)
+        ? renderEmojiIconPng(customIcon)
+        : undefined;
+    try {
+      await api.androidPinFolderShortcut(hashForShortcutId(url), entry.name, url, iconBase64);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function duplicate(entry: Entry) {
     const src = joinPath(curDir, entry.name);
     const dot = entry.name.lastIndexOf(".");
@@ -2300,6 +2916,12 @@ function Explorer({ home }: { home: string }) {
       if (unlockedRoot) {
         const destRel = destDir === unlockedRoot ? "" : destDir.slice(unlockedRoot.length + 1);
         try {
+          // import_file writes into whichever vault is currently "active"
+          // server-side -- not necessarily this drop's target vault, if a
+          // *different* vault was the last one actually navigated into
+          // (browsing fs itself never changes which vault is active). Same
+          // fix as the cross-vault paste bug above.
+          await api.setActiveVault(unlockedRoot);
           for (const src of srcs) {
             await api.importFile(src, joinPath(destRel, baseName(src)));
           }
@@ -2389,11 +3011,8 @@ function Explorer({ home }: { home: string }) {
     if (!entry) return;
     const prev = previewEntryRef.current;
     if (prev?.dir === curDir && prev.entry.name === name) return;
-    // Folders preview their listing (no decryption) -- no sensitive gate.
-    if (entry.is_dir) {
-      setPreviewEntry({ dir: curDir, entry });
-      return;
-    }
+    // Folders are gated too: a sensitive folder's listing (names, sizes)
+    // is content -- it must not show in the preview pane without re-auth.
     withSensitive(joinPath(curDir, name), () => setPreviewEntry({ dir: curDir, entry }));
   }, [view, selected, entries, curDir]);
 
@@ -2412,12 +3031,34 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
+  async function renameMobileEditorEntry(newName: string) {
+    if (!mobileEditorTarget) return;
+    const { entry, fullPath, inVault } = mobileEditorTarget;
+    const dest = joinPath(parentPath(fullPath), newName);
+    try {
+      inVault ? await api.moveEntry(fullPath, dest) : await api.fsRename(fullPath, dest);
+      await refresh();
+      setMobileEditorTarget({ entry: { ...entry, name: newName }, fullPath: dest, inVault });
+      selectOnly(newName);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   // ---- inline rename ----
   async function commitRename() {
-    if (!renaming) return;
-    const { name, value } = renaming;
+    // Read + clear through the ref, not the closure: committing via Enter
+    // unmounts the edit field, whose blur then calls the *previous*
+    // render's closure where `renaming` was still set -- without this the
+    // rename ran twice and the second pass failed on the now-gone source
+    // (PickerView guards the same race with skipBlurCommitRef).
+    const r = renamingRef.current;
+    if (!r) return;
+    renamingRef.current = null;
     setRenaming(null);
-    if (value.trim() === "" || value === name) return;
+    const { name } = r;
+    const value = r.value.trim();
+    if (value === "" || value === name) return;
     const src = joinPath(curDir, name);
     const dest = joinPath(curDir, value);
     try {
@@ -2603,6 +3244,10 @@ function Explorer({ home }: { home: string }) {
   }
 
   async function submitNewVault(name: string, password: string, opts: VaultCreateOptions) {
+    if (loc.kind === "vault" && mobile) {
+      setSheetError("Nested vaults aren't supported on mobile yet.");
+      return;
+    }
     try {
       let root: string;
       if (loc.kind === "fs") {
@@ -2631,6 +3276,165 @@ function Explorer({ home }: { home: string }) {
   }
 
   // ---- context menus ----
+  // "Open With…" for one file: every app the desktop registered for its real
+  // MIME type, fetched lazily (see `loadItems` on `MenuItem`) only once the
+  // submenu is actually hovered, so right-clicking never has to wait on
+  // `xdg-mime`/icon-theme work it might not need. Always ends in "Other
+  // Application…", which opens the searchable full-app picker -- the
+  // registered-handlers list is often just one entry, and "the app I want
+  // isn't in this list" is otherwise a dead end (Windows' "Choose another
+  // app" is the reference here).
+  // `p` is a vault-relative path in a vault, an absolute one outside.
+  function buildOpenWithItem(p: string): MenuItem {
+    const otherItem = {
+      label: "Other Application…",
+      onClick: async () => {
+        try {
+          setOpenWithTarget(inVault ? await api.openPath(p) : p);
+        } catch (e) {
+          setError(String(e));
+        }
+      },
+    };
+    return {
+      type: "submenu",
+      label: "Open With…",
+      loadItems: async () => {
+        try {
+          const abs = inVault ? await api.openPath(p) : p;
+          const apps = await api.listAppsForPath(abs);
+          const appItems: MenuItem[] =
+            apps.length === 0
+              ? [{ label: "No registered apps", disabled: true, onClick: () => {} }]
+              : apps.map((a) => ({
+                  label: a.is_default ? `${a.name} (Default)` : a.name,
+                  onClick: () => {
+                    api.openWith(abs, a.id).catch((e) => setError(String(e)));
+                  },
+                }));
+          return [...appItems, { type: "separator" }, otherItem];
+        } catch (e) {
+          return [{ label: String(e), disabled: true, onClick: () => {} }, { type: "separator" }, otherItem];
+        }
+      },
+    };
+  }
+
+  // Context menu for an entry identified only by its path -- used by search
+  // hits and by the preview pane's folder listing, both of which show
+  // entries from directories other than `curDir`. Can't reuse `entryMenu`:
+  // that one is built against `curDir` + the `selected` name set + this
+  // folder's cached `entries`/`tags`/git status, none of which apply to a
+  // file in some other directory. What it offers instead is every action
+  // that's purely a function of the path. `onChanged` fires after an action
+  // that altered the path's parent listing (currently just Move to Trash).
+  function pathMenu(e: React.MouseEvent, p: string, onChanged?: () => void): void {
+    e.preventDefault();
+    e.stopPropagation();
+    const parent = parentPath(p);
+    const name = baseName(p);
+    const abs = inVault && loc.kind === "vault" ? joinPath(loc.root, p) : p;
+    // Search only ever returns files, but resolve the real entry (for Open,
+    // Get Info, Share) from its parent listing rather than fabricating one --
+    // is_dir/is_vault/size/mtime all matter to those actions.
+    const withEntry = (fn: (entry: Entry) => void) => async () => {
+      try {
+        const list = await listDir(parent, loc.kind);
+        const found = list.find((en) => en.name === name);
+        if (!found) {
+          setError(`"${name}" no longer exists`);
+          return;
+        }
+        fn(found);
+      } catch (err) {
+        setError(String(err));
+      }
+    };
+    const items: MenuItem[] = [
+      { label: "Open", onClick: withEntry((en) => activate(parent, en)) },
+      // See the openWithItem comment in entryMenu -- no app-chooser
+      // equivalent to enumerate on Android.
+      ...(mobile ? [] : [buildOpenWithItem(p)]),
+      {
+        label: "Show in Folder",
+        onClick: () => {
+          if (loc.kind === "vault") go({ kind: "vault", root: loc.root, rel: parent });
+          else go({ kind: "fs", path: parent });
+          setSearchQuery("");
+          setSearchResults(null);
+          pendingRevealSelectRef.current = { dir: parent, name };
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Get Info",
+        onClick: withEntry((en) =>
+          setInfoTarget({
+            entry: en,
+            fullPath: p,
+            kind: loc.kind,
+            root: loc.kind === "vault" ? loc.root : undefined,
+          })
+        ),
+      },
+      { type: "separator" },
+      {
+        label: "Copy",
+        onClick: () =>
+          setClipboard({
+            paths: [p],
+            mode: "copy",
+            kind: loc.kind,
+            root: inVault ? loc.root : undefined,
+          }),
+      },
+      {
+        label: "Cut",
+        onClick: () =>
+          setClipboard({
+            paths: [p],
+            mode: "cut",
+            kind: loc.kind,
+            root: inVault ? loc.root : undefined,
+          }),
+      },
+      {
+        label: "Copy Absolute Path",
+        onClick: async () => {
+          try {
+            await navigator.clipboard.writeText(abs);
+          } catch (err) {
+            setError(String(err));
+          }
+        },
+      },
+      { type: "separator" },
+      { label: "Share…", onClick: withEntry((en) => shareFile(en, parent)) },
+      {
+        label: pinnedPaths.has(p) ? "Unpin" : "Pin",
+        onClick: () => togglePin(p),
+      },
+    ];
+    if (!inVault) {
+      items.push(
+        { type: "separator" },
+        {
+          label: "Move to Trash",
+          danger: true,
+          onClick: async () => {
+            try {
+              await api.fsTrash(p);
+              onChanged?.();
+            } catch (err) {
+              setError(String(err));
+            }
+          },
+        }
+      );
+    }
+    setMenu({ x: e.clientX, y: e.clientY, items });
+  }
+
   function entryMenu(e: React.MouseEvent, entry: Entry): void {
     e.preventDefault();
     e.stopPropagation();
@@ -2669,11 +3473,32 @@ function Explorer({ home }: { home: string }) {
       disabled: many,
       onClick: () => duplicate(entry),
     };
-    const runnableShellScript = !many && !inVault && isShellScript;
+    // Every registered app for this file's real MIME type, not just the
+    // default `activate` opens -- fetched lazily (see `loadItems` on
+    // `MenuItem`) only once this submenu is actually hovered, so right-
+    // clicking a file never has to wait on `xdg-mime`/icon-theme work it
+    // might not even need. Not offered for a directory, an already-vault-
+    // encrypted `.vlt` file (nothing but this app can make sense of those
+    // bytes), or a nested vault -- same "no stable real path yet" reason
+    // Vault Settings skips those.
+    // Enumerating registered apps (list_apps_for_path) is a Linux desktop
+    // API (xdg-mime + .desktop scanning) with no Android equivalent --
+    // Android's answer is an Intent chooser, a different UI shape entirely
+    // (not a submenu at all), so this hides rather than show a dead one.
+    const openWithItem: MenuItem | null =
+      !mobile && !many && !entry.is_dir && !isEncryptedFile && !(entry.is_vault && !inVault)
+        ? buildOpenWithItem(path)
+        : null;
+
+    // Both actions shell out (a terminal to run it, an editor binary to
+    // edit it) -- neither exists on Android, so this offers the plain
+    // Open/Get Info/etc menu below instead of two guaranteed-to-fail items.
+    const runnableShellScript = !mobile && !many && !inVault && isShellScript;
     const items: MenuItem[] = runnableShellScript
       ? [
           { label: "Run", onClick: () => runScript(path) },
           { label: "Edit", onClick: () => editScript(path) },
+          ...(openWithItem ? [openWithItem] : []),
           { type: "separator" },
           {
             label: "Rename",
@@ -2683,12 +3508,18 @@ function Explorer({ home }: { home: string }) {
           duplicateItem,
         ]
       : [
+          // The most obvious action leads the menu: a zip's is Decompress,
+          // same as Run leads for scripts and Open Vault for vaults.
+          ...(!many && isZip
+            ? [{ label: "Decompress", onClick: () => decompressEntry(entry) } as MenuItem]
+            : []),
           {
             label: entry.is_vault ? "Open Vault" : isEncryptedFile ? "Decrypt and Open…" : "Open",
             shortcut: "⌘O",
             disabled: many,
             onClick: () => activate(curDir, entry),
           },
+          ...(openWithItem ? [openWithItem] : []),
           { type: "separator" },
           {
             label: "Rename",
@@ -2700,8 +3531,20 @@ function Explorer({ home }: { home: string }) {
     if (!many && !inVault) {
       moreItems.push({ label: "Create Shortcut", onClick: () => createShortcut(entry) });
     }
+    if (!many && entry.is_dir && mobile) {
+      moreItems.push({ label: "Add to Home Screen", onClick: () => addFolderShortcut(entry) });
+    }
     if (!many && !inVault && !entry.is_dir) {
       moreItems.push({ label: "Use as Template", onClick: () => useAsTemplate(entry) });
+    }
+    // Nested vaults (inVault && entry.is_vault) aren't offered this here --
+    // their real root only exists as an ephemeral FUSE path once opened, so
+    // there's no stable key to save these settings under before that.
+    if (!many && entry.is_vault && !inVault) {
+      moreItems.push({
+        label: "Vault Settings…",
+        onClick: () => setVaultSettingsTarget({ root: path, canAutoUnlock: true }),
+      });
     }
     if (!many && entry.is_dir && !entry.is_vault && !mobile) {
       items.push(
@@ -2732,18 +3575,22 @@ function Explorer({ home }: { home: string }) {
       });
     }
 
-    const compressItems: MenuItem[] = [];
-    if (!many && isZip) {
-      compressItems.push({ label: "Decompress", onClick: () => decompressEntry(entry) });
+    // A single zip gets Decompress as the first menu item instead of a
+    // Compress submenu -- re-compressing something already compressed is
+    // never the obvious action.
+    if (many || !isZip) {
+      items.push({
+        type: "submenu",
+        label: "Compress",
+        items: [
+          {
+            label: many ? `Compress ${targetNames.length} Items` : `Compress "${entry.name}"`,
+            onClick: () => compressSelection(targetNames),
+          },
+          { label: "Compress…", onClick: () => setCompressTarget(targetNames) },
+        ],
+      });
     }
-    compressItems.push(
-      {
-        label: many ? `Compress ${targetNames.length} Items` : `Compress "${entry.name}"`,
-        onClick: () => compressSelection(targetNames),
-      },
-      { label: "Compress…", onClick: () => setCompressTarget(targetNames) }
-    );
-    items.push({ type: "submenu", label: !many && isZip ? "Decompress" : "Compress", items: compressItems });
 
     if (!many && !entry.is_dir) {
       const kind = kindOf(entry);
@@ -2757,14 +3604,21 @@ function Explorer({ home }: { home: string }) {
               ? setConvertTarget({ entry, targetExt: t.ext, targetLabel: t.label, mode: "imageQuality" })
               : runImageConvert(entry, t.ext, null),
         }));
-        convertItems.push({ label: "PDF", onClick: () => runImageToPdf(entry) });
+        // ImageMagick (`convert`) doesn't exist on Android; the raster-to-
+        // raster items above stay (pure Rust, actually work there).
+        if (!mobile) convertItems.push({ label: "PDF", onClick: () => runImageToPdf(entry) });
         moreItems.push({ type: "submenu", label: "Convert To", items: convertItems });
       } else if (kind === "pdf" && !inVault) {
-        const pdfItems: MenuItem[] = [{ label: "Images (JPG, one per page)", onClick: () => runPdfToImages(entry) }];
+        // poppler's `pdftoppm` doesn't exist on Android -- no availability
+        // flag to gate on the way ffmpeg/libreoffice do below since there's
+        // no `which` either, so this checks the platform directly.
+        const pdfItems: MenuItem[] = mobile
+          ? []
+          : [{ label: "Images (JPG, one per page)", onClick: () => runPdfToImages(entry) }];
         if (libreofficeAvailable) {
           pdfItems.push({ label: "Word Document (.docx)", onClick: () => runOfficeConvert(entry, "docx") });
         }
-        moreItems.push({ type: "submenu", label: "Convert To", items: pdfItems });
+        if (pdfItems.length) moreItems.push({ type: "submenu", label: "Convert To", items: pdfItems });
       } else if (["doc", "docx", "odt", "rtf"].includes(ext) && !inVault && libreofficeAvailable) {
         moreItems.push({
           type: "submenu",
@@ -2916,17 +3770,21 @@ function Explorer({ home }: { home: string }) {
           ? { label: "Remove from Favorites", onClick: () => removeFavorite(path) }
           : { label: "Add to Favorites", onClick: () => addFavorite(path) }
       );
-      moreItems.push(
-        buildSyncSubmenu(path, {
-          drivePairsByPath,
-          gitSyncedPaths,
-          localSyncedPaths,
-          setDriveTarget,
-          setGitSyncTarget,
-          setLocalSyncTarget,
-          setSyncthingTarget,
-        })
-      );
+      // Every option here shells out to a binary (rclone/git/unison/
+      // syncthing) that doesn't exist on Android.
+      if (!mobile) {
+        moreItems.push(
+          buildSyncSubmenu(path, {
+            drivePairsByPath,
+            gitSyncedPaths,
+            localSyncedPaths,
+            setDriveTarget,
+            setGitSyncTarget,
+            setLocalSyncTarget,
+            setSyncthingTarget,
+          })
+        );
+      }
       moreItems.push({ label: "Change Icon…", onClick: () => setIconTarget(path) });
       if (!mobile) {
         moreItems.push(
@@ -2991,6 +3849,13 @@ function Explorer({ home }: { home: string }) {
         onClick: () => setPending({ kind: "delete", names: targetNames }),
       });
     }
+    // No ⌘/⇧-click on touch to add more items to a selection -- "Select"
+    // is the entry point into that mode instead (see `selectionMode`);
+    // once in it, this same long-press menu still works for the single
+    // item pressed (`many` is false there), so it stays reachable.
+    if (mobile && !selectionMode) {
+      items.unshift({ label: "Select", onClick: () => setSelectionMode(true) }, { type: "separator" });
+    }
     setMenu({ x: e.clientX, y: e.clientY, items });
   }
 
@@ -3000,20 +3865,37 @@ function Explorer({ home }: { home: string }) {
   function openViewMenu(e: React.MouseEvent): void {
     e.stopPropagation();
     const r = e.currentTarget.getBoundingClientRect();
+    // Column and split-preview both divide the width into several panes --
+    // fine on a desktop window, but there's no room for that on a phone,
+    // and neither has touch-specific layout (column view is explicitly
+    // excluded from arrow-key nav, and nothing narrows it below its
+    // desktop column widths).
     const options: { key: View; label: string }[] = [
       { key: "icon", label: "Icons" },
       { key: "list", label: "List" },
-      { key: "column", label: "Columns" },
-      { key: "listPreview", label: "List with Preview" },
+      ...(mobile ? [] : [{ key: "column" as const, label: "Columns" }, { key: "listPreview" as const, label: "List with Preview" }]),
     ];
-    setMenu({
-      x: r.left,
-      y: r.bottom + 4,
-      items: options.map((o) => ({
-        label: view === o.key ? `✓ ${o.label}` : o.label,
-        onClick: () => setView(o.key),
-      })),
-    });
+    const items: MenuItem[] = options.map((o) => ({
+      label: view === o.key ? `✓ ${o.label}` : o.label,
+      onClick: () => setView(o.key),
+    }));
+    // Per-folder pin. Hidden on My Computer (not a folder) and in column
+    // view (which ignores pins while browsing -- see the restore effect).
+    if (!showMyComputer && view !== "column") {
+      items.push({ type: "separator" });
+      items.push({
+        label: viewPinned ? "✓ Always Open in This View" : "Always Open in This View",
+        onClick: toggleViewPin,
+      });
+    }
+    const pinCount = Object.keys(pinnedViewPrefs).length;
+    if (pinCount > 0) {
+      items.push({
+        label: `Reset All Folder Views (${pinCount})`,
+        onClick: () => setPinnedViewPrefs({}),
+      });
+    }
+    setMenu({ x: r.left, y: r.bottom + 4, items });
   }
 
   function driveMenu(e: React.MouseEvent, d: import("./api").Drive): void {
@@ -3060,7 +3942,7 @@ function Explorer({ home }: { home: string }) {
         },
       });
     }
-    if (gitRoot) {
+    if (gitRoot && !mobile) {
       items.push({
         type: "submenu",
         label: "Git",
@@ -3274,17 +4156,8 @@ function Explorer({ home }: { home: string }) {
   // sends the user to the system settings screen that grants it instead
   // of just navigating into a folder that would 403.
   async function openFavorite(path: string) {
-    if (mobile && path === PHONE_STORAGE_PATH) {
-      try {
-        const granted = await api.androidStorageAccessGranted();
-        if (!granted) {
-          await api.androidRequestStorageAccess();
-          return;
-        }
-      } catch {
-        /* command not available (non-Android mobile) -- fall through */
-      }
-    }
+    // Permission check for shared-storage paths now lives in `go()` itself
+    // (covers every navigation path, not just this one).
     let isVault = false;
     try {
       isVault = await api.fsIsVault(path);
@@ -3292,6 +4165,25 @@ function Explorer({ home }: { home: string }) {
       /* ignore -- treat as a plain folder */
     }
     go(isVault ? { kind: "vault", root: path, rel: "" } : { kind: "fs", path });
+  }
+  // Bottom-tab-bar "Vaults" button (mobile): there's no persisted list of
+  // "every vault the user has" -- `vaultSettings` is keyed by root path but
+  // exists for per-vault UI prefs, not as a registry, so this is a proxy:
+  // every currently-unlocked root, plus every root that's ever had its
+  // settings touched (the closest thing to "vaults I've used before").
+  // Jumping into an entry that's since been locked re-prompts for its
+  // password the same way tapping it in a folder listing would.
+  function openVaultsMenu(e: React.MouseEvent) {
+    const known = new Set([...unlockedRoots, ...Object.keys(vaultSettings)]);
+    const r = e.currentTarget.getBoundingClientRect();
+    const items: MenuItem[] =
+      known.size === 0
+        ? [{ label: "No vaults yet", disabled: true, onClick: () => {} }]
+        : [...known].sort().map((root) => ({
+            label: unlockedRoots.has(root) ? `${baseName(root)} 🔓` : baseName(root),
+            onClick: () => go({ kind: "vault", root, rel: "" }),
+          }));
+    setMenu({ x: r.left, y: r.top, items });
   }
   const favorites = favPaths.map((path) => ({
     label: favLabel(path),
@@ -3322,13 +4214,34 @@ function Explorer({ home }: { home: string }) {
     return null;
   }
 
-  function syncInfoFor(entry: Entry): { badge: "git" | "drive" | "local" | null; state: "syncing" | "synced" | null } {
+  function syncInfoFor(entry: Entry): {
+    badge: "git" | "drive" | "local" | null;
+    state: "syncing" | "synced" | "verified" | "pending" | null;
+  } {
     const path = joinPath(curDir, entry.name);
+    // Checksum-verified state from the poll above. Falls back through the
+    // path-based badge logic when absent (git/local pairs, or no check yet).
+    const vstate = verifyStates.get(entry.name);
     const hit = (entry.is_dir ? syncRootFor(path) : null) ?? syncRootFor(curDir);
-    if (!hit) return { badge: null, state: null };
+    if (!hit) {
+      // Inside a vault the fs-path walk can't match (paths here are
+      // vault-relative) -- the verify poll is what knows this entry's
+      // ciphertext is under a Drive pair, so it alone drives the badge.
+      // "unknown" = under a pair but no check result yet: show the plain
+      // static badge right away rather than nothing until the first
+      // check lands.
+      if (vstate === "verified") return { badge: "drive", state: "verified" };
+      if (vstate === "pending") return { badge: "drive", state: "pending" };
+      if (vstate === "unknown") return { badge: "drive", state: null };
+      return { badge: null, state: null };
+    }
     const { badge, root } = hit;
     if (syncingPaths.has(root) || syncingPaths.has(path)) return { badge, state: "syncing" };
     if (justSyncedPaths.has(root) || justSyncedPaths.has(path)) return { badge, state: "synced" };
+    if (badge === "drive") {
+      if (vstate === "verified") return { badge, state: "verified" };
+      if (vstate === "pending") return { badge, state: "pending" };
+    }
     return { badge, state: null };
   }
 
@@ -3339,22 +4252,26 @@ function Explorer({ home }: { home: string }) {
   function renderListBody() {
     return (
       <div className={`entries-wrap ${entryView}`}>
+        {/* Sort arrow points the way the values run *down* the list: A→Z (and
+            oldest→newest, smallest→largest) is ▼, since reading downward is
+            reading forward through the order. It was ▲ for ascending, which
+            read as "the list runs upward" -- backwards from what you see. */}
         {(view === "list" || view === "listPreview") && entries.length > 0 && (
           <div className={`list-header ${view === "listPreview" ? "compact" : ""}`}>
             <span className="lh-spacer" />
             <span className={`lh-name ${sortKey === "name" ? "on" : ""}`} onClick={() => toggleSort("name")}>
-              Name {sortKey === "name" && (sortDir === 1 ? "▲" : "▼")}
+              Name {sortKey === "name" && (sortDir === 1 ? "▼" : "▲")}
             </span>
             {view !== "listPreview" && (
               <>
                 <span className={`lh-date ${sortKey === "date" ? "on" : ""}`} onClick={() => toggleSort("date")}>
-                  Date Modified {sortKey === "date" && (sortDir === 1 ? "▲" : "▼")}
+                  Date Modified {sortKey === "date" && (sortDir === 1 ? "▼" : "▲")}
                 </span>
                 <span className={`lh-size ${sortKey === "size" ? "on" : ""}`} onClick={() => toggleSort("size")}>
-                  Size {sortKey === "size" && (sortDir === 1 ? "▲" : "▼")}
+                  Size {sortKey === "size" && (sortDir === 1 ? "▼" : "▲")}
                 </span>
                 <span className={`lh-kind ${sortKey === "kind" ? "on" : ""}`} onClick={() => toggleSort("kind")}>
-                  Type {sortKey === "kind" && (sortDir === 1 ? "▲" : "▼")}
+                  Type {sortKey === "kind" && (sortDir === 1 ? "▼" : "▲")}
                 </span>
               </>
             )}
@@ -3381,6 +4298,7 @@ function Explorer({ home }: { home: string }) {
               inVault={inVault}
               view={entryView}
               compact={view === "listPreview"}
+              mobile={mobile}
               selected={selected.has(entry.name)}
               cut={
                 clipboard?.mode === "cut" &&
@@ -3401,6 +4319,14 @@ function Explorer({ home }: { home: string }) {
               onEditCommit={commitRename}
               onEditCancel={() => setRenaming(null)}
               onClick={(e) => {
+                // In selection mode a tap just toggles membership -- it
+                // must NOT also open the file, or there'd be no way to
+                // pick a second item without opening the first one too.
+                if (mobile && selectionMode) {
+                  e.stopPropagation();
+                  toggle(entry.name);
+                  return;
+                }
                 onEntryClick(e, entry);
                 if (view === "listPreview" && !entry.is_dir) {
                   withSensitive(joinPath(curDir, entry.name), () => setPreviewEntry({ dir: curDir, entry }));
@@ -3512,7 +4438,11 @@ function Explorer({ home }: { home: string }) {
       )}
       <aside
         className={`sidebar ${mobile && sidebarOpen ? "open" : ""} ${favCollapsed ? "sidebar-compact" : ""}`}
-        data-tauri-drag-region
+        // Only meaningful on desktop (dragging the window by an empty
+        // sidebar area); on mobile it's a touch surface (favorites list,
+        // swipe-to-close drawer) that this attribute would otherwise
+        // compete with for the same gesture.
+        data-tauri-drag-region={mobile ? undefined : true}
         onClickCapture={() => {
           if (mobile) setSidebarOpen(false);
         }}
@@ -3550,24 +4480,29 @@ function Explorer({ home }: { home: string }) {
             {favCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           </button>
         </div>
-        <div
-          className={`sidebar-item ${showMyComputer ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
-          title={favCollapsed ? "My Computer" : undefined}
-          onClick={openMyComputer}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            setMenu({
-              x: e.clientX,
-              y: e.clientY,
-              items: [{ label: "Get Info", onClick: () => setMachineInfoOpen(true) }],
-            });
-          }}
-        >
-          <span className="sidebar-ico place">
-            <ComputerGlyph size={27} />
-          </span>
-          {!favCollapsed && "My Computer"}
-        </div>
+        {/* Drive enumeration (df/lsblk) is meaningless inside an Android
+            app sandbox -- there's no second disk to show, and nothing here
+            resolves to a real block device the app could see anyway. */}
+        {!mobile && (
+          <div
+            className={`sidebar-item ${showMyComputer ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
+            title={favCollapsed ? "My Computer" : undefined}
+            onClick={openMyComputer}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu({
+                x: e.clientX,
+                y: e.clientY,
+                items: [{ label: "Get Info", onClick: () => setMachineInfoOpen(true) }],
+              });
+            }}
+          >
+            <span className="sidebar-ico place">
+              <ComputerGlyph size={27} />
+            </span>
+            {!favCollapsed && "My Computer"}
+          </div>
+        )}
         {favorites.map((f, i) => {
           const active = !showMyComputer && loc.kind === "fs" && loc.path === f.path;
           return (
@@ -3612,7 +4547,7 @@ function Explorer({ home }: { home: string }) {
                 const items: MenuItem[] = [
                   { label: "Change Icon…", onClick: () => setIconTarget(f.path) },
                 ];
-                if (f.path !== "/" && !inVault) {
+                if (f.path !== "/" && !inVault && !mobile) {
                   items.push(
                     buildSyncSubmenu(f.path, {
                       drivePairsByPath,
@@ -3648,6 +4583,26 @@ function Explorer({ home }: { home: string }) {
                     : { label: "Set as Default", onClick: () => setDefaultStartPath(f.path) },
                   { type: "separator" }
                 );
+                // A favorite is only known to be a vault here once it's been
+                // unlocked or configured at least once -- a never-touched
+                // locked vault favorite still gets this via its own entry's
+                // context menu (entryMenu, above), which always knows
+                // `entry.is_vault`.
+                if (unlockedRoots.has(f.path) || vaultSettings[f.path]) {
+                  items.push(
+                    {
+                      label: "Vault Settings…",
+                      onClick: () => setVaultSettingsTarget({ root: f.path, canAutoUnlock: true }),
+                    },
+                    { type: "separator" }
+                  );
+                }
+                if (unlockedRoots.has(f.path)) {
+                  items.push(
+                    { label: "Lock", danger: true, onClick: () => lockVaultRoot(f.path) },
+                    { type: "separator" }
+                  );
+                }
                 if (unlockedRoots.has(f.path)) {
                   items.push(
                     { label: "Lock", danger: true, onClick: () => lockVaultRoot(f.path) },
@@ -3664,7 +4619,7 @@ function Explorer({ home }: { home: string }) {
             >
               <span className="sidebar-ico place">
                 {f.icon && customIconUrl(f.icon) ? (
-                  <img className="sidebar-fav-img" src={customIconUrl(f.icon)} alt="" draggable={false} />
+                  <RetryImg className="sidebar-fav-img" src={customIconUrl(f.icon)!} />
                 ) : f.icon && symbolIconSvg(f.icon) ? (
                   <span
                     className="symbol-icon sidebar-sym"
@@ -3751,7 +4706,14 @@ function Explorer({ home }: { home: string }) {
                     setMenu({
                       x: e.clientX,
                       y: e.clientY,
-                      items: [{ label: "Lock", danger: true, onClick: () => lockVaultRoot(root) }],
+                      items: [
+                        {
+                          label: "Vault Settings…",
+                          onClick: () => setVaultSettingsTarget({ root, canAutoUnlock: true }),
+                        },
+                        { type: "separator" },
+                        { label: "Lock", danger: true, onClick: () => lockVaultRoot(root) },
+                      ],
                     });
                   }}
                 >
@@ -3770,17 +4732,34 @@ function Explorer({ home }: { home: string }) {
       </aside>
 
       <div className="main">
-        <div className="titlebar toolbar" data-tauri-drag-region>
-          <div className="nav-buttons">
-            {mobile && (
+        <div className="titlebar toolbar" data-tauri-drag-region={mobile ? undefined : true}>
+          {mobile && selectionMode ? (
+            <>
               <button
-                className="tool-btn"
-                onClick={() => setSidebarOpen((v) => !v)}
-                aria-label="Menu"
+                className="tool-btn wide-btn"
+                onClick={() => {
+                  setSelectionMode(false);
+                  setSelected(new Set());
+                }}
               >
-                <MenuGlyph />
+                ✕ Cancel
               </button>
-            )}
+              <div className="toolbar-title">{selected.size} selected</div>
+              <button
+                className="tool-btn wide-btn"
+                onClick={(e) => {
+                  const anyName = [...selected][0];
+                  const anyEntry = entries.find((en) => en.name === anyName);
+                  if (anyEntry) entryMenu(e, anyEntry);
+                }}
+              >
+                ⋯
+              </button>
+            </>
+          ) : (
+          <>
+          <div className="nav-buttons">
+            {/* Menu moved to the bottom tab bar on mobile (see .mobile-tabbar). */}
             <button className="tool-btn" onClick={goBack} disabled={histIdx === 0} aria-label="Back">
               <ChevronLeft />
             </button>
@@ -3802,14 +4781,30 @@ function Explorer({ home }: { home: string }) {
           <div className="toolbar-title">
             {showMyComputer ? "My Computer" : crumbs.length ? crumbs[crumbs.length - 1].label : "System"}
           </div>
-          <button className="tool-btn wide-btn cluster-start" onClick={createNewFile}>
-            + File
+          <button
+            className={`tool-btn cluster-start ${mobile ? "" : "wide-btn"}`}
+            onClick={createNewFile}
+            aria-label="New File"
+            title="New File"
+          >
+            {mobile ? <NewFileGlyph size={19} /> : "+ File"}
           </button>
-          <button className="tool-btn wide-btn" onClick={createNewFolder}>
-            + Folder
+          <button
+            className={`tool-btn ${mobile ? "" : "wide-btn"}`}
+            onClick={createNewFolder}
+            aria-label="New Folder"
+            title="New Folder"
+          >
+            {mobile ? <NewFolderGlyph size={19} /> : "+ Folder"}
           </button>
-          <button className="tool-btn wide-btn" onClick={paste} disabled={!canPaste}>
-            Paste
+          <button
+            className={`tool-btn ${mobile ? "" : "wide-btn"}`}
+            onClick={paste}
+            disabled={!canPaste}
+            aria-label="Paste"
+            title="Paste"
+          >
+            {mobile ? <PasteGlyph size={19} /> : "Paste"}
           </button>
           <button className="tool-btn view-menu-btn" aria-label="View options" title="View options" onClick={openViewMenu}>
             {view === "icon" ? (
@@ -3823,14 +4818,17 @@ function Explorer({ home }: { home: string }) {
             )}
             <ChevronDown size={12} />
           </button>
-          <button
-            className="tool-btn"
-            aria-label="Preferences"
-            title="Preferences"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <SettingsGlyph />
-          </button>
+          {/* Preferences moved to the bottom tab bar on mobile. */}
+          {!mobile && (
+            <button
+              className="tool-btn"
+              aria-label="Preferences"
+              title="Preferences"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <SettingsGlyph />
+            </button>
+          )}
           {searchExpanded || searchQuery ? (
             <div className="search-field">
               <SearchGlyph />
@@ -3863,19 +4861,41 @@ function Explorer({ home }: { home: string }) {
               )}
             </div>
           ) : (
-            <button
-              className="tool-btn search-toggle"
-              aria-label="Search"
-              title="Search"
-              onClick={() => setSearchExpanded(true)}
-            >
-              <SearchGlyph size={18} />
-            </button>
+            // Trigger moved to the bottom tab bar on mobile -- the expanded
+            // field above still renders there when `searchExpanded` is set
+            // from that button, this is just the collapsed toggle icon.
+            !mobile && (
+              <button
+                className="tool-btn search-toggle"
+                aria-label="Search"
+                title="Search"
+                onClick={() => setSearchExpanded(true)}
+              >
+                <SearchGlyph size={18} />
+              </button>
+            )
+          )}
+          </>
           )}
         </div>
         {error && (
-          <div className="error-bar" onClick={() => setError("")}>
-            {error} <span className="error-x">✕</span>
+          <div
+            className="error-bar"
+            title="Click to copy"
+            onClick={() => {
+              navigator.clipboard.writeText(error).catch(() => {});
+            }}
+          >
+            {error}{" "}
+            <span
+              className="error-x"
+              onClick={(e) => {
+                e.stopPropagation();
+                setError("");
+              }}
+            >
+              ✕
+            </span>
           </div>
         )}
         {infoMsg && (
@@ -3901,10 +4921,13 @@ function Explorer({ home }: { home: string }) {
             <SearchResults
               query={searchQuery}
               results={searchResults}
+              entries={searchEntries}
+              inVault={inVault}
               onOpen={(p) => {
                 if (loc.kind === "vault") go({ kind: "vault", root: loc.root, rel: parentPath(p) });
                 else go({ kind: "fs", path: parentPath(p) });
               }}
+              onMenu={(e, p) => pathMenu(e, p, () => runSearch(searchQuery))}
             />
           ) : view === "column" ? (
             <ColumnView
@@ -3913,9 +4936,26 @@ function Explorer({ home }: { home: string }) {
               inVault={inVault}
               root={inVault ? loc.root : undefined}
               onActivate={activate}
-              onMenu={entryMenu}
+              // The full entryMenu is hard-bound to curDir's selection/
+              // entries/tags, so it's only correct for the *current*
+              // column; other columns' entries get the path-based menu
+              // (previously they got entryMenu built against the wrong
+              // dir, so e.g. Open/Trash hit a same-named sibling in
+              // curDir or errored).
+              onMenu={(e, dir, entry) =>
+                dir === curDir ? entryMenu(e, entry) : pathMenu(e, joinPath(dir, entry.name))
+              }
               previewEntry={previewEntry}
-              onSelectFile={(dir, entry) => withSensitive(joinPath(dir, entry.name), () => setPreviewEntry({ dir, entry }))}
+              onSelectFile={(dir, entry) =>
+                withSensitive(joinPath(dir, entry.name), () => {
+                  setPreviewEntry({ dir, entry });
+                  // Keep the REAL selection in step with the highlighted row --
+                  // copy/delete/Enter/statusbar act on `selected`, and letting
+                  // it lag behind the preview highlight meant they silently
+                  // targeted the previously-selected file.
+                  if (dir === curDir) selectOnly(entry.name);
+                })
+              }
               cutPaths={clipboard?.mode === "cut" && clipboard.kind === loc.kind ? clipboard.paths : undefined}
             />
           ) : view === "listPreview" ? (
@@ -3926,6 +4966,18 @@ function Explorer({ home }: { home: string }) {
                 inVault={inVault}
                 root={inVault ? loc.root : undefined}
                 onRename={renamePreviewEntry}
+                textEditorExts={textEditorExts}
+                onOpenInEditor={(ext) => setExtOpensInEditor(ext, true)}
+                reloadKey={previewReloadKey}
+                onChildActivate={(child) => {
+                  if (!previewEntry) return;
+                  activate(joinPath(previewEntry.dir, previewEntry.entry.name), child);
+                }}
+                onChildMenu={(e, child) => {
+                  if (!previewEntry) return;
+                  const childPath = joinPath(joinPath(previewEntry.dir, previewEntry.entry.name), child.name);
+                  pathMenu(e, childPath, () => setPreviewReloadKey((k) => k + 1));
+                }}
               />
             </div>
           ) : (
@@ -4034,9 +5086,38 @@ function Explorer({ home }: { home: string }) {
               : `${entries.length} ${entries.length === 1 ? "item" : "items"}`}
           </span>
           <ProgressPanel ops={progressOps} onCancel={cancelProgress} />
-          <span className="status-loc">{inVault ? "🔒 Encrypted Vault" : "File System"}</span>
+          {inVault && <span className="status-loc">🔒 Encrypted Vault</span>}
         </div>
       </div>
+
+      {mobile && (
+        <nav className="mobile-tabbar">
+          <button className="mobile-tab" onClick={() => setSidebarOpen((v) => !v)} aria-label="Menu">
+            <MenuGlyph size={22} />
+            <span>Menu</span>
+          </button>
+          <button className="mobile-tab" onClick={() => setSearchExpanded(true)} aria-label="Search">
+            <SearchGlyph size={22} />
+            <span>Search</span>
+          </button>
+          <button
+            className="mobile-tab"
+            onClick={() => home && openFavorite(home)}
+            aria-label="Home"
+          >
+            <DiskGlyph size={22} />
+            <span>Home</span>
+          </button>
+          <button className="mobile-tab" onClick={openVaultsMenu} aria-label="Vaults">
+            <LockGlyph size={22} />
+            <span>Vaults</span>
+          </button>
+          <button className="mobile-tab" onClick={() => setSettingsOpen(true)} aria-label="Settings">
+            <SettingsGlyph size={22} />
+            <span>Settings</span>
+          </button>
+        </nav>
+      )}
 
       {marquee && (
         <div
@@ -4066,6 +5147,7 @@ function Explorer({ home }: { home: string }) {
         <SensitiveUnlockSheet
           name={baseName(sensitivePrompt.path)}
           error={sensitivePrompt.error}
+          defaultTimeout={appSettings.sensitiveTimeout}
           onCancel={() => setSensitivePrompt(null)}
           onSubmit={submitSensitive}
         />
@@ -4080,13 +5162,48 @@ function Explorer({ home }: { home: string }) {
           onSubmit={submitNewVault}
         />
       )}
+      {vaultSettingsTarget && (
+        <VaultSettingsSheet
+          name={baseName(vaultSettingsTarget.root)}
+          initial={
+            vaultSettings[vaultSettingsTarget.root] ?? {
+              sensitive: false,
+              autoLockMinutes: 15,
+              autoUnlock: false,
+            }
+          }
+          canAutoUnlock={vaultSettingsTarget.canAutoUnlock}
+          onSave={(opts, password) => saveVaultSettings(vaultSettingsTarget.root, opts, password)}
+          onCancel={() => setVaultSettingsTarget(null)}
+        />
+      )}
       {settingsOpen && (
-        <SettingsSheet
+        <SettingsScreen
           settings={appSettings}
           onChange={setAppSettings}
           onClose={() => setSettingsOpen(false)}
           mobile={mobile}
         />
+      )}
+      {mobileEditorTarget && (
+        <div className="mobile-editor-screen">
+          <div className="settings-screen-header">
+            <button
+              className="settings-back-btn"
+              onClick={() => setMobileEditorTarget(null)}
+              aria-label="Back"
+            >
+              <ChevronLeft size={18} />
+              Back
+            </button>
+          </div>
+          <TextEditorPane
+            entry={mobileEditorTarget.entry}
+            fullPath={mobileEditorTarget.fullPath}
+            inVault={mobileEditorTarget.inVault}
+            onRename={renameMobileEditorEntry}
+          />
+        </div>
       )}
       {reauthPrompt && (
         <ReauthOverlay
@@ -4221,6 +5338,13 @@ function Explorer({ home }: { home: string }) {
         </div>
       )}
       {machineInfoOpen && <MachineInfoSheet onClose={() => setMachineInfoOpen(false)} />}
+      {openWithTarget && (
+        <OpenWithSheet
+          path={openWithTarget}
+          onClose={() => setOpenWithTarget(null)}
+          onError={setError}
+        />
+      )}
       {formatTarget && (
         <FormatDriveSheet
           drive={formatTarget}
@@ -4305,6 +5429,11 @@ function Explorer({ home }: { home: string }) {
             setIconTarget(infoTarget.fullPath);
           }}
           onClose={() => setInfoTarget(null)}
+          opensInEditor={editorExtOf(infoTarget.entry) === null ? null : textEditorExts.has(editorExtOf(infoTarget.entry) as string)}
+          onSetOpensInEditor={(on) => {
+            const ext = editorExtOf(infoTarget.entry);
+            if (ext) setExtOpensInEditor(ext, on);
+          }}
         />
       )}
       {multiInfoTarget && (
@@ -4405,7 +5534,27 @@ function ResizeHandles() {
   // No floating, user-resizable window on Android/iOS.
   const [mobile, setMobile] = useState(false);
   useEffect(() => {
-    api.isMobilePlatform().then(setMobile).catch(() => {});
+    // Same cold-start IPC race as Explorer's own check -- see the long
+    // comment there. Milder consequence here (a stray resize-cursor strip
+    // on a touch device, not a broken layout), but the fix is identical
+    // and just as cheap.
+    let cancelled = false;
+    async function detect() {
+      for (const delay of [0, 300, 1000, 3000]) {
+        if (delay) await new Promise((r) => setTimeout(r, delay));
+        try {
+          const v = await api.isMobilePlatform();
+          if (!cancelled) setMobile(v);
+          return;
+        } catch {
+          // keep retrying
+        }
+      }
+    }
+    detect();
+    return () => {
+      cancelled = true;
+    };
   }, []);
   const win = getCurrentWebviewWindow();
   if (mobile) return null;
