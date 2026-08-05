@@ -1,12 +1,23 @@
 import { useEffect, useState } from "react";
 import { openPath as osOpen } from "@tauri-apps/plugin-opener";
-import { api, YoutubeResult, ImageResult, BookResult, YoutubeSearchFilters } from "../api";
-import { ChevronLeft, SearchGlyph, SaveGlyph } from "../icons";
+import {
+  api,
+  YoutubeResult,
+  ImageResult,
+  BookResult,
+  YoutubeSearchFilters,
+  TorrentProvider,
+  TorrentSearchResult,
+  TorrentFile,
+  formatSize,
+} from "../api";
+import { ChevronLeft, SearchGlyph, SaveGlyph, FileIcon } from "../icons";
 import folderVideosIcon from "../assets/foldericons/folder-videos.svg";
 import folderImagesIcon from "../assets/foldericons/folder-images.svg";
 import folderBookIcon from "../assets/foldericons/folder-book.svg";
+import folderDownloadIcon from "../assets/foldericons/folder-download.svg";
 
-type Mode = "root" | "videos" | "images" | "books";
+type Mode = "root" | "videos" | "images" | "books" | "torrents";
 
 const DEFAULT_FILTERS: YoutubeSearchFilters = { sortByDate: false, uploadDate: null, duration: null };
 
@@ -14,26 +25,30 @@ const DEFAULT_FILTERS: YoutubeSearchFilters = { sortByDate: false, uploadDate: n
 // `.imgsearch`/`.booksearch` file's JSON content (see `activate()` in
 // App.tsx for the open side, and `saveSearch` below for the write side) --
 // deliberately small/flat so the file stays human-readable if someone
-// opens it in a text editor.
+// opens it in a text editor. Torrents aren't saveable this way (yet) --
+// a torrent result is itself a folder of files, not a single thing to
+// reopen.
 export type SavedInternetSearch =
   | { kind: "videos"; query: string; filters: YoutubeSearchFilters }
   | { kind: "images"; query: string }
   | { kind: "books"; query: string };
 
 // Desktop-only experiment: a sidebar entry that behaves like a folder but
-// isn't backed by any real filesystem path -- "Videos"/"Images"/"Books"
-// inside it are YouTube/web-image/Internet-Archive search results wearing
-// file icons, not anything downloaded or stored anywhere. A search can be
-// saved to a real file though (see SaveGlyph button below) -- that file IS
-// a normal filesystem citizen, movable/copyable anywhere, and reopening it
-// comes back here via `initial` instead of this component inventing its
-// own separate storage.
+// isn't backed by any real filesystem path -- "Videos"/"Images"/"Books"/
+// "Torrents" inside it are live search results wearing file icons, not
+// anything downloaded or stored anywhere. A search can be saved to a real
+// file though (see SaveGlyph button below) -- that file IS a normal
+// filesystem citizen, movable/copyable anywhere, and reopening it comes
+// back here via `initial` instead of this component inventing its own
+// separate storage.
 export function InternetView({
   initial,
   onSave,
+  onDownloadTorrentFile,
 }: {
   initial: SavedInternetSearch | null;
   onSave: (filename: string, content: string) => Promise<string>;
+  onDownloadTorrentFile: (sourceUrl: string, fileIndex: number, fileName: string) => void;
 }) {
   const [mode, setMode] = useState<Mode>("root");
   const [query, setQuery] = useState("");
@@ -46,6 +61,20 @@ export function InternetView({
   const [searched, setSearched] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
 
+  // ---- Torrents (see torrents.rs) ----
+  const [providers, setProviders] = useState<TorrentProvider[]>([]);
+  const [providerId, setProviderId] = useState("internet_archive");
+  const [torrentResults, setTorrentResults] = useState<TorrentSearchResult[]>([]);
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const [newProviderName, setNewProviderName] = useState("");
+  const [newProviderUrl, setNewProviderUrl] = useState("");
+  const [openTorrent, setOpenTorrent] = useState<TorrentSearchResult | null>(null);
+  const [torrentFiles, setTorrentFiles] = useState<TorrentFile[]>([]);
+
+  useEffect(() => {
+    if (mode === "torrents") api.torrentProvidersList().then(setProviders).catch(() => {});
+  }, [mode]);
+
   async function runSearch(q: string, f: YoutubeSearchFilters, m: Mode) {
     if (!q.trim()) return;
     setLoading(true);
@@ -55,6 +84,7 @@ export function InternetView({
       if (m === "videos") setVideos(await api.searchYoutube(q, f));
       else if (m === "images") setImages(await api.searchImages(q));
       else if (m === "books") setBooks(await api.searchBooks(q));
+      else if (m === "torrents") setTorrentResults(await api.torrentSearch(providerId, q));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -85,6 +115,8 @@ export function InternetView({
     setSearched(false);
     setError("");
     setSaveMsg("");
+    setOpenTorrent(null);
+    setTorrentFiles([]);
   }
 
   async function saveSearch() {
@@ -103,6 +135,46 @@ export function InternetView({
     } catch (e) {
       setSaveMsg(String(e));
     }
+  }
+
+  async function openTorrentResult(t: TorrentSearchResult) {
+    setOpenTorrent(t);
+    setTorrentFiles([]);
+    setLoading(true);
+    setError("");
+    try {
+      setTorrentFiles(await api.torrentListFiles(t.source_url));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function playTorrentFile(sourceUrl: string, file: TorrentFile) {
+    try {
+      const url = await api.torrentStreamUrl(sourceUrl, file.index);
+      await osOpen(url);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function addProvider() {
+    if (!newProviderName.trim() || !newProviderUrl.includes("{query}")) return;
+    try {
+      setProviders(await api.torrentProviderAdd(newProviderName.trim(), newProviderUrl.trim()));
+      setNewProviderName("");
+      setNewProviderUrl("");
+      setShowAddProvider(false);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function removeProvider(id: string) {
+    setProviders(await api.torrentProviderRemove(id));
+    if (providerId === id) setProviderId("internet_archive");
   }
 
   if (mode === "root") {
@@ -127,18 +199,86 @@ export function InternetView({
             </span>
             <span className="entry-name">Books</span>
           </div>
+          <div className="entry icon" onDoubleClick={() => enterFolder("torrents")}>
+            <span className="entry-icon">
+              <img className="fileicon-img" src={folderDownloadIcon} alt="" draggable={false} />
+            </span>
+            <span className="entry-name">Torrents</span>
+          </div>
         </div>
         <p className="hint" style={{ padding: "0 14px" }}>
-          Experimental: "files" in here are YouTube/web-image/Internet-Archive search results, fetched
-          live -- nothing is downloaded or stored until you open one. Save a search (once you've run
-          one) to drop a real file anywhere in your filesystem that reruns it on double-click.
+          Experimental: "files" in here are YouTube/web-image/Internet-Archive/torrent search results,
+          fetched live -- nothing is downloaded or stored until you open one. Save a search (once you've
+          run one) to drop a real file anywhere in your filesystem that reruns it on double-click.
+        </p>
+      </div>
+    );
+  }
+
+  // ---- Torrents: browsing inside one result's file list ----
+  if (mode === "torrents" && openTorrent) {
+    return (
+      <div className="internet-view">
+        <div className="internet-search-bar">
+          <button className="tool-btn" onClick={() => setOpenTorrent(null)} aria-label="Back">
+            <ChevronLeft size={16} />
+          </button>
+          <span className="entry-name" style={{ fontWeight: 600 }}>
+            {openTorrent.title}
+          </span>
+        </div>
+        {error && <p className="error">{error}</p>}
+        {loading && <div className="column-empty">Loading file list…</div>}
+        {!loading && torrentFiles.length === 0 && !error && (
+          <div className="column-empty">No files found.</div>
+        )}
+        {!loading && torrentFiles.length > 0 && (
+          <div className="entries icon internet-results">
+            {torrentFiles.map((f) => (
+              <div
+                key={f.index}
+                className="entry icon"
+                title={`${f.name} -- ${formatSize(f.length)}`}
+                onDoubleClick={() => playTorrentFile(openTorrent.source_url, f)}
+              >
+                <span className="entry-icon">
+                  <FileIcon entry={{ name: f.name, is_dir: false, size: f.length, mtime: 0 }} />
+                </span>
+                <span className="entry-name">
+                  {f.name.split("/").pop()}
+                  <span className="internet-published">{formatSize(f.length)}</span>
+                </span>
+                <button
+                  className="tool-btn internet-download-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDownloadTorrentFile(openTorrent.source_url, f.index, f.name.split("/").pop() || f.name);
+                  }}
+                  title="Download to the current folder"
+                  aria-label="Download"
+                >
+                  <SaveGlyph size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="hint" style={{ padding: "6px 14px" }}>
+          Double-click plays it directly (streams while it downloads). The download icon saves it into
+          the folder you had open, showing up in Tasks like any other download.
         </p>
       </div>
     );
   }
 
   const placeholder =
-    mode === "videos" ? "Search YouTube…" : mode === "images" ? "Search images…" : "Search books…";
+    mode === "videos"
+      ? "Search YouTube…"
+      : mode === "images"
+      ? "Search images…"
+      : mode === "torrents"
+      ? "Search torrents…"
+      : "Search books…";
 
   return (
     <div className="internet-view">
@@ -159,15 +299,17 @@ export function InternetView({
         <button className="tool-btn wide-btn" onClick={() => runSearch(query, filters, mode)} disabled={loading}>
           Search
         </button>
-        <button
-          className="tool-btn"
-          onClick={saveSearch}
-          disabled={!query.trim()}
-          aria-label="Save search"
-          title="Save this search as a file"
-        >
-          <SaveGlyph size={16} />
-        </button>
+        {mode !== "torrents" && (
+          <button
+            className="tool-btn"
+            onClick={saveSearch}
+            disabled={!query.trim()}
+            aria-label="Save search"
+            title="Save this search as a file"
+          >
+            <SaveGlyph size={16} />
+          </button>
+        )}
       </div>
       {mode === "videos" && (
         <div className="internet-filters">
@@ -206,6 +348,51 @@ export function InternetView({
           </label>
         </div>
       )}
+      {mode === "torrents" && (
+        <div className="internet-filters">
+          <select className="settings-select" value={providerId} onChange={(e) => setProviderId(e.target.value)}>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <button className="btn-plain small" onClick={() => setShowAddProvider((s) => !s)}>
+            {showAddProvider ? "Cancel" : "+ Add provider"}
+          </button>
+          {!providers.find((p) => p.id === providerId)?.builtin && (
+            <button className="btn-plain small" onClick={() => removeProvider(providerId)}>
+              Remove this provider
+            </button>
+          )}
+        </div>
+      )}
+      {showAddProvider && (
+        <div className="internet-filters">
+          <input
+            placeholder="Provider name"
+            value={newProviderName}
+            onChange={(e) => setNewProviderName(e.target.value)}
+            style={{ width: 140 }}
+          />
+          <input
+            placeholder="Search URL with {query} in it"
+            value={newProviderUrl}
+            onChange={(e) => setNewProviderUrl(e.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button className="btn-primary small" onClick={addProvider}>
+            Save
+          </button>
+        </div>
+      )}
+      {mode === "torrents" && (
+        <p className="hint" style={{ padding: "6px 14px 0" }}>
+          Internet Archive only searches public-domain/openly-licensed content. A custom provider is any
+          page whose search results contain magnet links -- same idea as a browser's custom search
+          engines; what it points to is on you, same as any real torrent client's search plugins.
+        </p>
+      )}
       {saveMsg && (
         <p className="hint" style={{ padding: "6px 14px 0" }}>
           {saveMsg}
@@ -220,6 +407,9 @@ export function InternetView({
         <div className="column-empty">No results.</div>
       )}
       {!loading && searched && mode === "books" && books.length === 0 && !error && (
+        <div className="column-empty">No results.</div>
+      )}
+      {!loading && searched && mode === "torrents" && torrentResults.length === 0 && !error && (
         <div className="column-empty">No results.</div>
       )}
       {mode === "videos" && videos.length > 0 && (
@@ -276,6 +466,18 @@ export function InternetView({
                   </span>
                 )}
               </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {mode === "torrents" && torrentResults.length > 0 && (
+        <div className="entries icon internet-results">
+          {torrentResults.map((t, i) => (
+            <div key={i} className="entry icon" title={t.title} onDoubleClick={() => openTorrentResult(t)}>
+              <span className="entry-icon">
+                <img className="fileicon-img" src={folderDownloadIcon} alt="" draggable={false} />
+              </span>
+              <span className="entry-name">{t.title}</span>
             </div>
           ))}
         </div>

@@ -4032,6 +4032,32 @@ input[type="range"]::-webkit-slider-thumb {
   cursor: default;
 }
 
+/* Torrents (see InternetView.tsx) -- a per-file download button overlaid
+   on its tile, same corner-badge idea as .fileicon-lock/.entry-tag-dot
+   elsewhere, but a real clickable button rather than a decoration
+   (.entry-icon's own pointer-events:none doesn't apply here since this
+   sits outside it, as a direct sibling on the tile). */
+.internet-results .entry.icon {
+  position: relative;
+}
+.internet-download-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--win-bg);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.internet-results .entry.icon:hover .internet-download-btn {
+  display: flex;
+}
+
 /* ============================================================
    Contacts view (folder of .vcf as a real contacts list)
    ============================================================ */
