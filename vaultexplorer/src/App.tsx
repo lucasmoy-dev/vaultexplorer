@@ -3320,10 +3320,10 @@ function Explorer({ home }: { home: string }) {
   }
   async function createNewFile() {
     const base = formatNameTemplate(appSettings.newFileNameTemplate || "untitled document");
-    // The list-with-preview view exists specifically to write/read
-    // markdown in place, so a new file made from there defaults to .md
+    // List-with-preview and Notes both exist specifically to write/read
+    // markdown in place, so a new file made from either defaults to .md
     // instead of the generic .txt.
-    const name = nextUntitledName(base, view === "listPreview" ? ".md" : ".txt");
+    const name = nextUntitledName(base, view === "listPreview" || view === "notes" ? ".md" : ".txt");
     try {
       inVault ? await api.newFile(joinPath(curDir, name)) : await api.fsNewFile(joinPath(curDir, name));
       await refresh();
@@ -4223,8 +4223,18 @@ function Explorer({ home }: { home: string }) {
       { key: "contacts", label: "Contacts" },
     ];
     const items: MenuItem[] = options.map((o) => ({
-      label: view === o.key ? `✓ ${o.label}` : o.label,
-      onClick: () => setView(o.key),
+      label: view === o.key && !showDigest ? `✓ ${o.label}` : o.label,
+      // Picking a view here is the one consistent escape hatch this app
+      // already has for "no, show me the real files" -- the auto-digest
+      // (see SavedSearchDigest) has its own inline "View as files" link
+      // too, but that's only discoverable once you're already looking at
+      // it. Dismissing here as well means the toolbar's normal view
+      // switcher works as the way out, same as a user would expect from
+      // every other view choice in this menu.
+      onClick: () => {
+        setDigestDismissed(true);
+        setView(o.key);
+      },
     }));
     // Per-folder pin. Hidden on My Computer (not a folder) and in column
     // view (which ignores pins while browsing -- see the restore effect).

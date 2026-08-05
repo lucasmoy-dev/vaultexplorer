@@ -13,12 +13,12 @@ function noteColor(name: string): string {
   return `hsl(${hue}, 65%, 92%)`;
 }
 
-function isMarkdown(entry: Entry): boolean {
+function isNote(entry: Entry): boolean {
   if (entry.is_dir) return false;
   const dot = entry.name.lastIndexOf(".");
   if (dot <= 0) return false;
   const ext = entry.name.slice(dot + 1).toLowerCase();
-  return ext === "md" || ext === "markdown";
+  return ext === "md" || ext === "markdown" || ext === "txt";
 }
 
 function NoteCard({
@@ -57,20 +57,21 @@ function NoteCard({
       onClick={onOpen}
       onContextMenu={onMenu}
     >
-      <div className="note-card-title">{displayEntryName(entry, false).replace(/\.(md|markdown)$/i, "")}</div>
+      <div className="note-card-title">{displayEntryName(entry, false).replace(/\.(md|markdown|txt)$/i, "")}</div>
       <div className="note-card-body">{preview === null ? "…" : preview || "Empty note"}</div>
     </div>
   );
 }
 
-// Google Keep-style card grid for a folder of markdown notes -- every .md
-// file gets a colored card with a content preview instead of just an icon;
-// tap opens it in the same full-screen editor a plain mobile file-open
-// already uses (see `mobileEditorTarget` in App.tsx). Anything that isn't
-// markdown (subfolders, other files) still needs to be reachable from this
-// view, so it gets a plain small tile alongside the note cards rather than
-// being hidden -- a folder that's *mostly* notes still has the occasional
-// attachment or subfolder mixed in.
+// Google Keep-style card grid for a folder of markdown/plain-text notes --
+// every .md/.markdown/.txt file gets a colored card with a content preview
+// instead of just an icon; tap opens it in the same full-screen editor a
+// plain mobile file-open already uses (see `mobileEditorTarget` in
+// App.tsx). Anything that isn't a note (subfolders, other files) still
+// needs to be reachable from this view, so it gets a plain small tile
+// alongside the note cards rather than being hidden -- a folder that's
+// *mostly* notes still has the occasional attachment or subfolder mixed
+// in.
 export function NotesGrid({
   entries,
   curDir,
@@ -86,8 +87,8 @@ export function NotesGrid({
   onActivateOther: (entry: Entry) => void;
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
 }) {
-  const notes = entries.filter(isMarkdown);
-  const others = entries.filter((e) => !isMarkdown(e));
+  const notes = entries.filter(isNote);
+  const others = entries.filter((e) => !isNote(e));
   return (
     <div className="notes-view">
       <div className="notes-grid">
