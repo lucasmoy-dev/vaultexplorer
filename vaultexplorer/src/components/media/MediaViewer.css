@@ -1,0 +1,219 @@
+/* MediaViewer -- fullscreen photo/video/audio gallery shell. Scoped file
+   per the feature's parallel-build convention (see src/components/media/
+   *.css) -- src/App.css is not touched.
+
+   Like AudioStage/VideoStage/ImageEditor, this is deliberately a fixed-dark
+   chrome regardless of light/dark theme -- a real gallery-app viewer, not a
+   themed app surface -- but borrows the app's .sheet-overlay/.sheet-card
+   shapes, radii and motion language (see src/App.css) rather than inventing
+   a new visual style. Root overlay z-index is 2100 (App.css's own
+   .sheet-overlay is 900, its .reauth-overlay is 2000 -- this has to sit
+   above both); ImageEditor layers on top of this at 2200. */
+
+.media-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  background: #000;
+  display: flex;
+  animation: mv-overlay-in 0.15s ease-out;
+}
+@keyframes mv-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.media-viewer-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #f5f5f7;
+}
+
+/* ---- toolbar ---- */
+.mv-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 54px;
+  padding: 0 14px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0));
+}
+
+.mv-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 8px;
+}
+
+.mv-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.mv-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.mv-icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+.mv-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mv-delete-btn.armed {
+  width: auto;
+  padding: 0 12px;
+  border-radius: 17px;
+  background: linear-gradient(180deg, #ff6961, #ff3b30);
+}
+.mv-delete-btn.armed:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ff7b73, #ff453a);
+}
+.mv-delete-label {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ---- prev/next chevrons ---- */
+.mv-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.mv-nav-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.55);
+}
+.mv-nav-prev {
+  left: 14px;
+}
+.mv-nav-next {
+  right: 14px;
+}
+.mv-nav-btn.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* ---- stage area ---- */
+.mv-stage-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mv-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mv-stage[data-dir="left"] {
+  animation: mv-enter-left 0.22s ease-out;
+}
+.mv-stage[data-dir="right"] {
+  animation: mv-enter-right 0.22s ease-out;
+}
+.mv-stage:not([data-dir="left"]):not([data-dir="right"]) {
+  animation: mv-enter-fade 0.18s ease-out;
+}
+@keyframes mv-enter-left {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes mv-enter-right {
+  from {
+    opacity: 0;
+    transform: translateX(-28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes mv-enter-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.mv-error {
+  color: #ff8a80;
+  font-size: 13px;
+  text-align: center;
+  max-width: 80%;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+}
+/* An in-flight rotate/save error over an already-loaded stage: pin it near
+   the top instead of centered, so it reads as a transient toast rather than
+   replacing the media the way .mv-error alone (the resolve-failure case)
+   does. */
+.mv-error-toast {
+  position: absolute;
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+}

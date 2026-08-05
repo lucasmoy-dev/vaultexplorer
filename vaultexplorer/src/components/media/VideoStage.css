@@ -1,0 +1,201 @@
+/* VideoStage -- custom-controlled video player for the fullscreen media
+   viewer. Scoped to this file per the media-viewer feature's convention
+   (each component owns its own CSS instead of living in the shared
+   App.css) -- see src/components/media/VideoStage.tsx header comment.
+
+   This stage is always dark regardless of the app's light/dark theme --
+   same as every other fullscreen media/video viewer -- so colors below are
+   mostly fixed rather than pulled from App.css's light/dark custom
+   properties. var(--accent) is reused for the "active" fill (seek/volume
+   progress) since that blue reads fine on black in both themes. */
+
+.video-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.video-stage-el {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+  cursor: pointer;
+}
+
+/* Auto-hidden state (idle while playing): fade the bar out and hide the
+   cursor so it reads like a clean fullscreen video, YouTube-style. */
+.video-stage.controls-hidden .video-controls {
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+}
+.video-stage.controls-hidden {
+  cursor: none;
+}
+
+.video-replay {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(2px);
+}
+.video-replay:hover {
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.video-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 6px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.35) 65%, transparent);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  color: #f2f2f4;
+}
+
+.video-seek {
+  width: 100%;
+}
+
+/* Shared range-input look: a thin track filled up to `--progress` with the
+   accent color, plain white thumb. Firefox and WebKit each need their own
+   pseudo-elements poked to hand the fill color through. */
+.video-controls input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent, #0a6cff) var(--progress, 0%),
+    rgba(255, 255, 255, 0.28) var(--progress, 0%)
+  );
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+}
+.video-controls input[type="range"]::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 4px;
+}
+.video-controls input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+  margin-top: -4px;
+}
+.video-controls input[type="range"]::-moz-range-track {
+  background: transparent;
+  height: 4px;
+  border-radius: 2px;
+}
+.video-controls input[type="range"]::-moz-range-progress {
+  background: var(--accent, #0a6cff);
+  height: 4px;
+  border-radius: 2px;
+}
+.video-controls input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.video-seek input[type="range"] {
+  height: 5px;
+}
+.video-seek input[type="range"]::-webkit-slider-runnable-track {
+  height: 5px;
+}
+.video-seek input[type="range"]::-moz-range-track {
+  height: 5px;
+}
+
+.video-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+
+.video-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #f2f2f4;
+  cursor: pointer;
+  flex: none;
+}
+.video-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.video-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.video-volume-slider {
+  width: 70px;
+}
+
+.video-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(242, 242, 244, 0.85);
+  white-space: nowrap;
+}
+
+.video-spacer {
+  flex: 1 1 auto;
+}
+
+.video-speed {
+  appearance: none;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #f2f2f4;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.video-speed:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.video-speed:focus {
+  outline: 1px solid var(--accent, #0a6cff);
+}

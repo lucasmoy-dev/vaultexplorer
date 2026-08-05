@@ -158,11 +158,14 @@ export const api = {
   fsNewFile: (path: string) => invoke<void>("fs_new_file", { path }),
   fsReadText: (path: string) => invoke<string>("fs_read_text", { path }),
   fsWriteText: (path: string, content: string) => invoke<void>("fs_write_text", { path, content }),
+  fsWriteBytes: (path: string, bytes: Uint8Array) => invoke<void>("fs_write_bytes", { path, bytes }),
   fsSavePastedImage: (dir: string, bytes: number[]) =>
     invoke<string>("fs_save_pasted_image", { dir, bytes }),
   vaultReadText: (relPath: string) => invoke<string>("vault_read_text", { relPath }),
   vaultWriteText: (relPath: string, content: string) =>
     invoke<void>("vault_write_text", { relPath, content }),
+  vaultWriteBytes: (relPath: string, bytes: Uint8Array) =>
+    invoke<void>("vault_write_bytes", { relPath, bytes }),
   fsShareFile: (path: string) => invoke<string>("fs_share_file", { path }),
   vaultShareFile: (relPath: string) => invoke<string>("vault_share_file", { relPath }),
   fsDelete: (path: string) => invoke<void>("fs_delete", { path }),

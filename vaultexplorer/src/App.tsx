@@ -19,6 +19,7 @@ import {
 } from "./api";
 import { TitleBar, TrafficLights } from "./TitleBar";
 import { ContextMenu, MenuState, MenuItem } from "./ContextMenu";
+import { MediaViewer, GalleryEntry } from "./components/media/MediaViewer";
 import {
   ChevronLeft,
   ChevronRight,
@@ -48,6 +49,7 @@ import {
   PasteGlyph,
   RetryImg,
   kindOf,
+  Kind,
   customIconUrl,
   CUSTOM_ICON_PREFIX,
   symbolIconSvg,
@@ -990,6 +992,7 @@ function Explorer({ home }: { home: string }) {
   // `isSensitivePath` expands it to inherited descendants.
   const [sensitiveSet, setSensitiveSet] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<MenuState>(null);
+  const [mediaViewer, setMediaViewer] = useState<{ gallery: GalleryEntry[]; startIndex: number } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null
@@ -2483,6 +2486,50 @@ function Explorer({ home }: { home: string }) {
   }, [inVault, curDir, loc.kind === "vault" ? loc.root : null]);
 
   // ---- open / activate an entry ----
+  // Opens the fullscreen gallery viewer for an image/video/audio file
+  // instead of shelling out via osOpen. `resolvedPath`/`resolvedInVault`
+  // let a caller substitute an already-resolved real path (e.g. a
+  // mobile vault file that's been decrypted to a throwaway temp copy,
+  // since there's no FUSE mount on Android for MediaViewer's own
+  // openPath-based resolution to use) -- when given, the *opened* entry
+  // uses that instead of the vault-relative path, but sibling gallery
+  // entries (for swipe navigation) still use their normal vault-relative
+  // path + inVault=true, since prefetch-decrypting every sibling just to
+  // build a gallery isn't worth it. Practical effect: swiping to a
+  // sibling from a mobile-vault-opened image falls back through
+  // MediaViewer's normal per-item resolution, which does work for
+  // desktop (FUSE-backed) but not mobile vault siblings -- an accepted
+  // gap for now, single-file viewing still works everywhere.
+  function openMediaViewer(
+    dir: string,
+    entry: Entry,
+    inVault: boolean,
+    resolved?: { path: string; inVault: boolean }
+  ) {
+    const kind = kindOf(entry);
+    const wantKinds: Kind[] = kind === "audio" ? ["audio"] : ["image", "video"];
+    const siblings = entries.filter((e) => !e.is_dir && wantKinds.includes(kindOf(e)));
+    const gallery: GalleryEntry[] = siblings.map((e) => ({
+      name: e.name,
+      fullPath: joinPath(dir, e.name),
+      kind: kindOf(e) as "image" | "video" | "audio",
+      inVault,
+    }));
+    let startIndex = gallery.findIndex((g) => g.name === entry.name);
+    if (resolved) {
+      // Splice in the already-resolved stand-in for the opened entry
+      // itself (siblings keep their normal vault-relative path).
+      if (startIndex >= 0) {
+        gallery[startIndex] = { ...gallery[startIndex], fullPath: resolved.path, inVault: resolved.inVault };
+      } else {
+        gallery.push({ name: entry.name, fullPath: resolved.path, kind: kind as "image" | "video" | "audio", inVault: resolved.inVault });
+        startIndex = gallery.length - 1;
+      }
+    }
+    if (startIndex < 0) startIndex = 0;
+    setMediaViewer({ gallery, startIndex });
+  }
+
   async function activate(dir: string, entry: Entry) {
     if (loc.kind === "vault") {
       if (entry.is_vault) {
@@ -2541,6 +2588,24 @@ function Explorer({ home }: { home: string }) {
             setMobileEditorTarget({ entry, fullPath: full, inVault: true });
             return;
           }
+          const mediaKind = kindOf(entry);
+          if (mediaKind === "image" || mediaKind === "video" || mediaKind === "audio") {
+            try {
+              // See openMediaViewer's comment: no FUSE on Android, so the
+              // opened entry itself gets a decrypted temp stand-in there;
+              // desktop just uses the FUSE-backed vault-relative path
+              // MediaViewer already knows how to resolve on its own.
+              if (mobile) {
+                const abs = await api.vaultDecryptToTemp(full);
+                openMediaViewer(dir, entry, true, { path: abs, inVault: false });
+              } else {
+                openMediaViewer(dir, entry, true);
+              }
+            } catch (e) {
+              setError(String(e));
+            }
+            return;
+          }
           try {
             // No FUSE mount on Android -- open a throwaway decrypted copy
             // instead of the in-place virtual-filesystem path desktop uses.
@@ -2588,6 +2653,11 @@ function Explorer({ home }: { home: string }) {
     }
     if (mobile && !appSettings.mobileExternalEditor && isPlainTextEntry(entry)) {
       setMobileEditorTarget({ entry, fullPath: full, inVault: false });
+      return;
+    }
+    const mediaKind = kindOf(entry);
+    if (mediaKind === "image" || mediaKind === "video" || mediaKind === "audio") {
+      openMediaViewer(dir, entry, false);
       return;
     }
     try {
@@ -5921,6 +5991,14 @@ function Explorer({ home }: { home: string }) {
         />
       )}
       <ContextMenu state={menu} onClose={() => setMenu(null)} />
+      {mediaViewer && (
+        <MediaViewer
+          gallery={mediaViewer.gallery}
+          startIndex={mediaViewer.startIndex}
+          onClose={() => setMediaViewer(null)}
+          onDeleted={() => refresh()}
+        />
+      )}
       {shareStatus && (
         <div className={`share-toast ${shareStatus.state}`}>
           {shareStatus.state === "working" && (

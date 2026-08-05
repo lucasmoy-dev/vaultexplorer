@@ -1,0 +1,346 @@
+/* ImageEditor -- fullscreen image-editing overlay opened from MediaViewer's
+   "Edit" action. Scoped file per the feature's parallel-build convention
+   (see src/components/media/*.css) -- src/App.css is not touched.
+
+   Sits above MediaViewer (z-index 2100) so it can be opened while that
+   viewer is still mounted underneath. Like AudioStage, this stays a fixed
+   dark chrome regardless of light/dark theme -- it's a fullscreen tool
+   over arbitrary image content, not a themed app surface -- but borrows
+   the app's .sheet-card/.btn-plain/.btn-primary shapes, radii and motion
+   language (see src/App.css) rather than inventing a new visual style. */
+
+.image-editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  display: flex;
+  flex-direction: column;
+  background: rgba(20, 20, 22, 0.97);
+  color: #f5f5f7;
+  animation: image-editor-in 0.15s ease-out;
+}
+
+@keyframes image-editor-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---- toolbar ---- */
+
+.image-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: rgba(30, 30, 32, 0.9);
+  border-bottom: 0.5px solid rgba(255, 255, 255, 0.1);
+  flex: 0 0 auto;
+}
+
+.image-editor-toolbar .btn-plain,
+.image-editor-toolbar .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.image-editor-toolbar .btn-plain.small {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f5f5f7;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.image-editor-modes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 9px;
+  padding: 3px;
+}
+
+.mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: rgba(245, 245, 247, 0.7);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mode-tab:hover {
+  color: #f5f5f7;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mode-tab.on {
+  color: #fff;
+  background: linear-gradient(180deg, var(--accent-grad-top, #4c9bff), var(--accent-grad-bot, #0a6cff));
+}
+
+/* ---- stage (canvas viewport) ---- */
+
+.image-editor-stage {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 20px;
+  min-height: 0;
+  position: relative;
+}
+
+.image-editor-status {
+  color: rgba(245, 245, 247, 0.6);
+  font-size: 13px;
+}
+
+.image-editor-status.error {
+  color: #ff6b60;
+}
+
+.editor-canvas-wrap {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+}
+
+.editor-canvas {
+  max-width: 100%;
+  max-height: calc(100vh - 220px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 12px 50px rgba(0, 0, 0, 0.55);
+  touch-action: none;
+  user-select: none;
+  transition: transform 0.3s ease;
+}
+
+.editor-canvas.mode-crop {
+  cursor: crosshair;
+}
+
+.editor-canvas.mode-draw {
+  cursor: crosshair;
+}
+
+.editor-canvas.flip-h {
+  transform: scaleX(-1);
+}
+
+.editor-canvas.flip-v {
+  transform: scaleY(-1);
+}
+
+/* ---- crop overlay: dark mask + draggable rect + handles ---- */
+
+.crop-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  /* The selected rect itself is punched out visually by drawing it a
+     second time, on top, with no mask -- see .crop-rect below -- rather
+     than a real CSS mask/clip-path, which is simpler to keep in sync with
+     the canvas's own scaling. */
+}
+
+.crop-rect {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  outline: 1.5px solid #fff;
+  pointer-events: none;
+}
+
+.crop-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border: 1.5px solid var(--accent, #0a6cff);
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.crop-handle.nw {
+  left: 0;
+  top: 0;
+}
+.crop-handle.ne {
+  left: 100%;
+  top: 0;
+}
+.crop-handle.sw {
+  left: 0;
+  top: 100%;
+}
+.crop-handle.se {
+  left: 100%;
+  top: 100%;
+}
+.crop-handle.n {
+  left: 50%;
+  top: 0;
+}
+.crop-handle.s {
+  left: 50%;
+  top: 100%;
+}
+.crop-handle.e {
+  left: 100%;
+  top: 50%;
+}
+.crop-handle.w {
+  left: 0;
+  top: 50%;
+}
+
+/* ---- options panel: fades/slides in on every mode switch ---- */
+
+.image-editor-options {
+  flex: 0 0 auto;
+  padding: 12px 16px 16px;
+  background: rgba(30, 30, 32, 0.9);
+  border-top: 0.5px solid rgba(255, 255, 255, 0.1);
+  animation: options-in 0.18s ease-out;
+}
+
+@keyframes options-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.options-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.options-hint {
+  font-size: 12.5px;
+  color: rgba(245, 245, 247, 0.65);
+  margin: 0;
+  flex: 1 1 260px;
+}
+
+.image-editor-options .btn-plain,
+.image-editor-options .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.image-editor-options .btn-plain {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f5f5f7;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.image-editor-options .btn-plain.on {
+  background: linear-gradient(180deg, var(--accent-grad-top, #4c9bff), var(--accent-grad-bot, #0a6cff));
+  color: #fff;
+  border-color: transparent;
+}
+
+/* draw mode: color swatches + width presets */
+
+.pen-colors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pen-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.pen-swatch:hover {
+  transform: scale(1.08);
+}
+
+.pen-swatch.on {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--accent, #0a6cff);
+}
+
+.pen-widths {
+  display: flex;
+  gap: 6px;
+}
+
+/* adjust mode: sliders */
+
+.adjust-row {
+  gap: 20px;
+}
+
+.adjust-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: rgba(245, 245, 247, 0.85);
+}
+
+.adjust-slider span:first-child {
+  min-width: 76px;
+}
+
+.adjust-slider input[type="range"] {
+  width: 140px;
+}
+
+.adjust-value {
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: rgba(245, 245, 247, 0.65);
+}
+
+.image-editor-error {
+  padding: 8px 16px;
+  color: #ff6b60;
+  font-size: 12.5px;
+  background: rgba(255, 59, 48, 0.12);
+}
+
+@media (max-width: 640px) {
+  .image-editor-toolbar .btn-plain.small span,
+  .image-editor-toolbar .btn-primary.small span {
+    display: none;
+  }
+  .mode-tab span {
+    display: none;
+  }
+  .adjust-slider input[type="range"] {
+    width: 90px;
+  }
+}

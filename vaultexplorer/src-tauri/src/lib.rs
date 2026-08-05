@@ -1172,6 +1172,14 @@ fn fs_write_text(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).str_err()
 }
 
+/// Raw-bytes counterpart to `fs_write_text`, for callers (e.g. the image
+/// editor's canvas export) that produce binary content rather than UTF-8
+/// text.
+#[tauri::command]
+fn fs_write_bytes(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    std::fs::write(&path, bytes).str_err()
+}
+
 /// Saves an image pasted into the markdown editor as a real sibling file
 /// next to the note (real fs only -- a vault file has no "sibling path"
 /// to write plaintext bytes into without breaking the vault's own
@@ -1197,6 +1205,13 @@ fn vault_read_text(state: State<AppState>, rel_path: String) -> Result<String, S
 #[tauri::command]
 fn vault_write_text(state: State<AppState>, rel_path: String, content: String) -> Result<(), String> {
     with_vault(&state, |v| v.write_file(&rel_path, content.as_bytes()))
+}
+
+/// Raw-bytes counterpart to `vault_write_text`, for binary content (e.g.
+/// an edited image) written back into the vault.
+#[tauri::command]
+fn vault_write_bytes(state: State<AppState>, rel_path: String, bytes: Vec<u8>) -> Result<(), String> {
+    with_vault(&state, |v| v.write_file(&rel_path, &bytes))
 }
 
 #[tauri::command]
@@ -1669,9 +1684,11 @@ pub fn run() {
             fs_new_file,
             fs_read_text,
             fs_write_text,
+            fs_write_bytes,
             fs_save_pasted_image,
             vault_read_text,
             vault_write_text,
+            vault_write_bytes,
             share::fs_share_file,
             share::vault_share_file,
             fs_delete,
