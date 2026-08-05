@@ -55,6 +55,29 @@ export function useFavorites(home: string, mobile: boolean) {
       PHONE_STORAGE_PATH,
     ]);
   }, [mobile, home]);
+  // The fix above only ever fires for a brand-new install (gated on
+  // `hadSavedFavorites`) -- an existing install upgrading from the older
+  // decoy-sandbox version keeps its already-saved favorites forever,
+  // localStorage surviving the APK update untouched. So a Documents/
+  // Pictures/Download favorite that ISN'T under PHONE_STORAGE_PATH is
+  // still pointing at that old per-app decoy folder -- rewritten in place
+  // here, once, regardless of when it was originally saved.
+  useEffect(() => {
+    if (!mobile) return;
+    setFavPaths((prev) => {
+      const fixed = prev.map((p) => {
+        const name = baseName(p);
+        if (
+          (name === "Documents" || name === "Pictures" || name === "Download" || name === "Downloads") &&
+          !p.startsWith(PHONE_STORAGE_PATH)
+        ) {
+          return joinPath(PHONE_STORAGE_PATH, name === "Downloads" ? "Download" : name);
+        }
+        return p;
+      });
+      return fixed.some((p, i) => p !== prev[i]) ? fixed : prev;
+    });
+  }, [mobile]);
 
   // The favorite that opens on launch, instead of the home folder.
   const [defaultStartPath, setDefaultStartPathState] = useState<string | null>(() =>

@@ -1655,6 +1655,10 @@ pub fn run() {
             android::android_import_contacts,
             #[cfg(target_os = "android")]
             android::android_download_and_install_apk,
+            #[cfg(target_os = "android")]
+            android::android_can_install_packages,
+            #[cfg(target_os = "android")]
+            android::android_request_install_packages_access,
             fs_list,
             fs_is_vault,
             fs_set_readonly,

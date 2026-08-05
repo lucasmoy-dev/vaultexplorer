@@ -3,6 +3,35 @@ use crate::errmap::ToStringErr;
 #[cfg(target_os = "android")]
 use tauri::Manager;
 
+/// `jni::errors::Error::JavaException` is a unit variant -- the crate
+/// deliberately doesn't auto-extract the pending exception's message, so
+/// its `Display` always prints the same generic "Java exception was
+/// thrown" regardless of what actually failed (SecurityException, IO
+/// error, wrong FileProvider authority...). Every JNI command in this
+/// file used to just `exception_clear()` a failing exception and stringify
+/// the outer `Error` -- surfacing that generic text with the real cause
+/// discarded. This pulls the exception's own message out first via
+/// `Throwable.toString()` (before clearing it, which is required before
+/// the JNIEnv can be used for anything else), so the JS side gets an
+/// actual "java.lang.SecurityException: ..." instead of a dead end.
+#[cfg(target_os = "android")]
+fn describe_jni_error(env: &mut jni::JNIEnv, err: jni::errors::Error) -> String {
+    if !matches!(err, jni::errors::Error::JavaException) {
+        return err.to_string();
+    }
+    let described = (|| -> Result<String, jni::errors::Error> {
+        let ex = env.exception_occurred()?;
+        env.exception_clear()?;
+        let msg = env.call_method(&ex, "toString", "()Ljava/lang/String;", &[])?.l()?;
+        let jstr = jni::objects::JString::from(msg);
+        env.get_string(&jstr).map(|s| s.into())
+    })();
+    described.unwrap_or_else(|_| {
+        let _ = env.exception_clear();
+        err.to_string()
+    })
+}
+
 /// "All files access" (`MANAGE_EXTERNAL_STORAGE`) is what actually unlocks
 /// raw path listing of shared storage (Download/Pictures/DCIM) under
 /// Android's scoped storage -- there's no Rust API for it, so this reaches
@@ -91,6 +120,103 @@ pub(crate) fn android_request_storage_access(app: tauri::AppHandle) -> Result<()
                 };
                 if run().is_err() {
                     let _ = env.exception_clear();
+                }
+            });
+        })
+        .str_err()
+}
+
+/// Installing an APK via `ACTION_VIEW` (see `android_download_and_install_apk`
+/// below) needs "install unknown apps" enabled for this app first
+/// (`PackageManager.canRequestPackageInstalls`, API 26+) -- without it,
+/// tapping "Update" would previously just download the APK and start an
+/// intent that quietly went nowhere (no exception, no visible prompt),
+/// which looked exactly like the button doing nothing at all. Checked the
+/// same way `android_storage_access_granted` checks its own permission.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn android_can_install_packages(app: tauri::AppHandle) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sent = window.with_webview(move |pw| {
+        let jni = pw.jni_handle();
+        jni.exec(move |env, activity, _webview| {
+            let granted = (|| -> Result<bool, jni::errors::Error> {
+                let pm = env
+                    .call_method(activity, "getPackageManager", "()Landroid/content/pm/PackageManager;", &[])?
+                    .l()?;
+                env.call_method(&pm, "canRequestPackageInstalls", "()Z", &[])?.z()
+            })();
+            if granted.is_err() {
+                let _ = env.exception_clear();
+            }
+            let _ = tx.send(granted.unwrap_or(false));
+        });
+    });
+    if sent.is_err() {
+        return false;
+    }
+    rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or(false)
+}
+
+/// Same "dedicated settings screen, no in-app dialog" shape as
+/// `android_request_storage_access` -- `ACTION_MANAGE_UNKNOWN_APP_SOURCES`
+/// is the "install unknown apps" equivalent of
+/// `MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn android_request_install_packages_access(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("main").ok_or("no main window")?;
+    window
+        .with_webview(move |pw| {
+            let jni = pw.jni_handle();
+            jni.exec(move |env, activity, _webview| {
+                let mut run = || -> Result<(), jni::errors::Error> {
+                    use jni::objects::{JObject, JValue};
+                    let action = env.new_string("android.settings.MANAGE_UNKNOWN_APP_SOURCES")?;
+                    let intent_class = env.find_class("android/content/Intent")?;
+                    let intent = env.new_object(
+                        intent_class,
+                        "(Ljava/lang/String;)V",
+                        &[JValue::Object(&action)],
+                    )?;
+
+                    let pkg_name = env
+                        .call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?
+                        .l()?;
+                    let scheme = env.new_string("package")?;
+                    let uri_class = env.find_class("android/net/Uri")?;
+                    let none = JObject::null();
+                    let uri = env
+                        .call_static_method(
+                            uri_class,
+                            "fromParts",
+                            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;",
+                            &[
+                                JValue::Object(&scheme),
+                                JValue::Object(&pkg_name),
+                                JValue::Object(&none),
+                            ],
+                        )?
+                        .l()?;
+                    env.call_method(
+                        &intent,
+                        "setData",
+                        "(Landroid/net/Uri;)Landroid/content/Intent;",
+                        &[JValue::Object(&uri)],
+                    )?;
+                    env.call_method(
+                        activity,
+                        "startActivity",
+                        "(Landroid/content/Intent;)V",
+                        &[JValue::Object(&intent)],
+                    )?;
+                    Ok(())
+                };
+                if let Err(e) = run() {
+                    let _ = describe_jni_error(env, e);
                 }
             });
         })
@@ -277,10 +403,7 @@ pub(crate) fn android_pin_folder_shortcut(
                 )?;
                 Ok(())
             };
-            let result = run().map_err(|e| e.to_string());
-            if result.is_err() {
-                let _ = env.exception_clear();
-            }
+            let result = run().map_err(|e| describe_jni_error(env, e));
             let _ = tx.send(result);
         });
     });
@@ -512,10 +635,7 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                 let _ = env.call_method(&cursor, "close", "()V", &[]);
                 Ok(count)
             };
-            let result = run().map_err(|e| e.to_string());
-            if result.is_err() {
-                let _ = env.exception_clear();
-            }
+            let result = run().map_err(|e| describe_jni_error(env, e));
             let _ = tx.send(result);
         });
     });
@@ -539,8 +659,8 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
 #[tauri::command]
 pub(crate) fn android_import_contacts(app: tauri::AppHandle, vcf_paths: Vec<String>) -> Result<(), String> {
     let window = app.get_webview_window("main").ok_or("no main window")?;
-    window
-        .with_webview(move |pw| {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sent = window.with_webview(move |pw| {
             let jni = pw.jni_handle();
             jni.exec(move |env, activity, _webview| {
                 let mut run = || -> Result<(), jni::errors::Error> {
@@ -608,12 +728,14 @@ pub(crate) fn android_import_contacts(app: tauri::AppHandle, vcf_paths: Vec<Stri
                     }
                     Ok(())
                 };
-                if run().is_err() {
-                    let _ = env.exception_clear();
-                }
+                let result = run().map_err(|e| describe_jni_error(env, e));
+                let _ = tx.send(result);
             });
-        })
-        .str_err()
+    });
+    if sent.is_err() {
+        return Err("failed to reach the webview".into());
+    }
+    rx.recv_timeout(std::time::Duration::from_secs(10)).map_err(|_| "timed out".to_string())?
 }
 
 /// Downloads an APK (a GitHub release asset URL, see `checkForUpdate` on
@@ -699,10 +821,7 @@ pub(crate) fn android_download_and_install_apk(app: tauri::AppHandle, url: Strin
             // looked to the user exactly like nothing happening at all when
             // they tapped "Update". Piping the real result back through a
             // channel is what android_export_contacts already does.
-            let result = run().map_err(|e| e.to_string());
-            if result.is_err() {
-                let _ = env.exception_clear();
-            }
+            let result = run().map_err(|e| describe_jni_error(env, e));
             let _ = tx.send(result);
         });
     });

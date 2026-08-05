@@ -390,8 +390,21 @@ export function SettingsScreen({
   async function installUpdate() {
     if (!updateCheck?.apkUrl) return;
     setUpdateBusy(true);
-    setUpdateMsg("Downloading update…");
+    setUpdateMsg("");
     try {
+      // Without "install unknown apps" enabled for this app, starting the
+      // install intent previously just... did nothing visible -- no
+      // exception, no prompt, the button looked broken. Same two-step
+      // dance as "All files access": check, and if missing, open the
+      // dedicated settings screen instead of trying (and silently
+      // failing) anyway.
+      const canInstall = await api.androidCanInstallPackages();
+      if (!canInstall) {
+        await api.androidRequestInstallPackagesAccess();
+        setUpdateMsg('Enable "Allow from this source" for Vault Explorer (just opened in Settings), then tap Update again.');
+        return;
+      }
+      setUpdateMsg("Downloading update…");
       await api.androidDownloadAndInstallApk(updateCheck.apkUrl);
       setUpdateMsg("Confirm the install prompt to finish.");
     } catch (e) {

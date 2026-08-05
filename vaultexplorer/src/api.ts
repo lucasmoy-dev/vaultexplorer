@@ -88,6 +88,8 @@ export const api = {
   androidExportContacts: (destDir: string) => invoke<number>("android_export_contacts", { destDir }),
   androidImportContacts: (vcfPaths: string[]) => invoke<void>("android_import_contacts", { vcfPaths }),
   androidDownloadAndInstallApk: (url: string) => invoke<void>("android_download_and_install_apk", { url }),
+  androidCanInstallPackages: () => invoke<boolean>("android_can_install_packages"),
+  androidRequestInstallPackagesAccess: () => invoke<void>("android_request_install_packages_access"),
   searchYoutube: (query: string, filters: YoutubeSearchFilters) =>
     invoke<YoutubeResult[]>("search_youtube", {
       query,
