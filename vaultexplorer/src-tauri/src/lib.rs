@@ -1299,7 +1299,7 @@ fn start_background_loops(handle: tauri::AppHandle) {
         // this, a pair only actually kept syncing until the app was next
         // closed, since nothing else ever calls the start_loops again.
         let local_sync_state = handle.state::<local_sync::LocalSyncState>();
-        for pair in local_sync::list_pairs() {
+        for pair in local_sync::list_pairs_pruning_missing() {
             local_sync::start_loop(&local_sync_state, pair.folder_a, pair.folder_b);
         }
         let drive_sync_state = handle.state::<sync::DriveSyncState>();

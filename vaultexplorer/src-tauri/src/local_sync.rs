@@ -61,6 +61,25 @@ pub fn list_pairs() -> Vec<LocalSyncPair> {
         .unwrap_or_default()
 }
 
+/// Deleting either side of a pair outside `local_sync_remove` (the normal
+/// file-manager delete/trash flow has no idea a folder is one half of a
+/// sync pair) used to leave that pair in `local_sync_pairs.json` forever
+/// -- every app start restarted its loop, which then failed the same
+/// "folder doesn't exist" `sync_once` every safety-net interval,
+/// indefinitely, with no UI path left to remove it (the sheet that manages
+/// a pair is reached by right-clicking the folder, which is gone). Called
+/// once at startup instead of `list_pairs()` so a pair missing either side
+/// is dropped for good rather than resurrected on every launch.
+pub fn list_pairs_pruning_missing() -> Vec<LocalSyncPair> {
+    let pairs = list_pairs();
+    let (kept, dropped): (Vec<_>, Vec<_>) =
+        pairs.into_iter().partition(|p| Path::new(&p.folder_a).exists() && Path::new(&p.folder_b).exists());
+    if !dropped.is_empty() {
+        let _ = save_pairs(&kept);
+    }
+    kept
+}
+
 pub fn save_pairs(pairs: &[LocalSyncPair]) -> Result<(), String> {
     fs::create_dir_all(config_dir()).str_err()?;
     let json = serde_json::to_string_pretty(pairs).str_err()?;
@@ -105,9 +124,22 @@ pub fn sync_once(a: &str, b: &str) -> Result<Vec<String>, String> {
     Err(if stderr.trim().is_empty() { stdout.trim().to_string() } else { stderr.trim().to_string() })
 }
 
+/// `stop` is set from outside (`stop_loop`, a real user-requested "stop
+/// syncing"); `alive` is cleared by the loop itself when it self-
+/// terminates (a folder it's syncing no longer exists) -- distinct flags
+/// because `start_loop`'s "already running, don't spawn a second thread"
+/// check needs to tell those two apart. A dead-but-still-in-the-map entry
+/// must NOT block a fresh loop from starting if the same pair gets added
+/// again later.
+#[derive(Default)]
+struct LoopHandle {
+    stop: AtomicBool,
+    alive: AtomicBool,
+}
+
 #[derive(Default)]
 pub struct LocalSyncState {
-    active: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    active: Mutex<HashMap<String, Arc<LoopHandle>>>,
     /// Which pairs are mid-`sync_once` *right now* -- lets the frontend
     /// show a real "syncing…" indicator for this unattended background
     /// loop instead of a permanently-static one. An `Arc` of its own
@@ -127,11 +159,11 @@ fn pair_key(a: &str, b: &str) -> String {
 pub fn start_loop(state: &LocalSyncState, a: String, b: String) {
     let key = pair_key(&a, &b);
     let mut active = state.active.lock_safe();
-    if active.contains_key(&key) {
+    if active.get(&key).is_some_and(|h| h.alive.load(Ordering::Relaxed)) {
         return;
     }
-    let stop = Arc::new(AtomicBool::new(false));
-    active.insert(key.clone(), stop.clone());
+    let handle = Arc::new(LoopHandle { stop: AtomicBool::new(false), alive: AtomicBool::new(true) });
+    active.insert(key.clone(), handle.clone());
     drop(active);
     let syncing = state.syncing.clone();
 
@@ -152,30 +184,46 @@ pub fn start_loop(state: &LocalSyncState, a: String, b: String) {
             std::mem::forget(debouncer);
         }
         loop {
-            if stop.load(Ordering::Relaxed) {
+            if handle.stop.load(Ordering::Relaxed) {
                 break;
             }
             // Either a real filesystem-change event arrives (near-
             // instant), or this safety-net timeout elapses first.
             let _ = rx.recv_timeout(SAFETY_NET_INTERVAL);
-            if stop.load(Ordering::Relaxed) {
+            if handle.stop.load(Ordering::Relaxed) {
+                break;
+            }
+            // Deleting either folder outside `local_sync_remove` (the
+            // normal file-manager delete has no idea it's one half of a
+            // sync pair) used to leave this loop retrying a doomed
+            // `sync_once` every SAFETY_NET_INTERVAL forever, with no UI
+            // path left to stop it (the sheet that manages a pair is
+            // reached by right-clicking the folder, which is gone).
+            // Self-terminating and pruning the persisted pair is what
+            // actually recovers from that instead of just failing quietly
+            // and endlessly.
+            if !Path::new(&a).exists() || !Path::new(&b).exists() {
+                let mut pairs = list_pairs();
+                pairs.retain(|p| !(p.folder_a == a && p.folder_b == b));
+                let _ = save_pairs(&pairs);
                 break;
             }
             syncing.lock_safe().insert(key.clone());
             let _ = sync_once(&a, &b);
             syncing.lock_safe().remove(&key);
         }
+        handle.alive.store(false, Ordering::Relaxed);
     });
 }
 
 pub fn stop_loop(state: &LocalSyncState, a: &str, b: &str) {
-    if let Some(stop) = state.active.lock_safe().remove(&pair_key(a, b)) {
-        stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = state.active.lock_safe().remove(&pair_key(a, b)) {
+        handle.stop.store(true, Ordering::Relaxed);
     }
 }
 
 pub fn is_active(state: &LocalSyncState, a: &str, b: &str) -> bool {
-    state.active.lock_safe().contains_key(&pair_key(a, b))
+    state.active.lock_safe().get(&pair_key(a, b)).is_some_and(|h| h.alive.load(Ordering::Relaxed))
 }
 
 /// Every path (either side of any pair, however the frontend happens to
