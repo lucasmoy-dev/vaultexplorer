@@ -3999,10 +3999,15 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ============================================================
    Library (see LibraryShelf.tsx) -- an experimental wooden-bookshelf
-   view for a folder of PDFs/ebooks. Books are 150px tall with a 26px row
-   gap (176px total); the shelf-board stripe below is timed to that exact
-   176px pitch so a board lands right under every wrapped row regardless
-   of window width. A first pass at the idea, not a finished look.
+   view for a real folder, modeled on the original iPhone Library app's
+   front-facing shelf: every kind of file gets its own physical stand-in
+   (book, framed photo, record sleeve, VHS tape, folder) rather than an
+   icon, all standing on the same shelf and wrapping onto the next board
+   down together -- nothing is split into a separate "other files" list.
+   Items are 150px tall (shorter ones just align to the same baseline)
+   with a 28px row gap (178px total); the shelf-board stripe is timed to
+   that exact pitch so a board lands under every wrapped row regardless
+   of window width.
    ============================================================ */
 .library-view {
   height: 100%;
@@ -4013,52 +4018,258 @@ input[type="range"]::-webkit-slider-thumb {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 26px 14px;
-  padding: 30px 24px 4px;
+  align-content: flex-start;
+  gap: 28px 10px;
+  padding: 12px 20px 6px;
   min-height: 100%;
   box-sizing: border-box;
+  /* Layers, back to front: fine horizontal wood-grain texture, a
+     repeating "cubby" gradient (soft shadow cast down from the board
+     above onto the back wall, then the board itself: a bright lit top
+     edge, a rounded mid-tone face, and a dark underside -- all blended,
+     not hard-edged bands, so the board reads as a rounded 3D lip instead
+     of a flat stripe), and the base warm-wood gradient. */
   background-image: repeating-linear-gradient(
       to bottom,
-      transparent 0px,
-      transparent 162px,
-      #4a2f18 162px,
-      #4a2f18 176px
+      rgba(255, 255, 255, 0.06) 0px,
+      rgba(255, 255, 255, 0.06) 1px,
+      transparent 1px,
+      transparent 4px
     ),
-    repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 0px, rgba(255, 255, 255, 0.035) 2px, transparent 2px, transparent 5px),
-    linear-gradient(180deg, #7a4f28, #5c3a1f);
-  background-repeat: repeat-y, repeat, no-repeat;
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.22) 0px,
+      rgba(0, 0, 0, 0) 16px,
+      rgba(0, 0, 0, 0) 148px,
+      #f6c581 150px,
+      #e0a24e 153px,
+      #c47a34 157px,
+      #96591f 163px,
+      #7a4419 169px,
+      #5c3312 174px,
+      #40230c 178px
+    ),
+    linear-gradient(180deg, #d98f45, #a8632c);
+  background-repeat: repeat, repeat-y, no-repeat;
 }
-.library-book {
-  height: 150px;
-  flex-shrink: 0;
-  border-radius: 3px 3px 1px 1px;
-  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.35), inset -4px 0 8px rgba(0, 0, 0, 0.25),
-    inset 3px 0 6px rgba(255, 255, 255, 0.1);
+
+/* ---- shared: every item stands on the shelf and casts its own contact
+   shadow onto the surface right under it -- the single biggest thing
+   that turns a flat cutout into something that reads as sitting there. */
+.shelf-item {
+  position: relative;
   display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: 10px;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
   cursor: pointer;
 }
-.library-book:hover {
-  filter: brightness(1.12);
+.shelf-item-shadow {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  width: 92%;
+  height: 11px;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.28) 45%, rgba(0, 0, 0, 0) 78%);
+  pointer-events: none;
 }
-.library-book-title {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 11px;
-  font-weight: 600;
-  max-height: 130px;
+.shelf-item-label {
+  margin-top: 4px;
+  max-width: 100%;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  letter-spacing: 0.02em;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
 }
-.library-others {
-  padding: 14px 24px;
-  border-top: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+
+/* ---- books/ebooks/PDFs: a bound stack, not a single sheet -- two
+   offset "pages" behind the cover give it real thickness. */
+.shelf-book {
+  position: relative;
+  width: 104px;
+  height: 150px;
+  filter: drop-shadow(3px 6px 5px rgba(0, 0, 0, 0.45));
+}
+.shelf-item:hover .shelf-book {
+  filter: drop-shadow(3px 6px 5px rgba(0, 0, 0, 0.45)) brightness(1.08);
+}
+.shelf-book-page {
+  position: absolute;
+  inset: 2px 0 2px 0;
+  border-radius: 1px 3px 3px 1px;
+}
+.shelf-book-page-2 {
+  background: #d8d0b8;
+  transform: translate(3px, -3px);
+}
+.shelf-book-page-1 {
+  background: #eee6d2;
+  transform: translate(1.5px, -1.5px);
+}
+.shelf-book-cover {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 1px 3px 3px 1px;
+  object-fit: cover;
+  /* A cover-bound edge: a touch darker along the left few px (the spine
+     side) than the rest of the face, plus a slim highlight down the very
+     left edge -- enough to read as "a book standing at a slight angle"
+     without needing real perspective/3D transforms. */
+  box-shadow: inset 3px 0 5px rgba(0, 0, 0, 0.3), inset 1px 0 0 rgba(255, 255, 255, 0.25),
+    0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.shelf-book-cover-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  box-sizing: border-box;
+}
+.shelf-book-title {
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* ---- photos: a framed picture, leaning slightly like it's propped up
+   against the wall rather than glued flat to it. */
+.shelf-frame {
+  width: 118px;
+  height: 138px;
+  box-sizing: border-box;
+  padding: 8px;
+  border-radius: 3px;
+  background: linear-gradient(135deg, #c9a066, #7a5a34);
+  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  transform: rotate(-2deg);
+}
+.shelf-frame-mat {
+  width: 100%;
+  height: 100%;
+  padding: 4px;
+  box-sizing: border-box;
+  background: #f2efe6;
+}
+.shelf-frame-photo {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+.shelf-frame-photo-placeholder {
+  background: #c7c2b4;
+}
+
+/* ---- video: a VHS tape lying face-out, its own thumbnail as the label
+   artwork, a dark "tape window" strip along the bottom. */
+.shelf-vhs {
+  position: relative;
+  width: 128px;
+  height: 82px;
+  box-sizing: border-box;
+  padding: 6px;
+  border-radius: 3px;
+  background: linear-gradient(160deg, #2a2a2a, #131313);
+  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+.shelf-vhs-label {
+  width: 100%;
+  height: 56%;
+  border-radius: 1px;
+  overflow: hidden;
+  background: #e8e5da;
+}
+.shelf-vhs-thumb {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+.shelf-vhs-window {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  height: 14px;
+  border-radius: 1px;
+  background: #050505;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+.shelf-vhs-window::before,
+.shelf-vhs-window::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: radial-gradient(circle at 35% 35%, #4a4a4a, #1a1a1a 70%);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+.shelf-vhs-window::before {
+  left: 10px;
+}
+.shelf-vhs-window::after {
+  right: 10px;
+}
+
+/* ---- audio: a record sleeve with the disc itself peeking out past the
+   bottom-right corner. */
+.shelf-vinyl {
+  position: relative;
+  width: 112px;
+  height: 112px;
+}
+.shelf-vinyl-sleeve {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  border-radius: 2px;
+  display: flex;
+  align-items: flex-end;
+  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+.shelf-vinyl-title {
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.shelf-vinyl-disc {
+  position: absolute;
+  right: -8px;
+  bottom: -6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #3a3a3a 0%, #161616 55%, #000 100%);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+/* ---- folders/anything else: the app's own real file icon, just given
+   the same shadow-and-baseline treatment as everything else here. */
+.shelf-folder,
+.shelf-generic {
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(2px 4px 3px rgba(0, 0, 0, 0.45));
 }
 .notes-others {
   display: flex;

@@ -95,7 +95,7 @@ export function symbolIconSvg(value: string): string | undefined {
 // round-cap/join). The colored file/folder TILE icons use the WhiteSur
 // macOS-Big-Sur theme imported above.
 
-type Kind =
+export type Kind =
   | "folder"
   | "generic"
   | "image"

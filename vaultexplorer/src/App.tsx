@@ -5415,6 +5415,8 @@ function Explorer({ home }: { home: string }) {
           ) : view === "library" ? (
             <LibraryShelf
               entries={entries}
+              curDir={curDir}
+              inVault={inVault}
               onOpen={(entry) => activate(curDir, entry)}
               onMenu={(e, entry) => entryMenu(e, entry)}
             />

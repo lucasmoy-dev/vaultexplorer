@@ -67,9 +67,10 @@ export function useThumbnail(
   elRef?: React.RefObject<HTMLElement | null>
 ): string | null {
   const kind = kindOf(entry);
-  // Video thumbnails are real-fs only -- ffmpeg needs a real path (see
-  // thumbnail.rs), so a video inside a vault just keeps the generic icon.
-  const thumbable = kind === "image" || (kind === "video" && !inVault);
+  // Video/PDF thumbnails are real-fs only -- ffmpeg/pdftoppm need a real
+  // path (see thumbnail.rs), so either kind inside a vault just keeps the
+  // generic icon.
+  const thumbable = kind === "image" || ((kind === "video" || kind === "pdf") && !inVault);
   const cacheKey = `${inVault ? "v" : "f"}|${fullPath}|${entry.mtime}|${maxSize}`;
   // Seed initial state straight from the cache so an already-resolved
   // thumbnail paints on first render with no flicker-to-null.

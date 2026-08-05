@@ -143,6 +143,54 @@ pub fn thumbnail_for_video(app: &tauri::AppHandle, path: &str, max_size: u32) ->
     Ok(to_data_uri(&jpeg))
 }
 
+/// Thumbnail for a real on-disk PDF: rasterizes just page 1 via
+/// `pdftoppm` (poppler-utils, same tool `convert::pdf_to_images` already
+/// shells out to for the real PDF-to-images feature) into a temp JPEG,
+/// then runs it through the same resize/cache pipeline as a real image --
+/// this is what gives the Library view (see LibraryShelf.tsx) a real
+/// cover instead of a plain color block, and every other view a proper
+/// page-1 icon for a PDF the same way Finder/GNOME Files already do.
+pub fn thumbnail_for_pdf(app: &tauri::AppHandle, path: &str, max_size: u32) -> Result<String, String> {
+    let metadata = std::fs::metadata(path).str_err()?;
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let dir = cache_dir(app);
+    std::fs::create_dir_all(&dir).str_err()?;
+    let cache_path = dir.join(cache_key(&format!("pdf:{path}"), mtime, max_size));
+    if let Ok(cached) = std::fs::read(&cache_path) {
+        return Ok(to_data_uri(&cached));
+    }
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PTHUMB_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = PTHUMB_SEQ.fetch_add(1, Ordering::Relaxed);
+    let prefix =
+        std::env::temp_dir().join(format!("vaultexplorer-pthumb-{}-{}", std::process::id(), seq));
+    let output = Command::new("pdftoppm")
+        .args(["-jpeg", "-f", "1", "-l", "1", "-r", "120", path, prefix.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .output()
+        .str_err()?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    // pdftoppm names its single-page output "<prefix>-1.jpg" (or, on older
+    // poppler versions, just "<prefix>.jpg" with no page suffix) --
+    // checking both rather than assuming one.
+    let candidate_a = PathBuf::from(format!("{}-1.jpg", prefix.to_str().unwrap()));
+    let candidate_b = PathBuf::from(format!("{}.jpg", prefix.to_str().unwrap()));
+    let frame_path = if candidate_a.exists() { candidate_a } else { candidate_b };
+    let bytes = std::fs::read(&frame_path).str_err()?;
+    let _ = std::fs::remove_file(&frame_path);
+    let jpeg = make_thumbnail(&bytes, max_size)?;
+    let _ = std::fs::write(&cache_path, &jpeg);
+    Ok(to_data_uri(&jpeg))
+}
+
 // ---- Tauri commands ----
 
 /// A small base64 JPEG data URI for a real image file, cached on disk by
@@ -160,6 +208,8 @@ pub async fn fs_thumbnail(app: tauri::AppHandle, path: String, max_size: u32) ->
             .to_lowercase();
         if matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v") {
             thumbnail_for_video(&app, &path, max_size)
+        } else if ext == "pdf" {
+            thumbnail_for_pdf(&app, &path, max_size)
         } else {
             thumbnail_for_path(&app, &path, max_size)
         }
