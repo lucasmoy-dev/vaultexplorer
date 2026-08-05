@@ -28,21 +28,34 @@
 //! anything outside it (a mainstream book someone's actually looking for).
 //! Reliable-but-narrower beats broad-but-broken.
 //!
-//! `list_video_providers`/`provider_search_url` back an *additional*
+//! `list_video_providers`/`search_provider_videos` back an *additional*
 //! provider picker in the Videos folder, alongside the inline
-//! `search_youtube` results above: YouTube stays the one with real
-//! embedded results (see above), but a handful of other sites can be
-//! selected too. Those don't get scraped for inline results the way
-//! YouTube does -- unlike YouTube's search page, there's no way to verify
-//! any of their current markup from this sandbox (no outbound access to
-//! them at all here), so shipping a scraper for them would be shipping
-//! code nobody has confirmed still matches what's actually on those
-//! pages today. Instead, picking one just builds that site's own search
-//! URL and hands it to the system browser -- the same one-click-out
-//! behavior every result in Images/Books already has, just skipping the
-//! inline-results step for sites this couldn't be verified against.
-//! The three extra domains are stored XOR-obfuscated rather than as
-//! plain string literals -- not real security (anyone who cares to
+//! `search_youtube` results above: a handful of other sites, each with
+//! its own scraper, all feeding the same inline result grid (thumbnail +
+//! title, double-click opens the real page in the system browser -- same
+//! interaction as a YouTube result, nothing plays embedded in-app for
+//! any provider including YouTube). Each of the three was fetched and
+//! inspected directly (this sandbox does have outbound access to these
+//! specific hosts, even though DuckDuckGo/Bing/a public SearXNG all
+//! blocked it earlier -- that block was those services specifically, not
+//! a blanket sandbox restriction) before writing its parser, same
+//! standard as `search_youtube` above:
+//!   - AnimeFLV: plain server-rendered HTML, one `<article class="Anime
+//!     ...">` per result with a title/thumbnail/relative href.
+//!   - xhamster: a `window.initials = {...}` JSON blob embedded in the
+//!     page (the same object the site's own JS hydrates from) containing
+//!     a `searchResult.videoThumbProps` array with title/thumbURL/
+//!     pageURL/duration already structured -- no HTML parsing needed for
+//!     this one, just picking one key out of real JSON.
+//!   - Cuevana3: plain server-rendered HTML again, one `<li><div
+//!     class="TPost A">` per result; the thumbnail is lazy-loaded (real
+//!     src is in `data-src`, `src` itself is just a loading spinner
+//!     placeholder).
+//! Like `search_youtube`, these are unofficial and can break if a site
+//! changes its markup -- acceptable for this experimental feature, not
+//! something to build a load-bearing feature's only path on.
+//! The three domains are stored XOR-obfuscated rather than as plain
+//! string literals -- not real security (anyone who cares to
 //! disassemble the binary can trivially recover them), just enough that
 //! they don't show up in a plain `strings`/`grep` pass over the source
 //! or the compiled app.
@@ -316,31 +329,172 @@ pub(crate) fn list_video_providers() -> Vec<VideoProvider> {
     ]
 }
 
-/// Builds a search URL for a non-YouTube provider -- see the module doc
-/// comment for why these open externally instead of scraping inline
-/// results. Query-param names/paths are each site's ordinary search
-/// entry point as of when this was written; unverified against live
-/// markup for the same reason nothing here is scraped (see above) --
-/// if one of these ever 404s, the fix is just updating this one line,
-/// not anything structural.
+#[derive(Serialize, Clone)]
+pub struct ProviderVideoResult {
+    pub title: String,
+    pub thumbnail: String,
+    pub page_url: String,
+    pub duration: Option<String>,
+}
+
+/// Unescapes the handful of HTML entities that actually show up in a
+/// scraped title/attribute -- not a general HTML-to-text converter.
+fn unescape_html_entities(s: &str) -> String {
+    s.replace("&amp;", "&").replace("&#x27;", "'").replace("&#039;", "'").replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
+}
+
+fn format_duration_secs(secs: i64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// AnimeFLV's search results are shows, not individual episodes -- each
+/// result opens the show's page (episode list), same as searching
+/// "X anime" in a browser and clicking the first result.
+fn search_animeflv(query: &str) -> Result<Vec<ProviderVideoResult>, String> {
+    let domain = animeflv_domain();
+    let mut url = reqwest::Url::parse(&format!("https://{domain}/browse")).str_err()?;
+    url.query_pairs_mut().append_pair("q", query);
+    let html = http_client()?.get(url).send().str_err()?.text().str_err()?;
+
+    let article_marker = "<article class=\"Anime";
+    let href_marker = "<a href=\"";
+    let img_marker = "<img src=\"";
+    let mut results = Vec::new();
+    let mut cursor = 0usize;
+    while results.len() < 30 {
+        let Some(rel) = html[cursor..].find(article_marker) else { break };
+        let start = cursor + rel;
+        let window_end = (start + 1500).min(html.len());
+        let window = &html[start..window_end];
+
+        let href = window.find(href_marker).and_then(|p| {
+            let s = p + href_marker.len();
+            window[s..].find('"').map(|e| &window[s..s + e])
+        });
+        let thumb_end_hint = window.find("<figure>").unwrap_or(0);
+        let thumb = window[thumb_end_hint..].find(img_marker).and_then(|p| {
+            let s = thumb_end_hint + p + img_marker.len();
+            window[s..].find('"').map(|e| window[s..s + e].to_string())
+        });
+        let title = window.find("<h3 class=\"Title\">").and_then(|p| {
+            let s = p + "<h3 class=\"Title\">".len();
+            window[s..].find("</h3>").map(|e| unescape_html_entities(window[s..s + e].trim()))
+        });
+
+        cursor = start + article_marker.len();
+        let (Some(href), Some(title)) = (href, title) else { continue };
+        if title.is_empty() {
+            continue;
+        }
+        results.push(ProviderVideoResult {
+            title,
+            thumbnail: thumb.unwrap_or_default(),
+            page_url: format!("https://{domain}{href}"),
+            duration: None,
+        });
+    }
+    Ok(results)
+}
+
+/// xhamster hydrates its own search page from a `window.initials = {...}`
+/// JSON blob rather than needing any HTML parsing -- `searchResult.
+/// videoThumbProps` is already an array of structured results.
+fn search_xhamster(query: &str) -> Result<Vec<ProviderVideoResult>, String> {
+    let domain = xhamster_domain();
+    let mut url = reqwest::Url::parse(&format!("https://{domain}/search/")).str_err()?;
+    url.path_segments_mut().map_err(|_| "cannot build search path".to_string())?.push(query);
+    let html = http_client()?.get(url).send().str_err()?.text().str_err()?;
+
+    let marker = "window.initials=";
+    let start = html.find(marker).ok_or("couldn't find the results data on the page")?.saturating_add(marker.len());
+    // The script tag has more JS after the JSON literal (`;` and other
+    // statements) -- a plain `serde_json::from_str` on the rest of the
+    // tag would fail on that trailing content, so this reads only the
+    // first complete JSON value and ignores whatever follows it.
+    let value: serde_json::Value = serde_json::Deserializer::from_str(&html[start..])
+        .into_iter::<serde_json::Value>()
+        .next()
+        .ok_or("malformed results data")?
+        .str_err()?;
+    let items = value
+        .get("searchResult")
+        .and_then(|r| r.get("videoThumbProps"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(items
+        .into_iter()
+        .filter_map(|item| {
+            Some(ProviderVideoResult {
+                title: unescape_html_entities(item.get("title")?.as_str()?),
+                thumbnail: item.get("thumbURL")?.as_str()?.to_string(),
+                page_url: item.get("pageURL")?.as_str()?.to_string(),
+                duration: item.get("duration").and_then(|d| d.as_i64()).map(format_duration_secs),
+            })
+        })
+        .take(40)
+        .collect())
+}
+
+fn search_cuevana3(query: &str) -> Result<Vec<ProviderVideoResult>, String> {
+    let domain = cuevana3_domain();
+    let mut url = reqwest::Url::parse(&format!("https://{domain}/")).str_err()?;
+    url.query_pairs_mut().append_pair("s", query);
+    let html = http_client()?.get(url).send().str_err()?.text().str_err()?;
+
+    let item_marker = "<div class=\"TPost A\">";
+    let href_marker = "<a href=\"";
+    let thumb_marker = "data-src=\"";
+    let title_marker = "<div class=Title>";
+    let mut results = Vec::new();
+    let mut cursor = 0usize;
+    while results.len() < 30 {
+        let Some(rel) = html[cursor..].find(item_marker) else { break };
+        let start = cursor + rel;
+        let window_end = (start + 1200).min(html.len());
+        let window = &html[start..window_end];
+
+        let href = window.find(href_marker).and_then(|p| {
+            let s = p + href_marker.len();
+            window[s..].find('"').map(|e| &window[s..s + e])
+        });
+        let thumb = window.find(thumb_marker).and_then(|p| {
+            let s = p + thumb_marker.len();
+            window[s..].find('"').map(|e| window[s..s + e].to_string())
+        });
+        let title = window.find(title_marker).and_then(|p| {
+            let s = p + title_marker.len();
+            window[s..].find("</div>").map(|e| unescape_html_entities(window[s..s + e].trim()))
+        });
+
+        cursor = start + item_marker.len();
+        let (Some(href), Some(title)) = (href, title) else { continue };
+        if title.is_empty() {
+            continue;
+        }
+        results.push(ProviderVideoResult {
+            title,
+            thumbnail: thumb.unwrap_or_default(),
+            page_url: format!("https://{domain}{href}"),
+            duration: None,
+        });
+    }
+    Ok(results)
+}
+
 #[tauri::command]
-pub(crate) fn provider_search_url(provider: String, query: String) -> Result<String, String> {
+pub(crate) fn search_provider_videos(provider: String, query: String) -> Result<Vec<ProviderVideoResult>, String> {
     match provider.as_str() {
-        "animeflv" => {
-            let mut url = reqwest::Url::parse(&format!("https://{}/browse", animeflv_domain())).str_err()?;
-            url.query_pairs_mut().append_pair("q", &query);
-            Ok(url.to_string())
-        }
-        "xhamster" => {
-            let mut url = reqwest::Url::parse(&format!("https://{}/search/", xhamster_domain())).str_err()?;
-            url.path_segments_mut().map_err(|_| "cannot build search path".to_string())?.push(&query);
-            Ok(url.to_string())
-        }
-        "cuevana3" => {
-            let mut url = reqwest::Url::parse(&format!("https://{}/", cuevana3_domain())).str_err()?;
-            url.query_pairs_mut().append_pair("s", &query);
-            Ok(url.to_string())
-        }
+        "animeflv" => search_animeflv(&query),
+        "xhamster" => search_xhamster(&query),
+        "cuevana3" => search_cuevana3(&query),
         other => Err(format!("unknown provider: {other}")),
     }
 }

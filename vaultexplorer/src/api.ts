@@ -141,7 +141,8 @@ export const api = {
   searchImages: (query: string) => invoke<ImageResult[]>("search_images", { query }),
   searchBooks: (query: string) => invoke<BookResult[]>("search_books", { query }),
   listVideoProviders: () => invoke<VideoProvider[]>("list_video_providers"),
-  providerSearchUrl: (provider: string, query: string) => invoke<string>("provider_search_url", { provider, query }),
+  searchProviderVideos: (provider: string, query: string) =>
+    invoke<ProviderVideoResult[]>("search_provider_videos", { provider, query }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>
@@ -517,6 +518,13 @@ export interface BookResult {
 export interface VideoProvider {
   id: string;
   label: string;
+}
+
+export interface ProviderVideoResult {
+  title: string;
+  thumbnail: string;
+  page_url: string;
+  duration: string | null;
 }
 
 export interface Drive {

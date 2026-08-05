@@ -1644,7 +1644,7 @@ pub fn run() {
             webfind::search_images,
             webfind::search_books,
             webfind::list_video_providers,
-            webfind::provider_search_url,
+            webfind::search_provider_videos,
             #[cfg(desktop)]
             terminal::open_terminal,
             #[cfg(desktop)]

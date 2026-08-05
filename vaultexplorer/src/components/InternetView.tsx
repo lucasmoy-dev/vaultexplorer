@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { api, osOpen, YoutubeResult, ImageResult, BookResult, YoutubeSearchFilters, VideoProvider } from "../api";
+import {
+  api,
+  osOpen,
+  YoutubeResult,
+  ImageResult,
+  BookResult,
+  YoutubeSearchFilters,
+  VideoProvider,
+  ProviderVideoResult,
+} from "../api";
 import { ChevronLeft, SearchGlyph, SaveGlyph, FileIcon } from "../icons";
 import folderVideosIcon from "../assets/foldericons/folder-videos.svg";
 import folderImagesIcon from "../assets/foldericons/folder-images.svg";
@@ -40,13 +49,14 @@ export function InternetView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [videos, setVideos] = useState<YoutubeResult[]>([]);
+  const [providerVideos, setProviderVideos] = useState<ProviderVideoResult[]>([]);
   const [images, setImages] = useState<ImageResult[]>([]);
   const [books, setBooks] = useState<BookResult[]>([]);
   const [searched, setSearched] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
-  // Only YouTube gets inline results (see webfind.rs's module doc comment
-  // for why the others don't); picking one of them just opens that site's
-  // own search in the system browser instead.
+  // Every provider gets inline results (see webfind.rs's module doc
+  // comment for how each one is scraped) -- double-clicking a result
+  // opens its real page in the system browser, same as a YouTube result.
   const [videoProviders, setVideoProviders] = useState<VideoProvider[]>([{ id: "youtube", label: "YouTube" }]);
   const [provider, setProvider] = useState("youtube");
   useEffect(() => {
@@ -60,22 +70,13 @@ export function InternetView({
 
   async function runSearch(q: string, f: YoutubeSearchFilters, m: Mode) {
     if (!q.trim()) return;
-    if (m === "videos" && provider !== "youtube") {
-      setError("");
-      try {
-        const url = await api.providerSearchUrl(provider, q);
-        await osOpen(url);
-      } catch (e) {
-        setError(String(e));
-      }
-      return;
-    }
     setLoading(true);
     setError("");
     setSearched(true);
     setSelectedKey(null);
     try {
-      if (m === "videos") setVideos(await api.searchYoutube(q, f));
+      if (m === "videos" && provider !== "youtube") setProviderVideos(await api.searchProviderVideos(provider, q));
+      else if (m === "videos") setVideos(await api.searchYoutube(q, f));
       else if (m === "images") setImages(await api.searchImages(q));
       else if (m === "books") setBooks(await api.searchBooks(q));
     } catch (e) {
@@ -186,7 +187,7 @@ export function InternetView({
           />
         </div>
         <button className="tool-btn wide-btn" onClick={() => runSearch(query, filters, mode)} disabled={loading}>
-          {mode === "videos" && provider !== "youtube" ? "Open" : "Search"}
+          Search
         </button>
         <button
           className="tool-btn"
@@ -252,16 +253,18 @@ export function InternetView({
       )}
       {error && <p className="error">{error}</p>}
       {loading && <div className="column-empty">Searching…</div>}
-      {!loading && searched && mode === "videos" && videos.length === 0 && !error && (
-        <div className="column-empty">No results.</div>
-      )}
+      {!loading &&
+        searched &&
+        mode === "videos" &&
+        (provider === "youtube" ? videos.length === 0 : providerVideos.length === 0) &&
+        !error && <div className="column-empty">No results.</div>}
       {!loading && searched && mode === "images" && images.length === 0 && !error && (
         <div className="column-empty">No results.</div>
       )}
       {!loading && searched && mode === "books" && books.length === 0 && !error && (
         <div className="column-empty">No results.</div>
       )}
-      {mode === "videos" && videos.length > 0 && (
+      {mode === "videos" && provider === "youtube" && videos.length > 0 && (
         <div className="entries icon internet-results">
           {videos.map((v) => (
             <div
@@ -279,6 +282,29 @@ export function InternetView({
                 {v.title}
                 {v.published && <span className="internet-published">{v.published}</span>}
               </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {mode === "videos" && provider !== "youtube" && providerVideos.length > 0 && (
+        <div className="entries icon internet-results">
+          {providerVideos.map((v, i) => (
+            <div
+              key={i}
+              className={`entry icon ${selectedKey === `p${i}` ? "selected" : ""}`}
+              title={v.title}
+              onClick={() => setSelectedKey(`p${i}`)}
+              onDoubleClick={() => osOpen(v.page_url).catch(() => {})}
+            >
+              <span className="entry-icon">
+                {v.thumbnail ? (
+                  <img className="internet-thumb" src={v.thumbnail} draggable={false} />
+                ) : (
+                  <FileIcon entry={{ name: "video.mp4", is_dir: false, size: 0, mtime: 0 }} />
+                )}
+                {v.duration && <span className="internet-badge">{v.duration}</span>}
+              </span>
+              <span className="entry-name">{v.title}</span>
             </div>
           ))}
         </div>
