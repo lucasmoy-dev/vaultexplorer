@@ -4001,13 +4001,15 @@ input[type="range"]::-webkit-slider-thumb {
    Library (see LibraryShelf.tsx) -- an experimental wooden-bookshelf
    view for a real folder, modeled on the original iPhone Library app's
    front-facing shelf: every kind of file gets its own physical stand-in
-   (book, framed photo, record sleeve, VHS tape, folder) rather than an
-   icon, all standing on the same shelf and wrapping onto the next board
-   down together -- nothing is split into a separate "other files" list.
-   Items are 150px tall (shorter ones just align to the same baseline)
-   with a 28px row gap (178px total); the shelf-board stripe is timed to
-   that exact pitch so a board lands under every wrapped row regardless
-   of window width.
+   (book, framed photo, record sleeve, VHS tape, folder, document) rather
+   than a file-manager icon, all standing on the same shelf and wrapping
+   onto the next board down together -- nothing is split into a separate
+   "other files" list. Every item's slot is a fixed 150px tall (a short
+   cassette and a tall book both stand on the same floor, see
+   ROW_HEIGHT/.shelf-item in LibraryShelf.tsx) with a 28px row gap (178px
+   pitch) -- the shelf boards are real DOM elements positioned at that
+   exact pitch by JS, not a background-image trick, so each one can carry
+   a real drop shadow.
    ============================================================ */
 .library-view {
   height: 100%;
@@ -4015,20 +4017,16 @@ input[type="range"]::-webkit-slider-thumb {
   box-sizing: border-box;
 }
 .library-shelf {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
   align-content: flex-start;
   gap: 28px 10px;
   padding: 12px 20px 6px;
   min-height: 100%;
   box-sizing: border-box;
-  /* Layers, back to front: fine horizontal wood-grain texture, a
-     repeating "cubby" gradient (soft shadow cast down from the board
-     above onto the back wall, then the board itself: a bright lit top
-     edge, a rounded mid-tone face, and a dark underside -- all blended,
-     not hard-edged bands, so the board reads as a rounded 3D lip instead
-     of a flat stripe), and the base warm-wood gradient. */
+  /* Fine horizontal wood-grain texture over the base warm-wood gradient
+     -- the back wall of the bookcase, behind the real board elements. */
   background-image: repeating-linear-gradient(
       to bottom,
       rgba(255, 255, 255, 0.06) 0px,
@@ -4036,31 +4034,67 @@ input[type="range"]::-webkit-slider-thumb {
       transparent 1px,
       transparent 4px
     ),
-    repeating-linear-gradient(
-      to bottom,
-      rgba(0, 0, 0, 0.22) 0px,
-      rgba(0, 0, 0, 0) 16px,
-      rgba(0, 0, 0, 0) 148px,
-      #f6c581 150px,
-      #e0a24e 153px,
-      #c47a34 157px,
-      #96591f 163px,
-      #7a4419 169px,
-      #5c3312 174px,
-      #40230c 178px
-    ),
-    linear-gradient(180deg, #d98f45, #a8632c);
-  background-repeat: repeat, repeat-y, no-repeat;
+    linear-gradient(180deg, #d9924a, #a8632c);
+  background-repeat: repeat, no-repeat;
 }
 
-/* ---- shared: every item stands on the shelf and casts its own contact
-   shadow onto the surface right under it -- the single biggest thing
-   that turns a flat cutout into something that reads as sitting there. */
+/* ---- real shelf boards (see ShelfBoards in LibraryShelf.tsx): a hard
+   bright specular lip, a rounded face falling into shadow, a blurred
+   drop shadow cast onto whatever sits below, and a soft cast-shadow
+   bleeding into the top of the next cubby -- the blur is the part a
+   repeating CSS background can't fake, and is what actually sells the
+   board as occupying real depth rather than being a striped backdrop. */
+.shelf-boards {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.shelf-board {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 40px;
+}
+.shelf-board-lip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 6px;
+  background: linear-gradient(180deg, #ffdca6, #dd9c48);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.shelf-board-face {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 22px;
+  background: linear-gradient(180deg, #c47a34 0%, #96591f 35%, #6e3c17 70%, #3c2109 100%);
+  box-shadow: 0 6px 9px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.shelf-board-shade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 28px;
+  height: 12px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0));
+}
+
+/* ---- shared: every item stands on a fixed-height shelf slot (see
+   ROW_HEIGHT in LibraryShelf.tsx) and casts its own contact shadow onto
+   the surface right under it -- the single biggest thing that turns a
+   flat cutout into something that reads as sitting there. */
 .shelf-item {
   position: relative;
+  z-index: 1;
+  height: 150px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: flex-end;
   flex-shrink: 0;
   cursor: pointer;
 }
@@ -4073,16 +4107,6 @@ input[type="range"]::-webkit-slider-thumb {
   transform: translateX(-50%);
   background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.28) 45%, rgba(0, 0, 0, 0) 78%);
   pointer-events: none;
-}
-.shelf-item-label {
-  margin-top: 4px;
-  max-width: 100%;
-  font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.88);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ---- books/ebooks/PDFs: a bound stack, not a single sheet -- two
@@ -4189,12 +4213,29 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 1px;
   overflow: hidden;
   background: #e8e5da;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  box-sizing: border-box;
 }
 .shelf-vhs-thumb {
   width: 100%;
   height: 100%;
   display: block;
   object-fit: cover;
+}
+.shelf-vhs-title {
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 .shelf-vhs-window {
   position: absolute;
@@ -4260,16 +4301,100 @@ input[type="range"]::-webkit-slider-thumb {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
 }
 
-/* ---- folders/anything else: the app's own real file icon, just given
-   the same shadow-and-baseline treatment as everything else here. */
-.shelf-folder,
-.shelf-generic {
-  width: 72px;
-  height: 72px;
+/* ---- folders: a real manila-folder silhouette (a back tab peeking
+   above a front flap) instead of the app's flat folder glyph -- the
+   folder's own name is written on the flap like a label, not captioned
+   underneath. */
+.shelf-folder {
+  position: relative;
+  width: 100px;
+  height: 78px;
+  filter: drop-shadow(2px 5px 4px rgba(0, 0, 0, 0.45));
+}
+.shelf-folder-back {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  right: 8px;
+  height: 16px;
+  border-radius: 4px 8px 0 0;
+}
+.shelf-folder-front {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 2px 5px 5px 5px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), inset 0 -10px 14px rgba(0, 0, 0, 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
-  filter: drop-shadow(2px 4px 3px rgba(0, 0, 0, 0.45));
+  padding: 6px 8px;
+  box-sizing: border-box;
+}
+.shelf-folder-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(0, 0, 0, 0.62);
+  text-align: center;
+  line-height: 1.25;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+/* ---- everything else: a plain standing document card -- a folded
+   top-right corner, an extension badge, the filename printed on the
+   face -- instead of a generic file-type icon. */
+.shelf-doc {
+  position: relative;
+  width: 82px;
+  height: 104px;
+  box-sizing: border-box;
+  padding: 10px 7px 8px;
+  background: linear-gradient(160deg, #fbfaf4, #e7e3d6);
+  clip-path: polygon(0 0, 78% 0, 100% 20%, 100% 100%, 0 100%);
+  filter: drop-shadow(2px 5px 4px rgba(0, 0, 0, 0.4));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.shelf-doc::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 22%;
+  height: 20%;
+  background: linear-gradient(135deg, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.22));
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+.shelf-doc-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: #3a3730;
+  text-align: center;
+  line-height: 1.25;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+.shelf-doc-ext {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.94);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
 }
 .notes-others {
   display: flex;
