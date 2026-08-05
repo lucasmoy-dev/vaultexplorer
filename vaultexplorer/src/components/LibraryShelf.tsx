@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Entry, joinPath } from "../api";
 import { kindOf, Kind } from "../icons";
 import { useThumbnail } from "../hooks/useThumbnail";
@@ -35,17 +35,32 @@ function extOf(name: string): string {
   return dot > 0 ? name.slice(dot + 1).toUpperCase() : "FILE";
 }
 
+// A real photo (jpg) gets framed like a print; anything else browsers
+// treat as an "image" (png, gif, webp, svg...) is usually a screenshot,
+// graphic, or flyer rather than a photograph, so it stands unframed --
+// a plain printed sheet, not a photo someone put in a frame.
+function isPhotographic(entry: Entry): boolean {
+  const dot = entry.name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  const ext = entry.name.slice(dot + 1).toLowerCase();
+  return ext === "jpg" || ext === "jpeg";
+}
+
 // Every real shelf item shares this: a fixed-height slot (so every row
 // lands on the same shelf pitch no matter what mix of object heights it
 // holds -- a short cassette and a tall book both stand on the same
 // floor), with its own object bottom-aligned inside, plus a contact
 // shadow right at its base -- the biggest single thing that turns a
-// flat cutout into something that reads as sitting there.
+// flat cutout into something that reads as sitting there. The shadow is
+// rendered *before* the object in the DOM (paints first, i.e. behind
+// it) -- with it after, anything that intentionally overhangs the
+// slot's bottom edge (the vinyl disc, a VHS's own drop shadow) painted
+// under the contact shadow instead of over it, breaking the illusion.
 function ShelfItem({ title, children, width }: { title: string; children: React.ReactNode; width: number }) {
   return (
     <div className="shelf-item" style={{ width }} title={title}>
-      {children}
       <div className="shelf-item-shadow" />
+      {children}
     </div>
   );
 }
@@ -55,7 +70,7 @@ function BookItem({ entry, fullPath, inVault }: { entry: Entry; fullPath: string
   const thumb = useThumbnail(entry, fullPath, inVault, 260, ref);
   const title = displayEntryName(entry, false).replace(/\.\w+$/, "");
   return (
-    <ShelfItem title={entry.name} width={104}>
+    <ShelfItem title={entry.name} width={108}>
       <div ref={ref} className="shelf-book">
         {/* A couple of thin offset "pages" peeking out from behind the
             cover -- what turns a single flat sheet into a bound stack. */}
@@ -76,8 +91,22 @@ function BookItem({ entry, fullPath, inVault }: { entry: Entry; fullPath: string
 function PhotoItem({ entry, fullPath, inVault }: { entry: Entry; fullPath: string; inVault: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const thumb = useThumbnail(entry, fullPath, inVault, 220, ref);
+  if (!isPhotographic(entry)) {
+    // A flyer/graphic: a plain printed sheet standing straight, no frame.
+    return (
+      <ShelfItem title={entry.name} width={108}>
+        <div ref={ref} className="shelf-flyer">
+          {thumb ? (
+            <img className="shelf-flyer-image" src={thumb} draggable={false} alt="" />
+          ) : (
+            <div className="shelf-flyer-image shelf-flyer-placeholder" />
+          )}
+        </div>
+      </ShelfItem>
+    );
+  }
   return (
-    <ShelfItem title={entry.name} width={118}>
+    <ShelfItem title={entry.name} width={108}>
       <div ref={ref} className="shelf-frame">
         <div className="shelf-frame-mat">
           {thumb ? (
@@ -120,15 +149,17 @@ function AudioItem({ entry }: { entry: Entry }) {
   );
 }
 
-// A real manila-folder silhouette (back tab peeking above a front flap)
-// with the folder's own name printed on it like a written label --
-// deliberately not the app's flat conventional folder icon, which reads
-// as a file-manager glyph rather than a physical object standing here.
+// A real manila-folder silhouette standing on its side, like a hanging
+// folder between books, rather than lying flat -- the tab pokes out on
+// the side, and the name (horizontal, not rotated with the shape) reads
+// like a written label. Deliberately not the app's flat conventional
+// folder icon, which reads as a file-manager glyph rather than a
+// physical object standing here.
 function FolderItem({ entry }: { entry: Entry }) {
   return (
-    <ShelfItem title={entry.name} width={100}>
+    <ShelfItem title={entry.name} width={108}>
       <div className="shelf-folder">
-        <div className="shelf-folder-back" style={{ background: folderGradient(entry.name) }} />
+        <div className="shelf-folder-tab" style={{ background: folderGradient(entry.name) }} />
         <div className="shelf-folder-front" style={{ background: folderGradient(entry.name) }}>
           <span className="shelf-folder-label">{entry.name}</span>
         </div>
@@ -144,7 +175,7 @@ function FolderItem({ entry }: { entry: Entry }) {
 function GenericItem({ entry }: { entry: Entry }) {
   const ext = extOf(entry.name);
   return (
-    <ShelfItem title={entry.name} width={82}>
+    <ShelfItem title={entry.name} width={108}>
       <div className="shelf-doc">
         <span className="shelf-doc-name">{displayEntryName(entry, false)}</span>
         <span className="shelf-doc-ext" style={{ background: coverGradient(entry.name) }}>
@@ -156,17 +187,16 @@ function GenericItem({ entry }: { entry: Entry }) {
 }
 
 // Real DOM shelf boards instead of a background-image trick: each board
-// is its own element with a lit top lip (a hard specular highlight, the
-// kind of thing a repeating CSS gradient band can't fake), a rounded
-// face falling into shadow, a drop shadow blurring onto whatever sits
-// below it, and a soft cast-shadow bleeding into the top of the next
-// cubby. Rendering real elements (rather than timing a repeating
-// background to a fixed row pitch) is what makes the shelf read as
-// occupying actual depth instead of a flat striped backdrop.
+// is its own element with a dark contact-shade where items rest, a hard
+// bright specular lip right below it (the actual front edge, catching
+// the light), a wood-textured face falling into shadow, and a real drop
+// shadow blurring onto whatever sits below it -- the blur is the part a
+// repeating CSS background can't fake, and is what actually sells the
+// board as occupying real depth rather than being a striped backdrop.
 const ROW_HEIGHT = 150;
-const ROW_GAP = 28;
+const ROW_GAP = 34;
 const ROW_PITCH = ROW_HEIGHT + ROW_GAP;
-const TOP_PADDING = 12;
+const TOP_PADDING = 14;
 
 function ShelfBoards({ rowCount }: { rowCount: number }) {
   return (
@@ -175,12 +205,14 @@ function ShelfBoards({ rowCount }: { rowCount: number }) {
         const top = TOP_PADDING + i * ROW_PITCH + ROW_HEIGHT;
         return (
           <div className="shelf-board" key={i} style={{ top }}>
+            <div className="shelf-board-shade" />
             <div className="shelf-board-lip" />
             <div className="shelf-board-face" />
-            <div className="shelf-board-shade" />
           </div>
         );
       })}
+      <div className="shelf-side-wall shelf-side-wall-left" />
+      <div className="shelf-side-wall shelf-side-wall-right" />
     </div>
   );
 }
@@ -203,12 +235,13 @@ function useRowCount(ref: React.RefObject<HTMLDivElement | null>, watch: unknown
 // Experimental: a real folder as an actual wooden bookshelf -- every kind
 // of file gets its own physical stand-in instead of an icon, matching the
 // look of the original iPhone's skeuomorphic Library app: PDFs/ebooks are
-// a bound stack of pages, photos are framed, audio is a record sleeve,
-// video is a labeled VHS tape, folders are a real folder with their name
-// written on it, everything else is a standing document card with its
-// name on it -- standing side by side and wrapping onto the next shelf
-// board down. A real PDF/image/video gets its actual content rendered as
-// the cover/thumbnail (see useThumbnail/thumbnail.rs); anything without a
+// a bound stack of pages, photographs are framed, flyers/graphics stand
+// unframed, audio is a record sleeve, video is a labeled VHS tape,
+// folders are a real folder with their name written on it, everything
+// else is a standing document card with its name on it -- standing side
+// by side, sorted by name, and wrapping onto the next shelf board down.
+// A real PDF/image/video gets its actual content rendered as the
+// cover/thumbnail (see useThumbnail/thumbnail.rs); anything without a
 // renderer here (an ebook format, an audio file -- no cover-art
 // extraction) falls back to a plain colored placeholder with the title
 // printed on it, same as a real spine/label would show.
@@ -226,7 +259,11 @@ export function LibraryShelf({
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
 }) {
   const shelfRef = useRef<HTMLDivElement>(null);
-  const rowCount = useRowCount(shelfRef, entries.length);
+  const sorted = useMemo(
+    () => [...entries].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })),
+    [entries]
+  );
+  const rowCount = useRowCount(shelfRef, sorted.length);
 
   function itemFor(entry: Entry) {
     const fullPath = joinPath(curDir, entry.name);
@@ -258,12 +295,12 @@ export function LibraryShelf({
 
   return (
     <div className="library-view">
-      {entries.length === 0 ? (
+      {sorted.length === 0 ? (
         <p className="notes-empty">This folder is empty.</p>
       ) : (
         <div className="library-shelf" ref={shelfRef}>
           <ShelfBoards rowCount={rowCount} />
-          {entries.map(itemFor)}
+          {sorted.map(itemFor)}
         </div>
       )}
     </div>

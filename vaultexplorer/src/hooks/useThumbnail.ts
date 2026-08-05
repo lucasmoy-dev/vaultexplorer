@@ -39,7 +39,7 @@ function cacheSet(key: string, uri: string) {
 // blocking threadpool, firing hundreds of `invoke`s at once still floods
 // the IPC channel and the pool. A small semaphore keeps only a handful in
 // flight; the rest queue and drain as slots free.
-const MAX_INFLIGHT = 6;
+const MAX_INFLIGHT = 10;
 let inflight = 0;
 const waiters: Array<() => void> = [];
 function acquire(): Promise<void> {
@@ -83,11 +83,14 @@ export function useThumbnail(
     if (!elRef || visible) return;
     const el = elRef.current;
     if (!el) return;
+    // A generous prefetch margin -- thumbnails should already be decoded
+    // by the time a tile scrolls into view, not start decoding right as
+    // it crosses the viewport edge (visible pop-in while scrolling).
     const obs = new IntersectionObserver(
       (obsEntries) => {
         if (obsEntries.some((e) => e.isIntersecting)) setVisible(true);
       },
-      { rootMargin: "300px" }
+      { rootMargin: "900px" }
     );
     obs.observe(el);
     return () => obs.disconnect();

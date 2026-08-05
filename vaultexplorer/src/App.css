@@ -4001,49 +4001,52 @@ input[type="range"]::-webkit-slider-thumb {
    Library (see LibraryShelf.tsx) -- an experimental wooden-bookshelf
    view for a real folder, modeled on the original iPhone Library app's
    front-facing shelf: every kind of file gets its own physical stand-in
-   (book, framed photo, record sleeve, VHS tape, folder, document) rather
-   than a file-manager icon, all standing on the same shelf and wrapping
-   onto the next board down together -- nothing is split into a separate
-   "other files" list. Every item's slot is a fixed 150px tall (a short
-   cassette and a tall book both stand on the same floor, see
-   ROW_HEIGHT/.shelf-item in LibraryShelf.tsx) with a 28px row gap (178px
-   pitch) -- the shelf boards are real DOM elements positioned at that
-   exact pitch by JS, not a background-image trick, so each one can carry
-   a real drop shadow.
+   (book, framed photo, flyer, record sleeve, VHS tape, folder, document)
+   rather than a file-manager icon, sorted by name, all standing on the
+   same shelf and wrapping onto the next board down together -- nothing
+   is split into a separate "other files" list. Every item's slot is a
+   fixed 150px tall (a short cassette and a tall book both stand on the
+   same floor, see ROW_HEIGHT/.shelf-item in LibraryShelf.tsx) with a
+   34px row gap -- the shelf boards are real DOM elements positioned at
+   that exact pitch by JS, not a background-image trick, so each one can
+   carry a real drop shadow.
    ============================================================ */
 .library-view {
   height: 100%;
   overflow-y: auto;
   box-sizing: border-box;
 }
+/* A tileable wood-grain texture (fractal noise stretched into long
+   horizontal fibers, then tinted brown) -- reused on both the back wall
+   and every board face so the whole case reads as the same material,
+   not a flat painted gradient. */
+:root {
+  --wood-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.012 0.4' numOctaves='2' seed='11' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.30 0 0 0 0 0.17 0 0 0 0 0.07 0 0 0 0.4 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
 .library-shelf {
   position: relative;
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
-  gap: 28px 10px;
-  padding: 12px 20px 6px;
+  gap: 34px 18px;
+  padding: 14px 30px 8px;
   min-height: 100%;
   box-sizing: border-box;
-  /* Fine horizontal wood-grain texture over the base warm-wood gradient
-     -- the back wall of the bookcase, behind the real board elements. */
-  background-image: repeating-linear-gradient(
-      to bottom,
-      rgba(255, 255, 255, 0.06) 0px,
-      rgba(255, 255, 255, 0.06) 1px,
-      transparent 1px,
-      transparent 4px
-    ),
-    linear-gradient(180deg, #d9924a, #a8632c);
+  background-image: var(--wood-grain), linear-gradient(180deg, #d9924a, #a8632c);
   background-repeat: repeat, no-repeat;
+  background-size: 180px 90px, auto;
 }
 
-/* ---- real shelf boards (see ShelfBoards in LibraryShelf.tsx): a hard
-   bright specular lip, a rounded face falling into shadow, a blurred
-   drop shadow cast onto whatever sits below, and a soft cast-shadow
-   bleeding into the top of the next cubby -- the blur is the part a
-   repeating CSS background can't fake, and is what actually sells the
-   board as occupying real depth rather than being a striped backdrop. */
+/* ---- real shelf boards (see ShelfBoards in LibraryShelf.tsx): a dark
+   contact-shade where items rest, a hard bright specular lip right below
+   it (the actual front edge, catching the light), a wood-textured face
+   falling into shadow, and a real drop shadow blurring onto whatever
+   sits below -- the blur is the part a repeating CSS background can't
+   fake, and is what actually sells the board as occupying real depth
+   rather than being a striped backdrop. Two side-wall strips at the
+   shelf's own left/right edges (visible cubby side panels, foreshortened
+   and in shadow) are the other missing depth cue: without them the case
+   read as a single flat wall with no sides. */
 .shelf-boards {
   position: absolute;
   inset: 0;
@@ -4054,33 +4057,54 @@ input[type="range"]::-webkit-slider-thumb {
   position: absolute;
   left: 0;
   right: 0;
-  height: 40px;
-}
-.shelf-board-lip {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 6px;
-  background: linear-gradient(180deg, #ffdca6, #dd9c48);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
-}
-.shelf-board-face {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 6px;
-  height: 22px;
-  background: linear-gradient(180deg, #c47a34 0%, #96591f 35%, #6e3c17 70%, #3c2109 100%);
-  box-shadow: 0 6px 9px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  height: 46px;
 }
 .shelf-board-shade {
   position: absolute;
   left: 0;
   right: 0;
-  top: 28px;
-  height: 12px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0));
+  top: 0;
+  height: 10px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0));
+}
+.shelf-board-lip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 9px;
+  height: 7px;
+  background: linear-gradient(180deg, #ffe2b0, #e0a24e);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.shelf-board-face {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 16px;
+  height: 24px;
+  background-image: var(--wood-grain),
+    linear-gradient(180deg, #c47a34 0%, #96591f 30%, #6e3c17 65%, #3c2109 100%);
+  background-repeat: repeat, no-repeat;
+  background-size: 180px 90px, auto;
+  background-blend-mode: soft-light, normal;
+  box-shadow: 0 7px 10px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.shelf-side-wall {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 26px;
+  z-index: 2;
+}
+.shelf-side-wall-left {
+  left: 0;
+  background: linear-gradient(to right, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0));
+  box-shadow: inset -6px 0 10px rgba(0, 0, 0, 0.3);
+}
+.shelf-side-wall-right {
+  right: 0;
+  background: linear-gradient(to left, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0));
+  box-shadow: inset 6px 0 10px rgba(0, 0, 0, 0.3);
 }
 
 /* ---- shared: every item stands on a fixed-height shelf slot (see
@@ -4110,10 +4134,12 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 /* ---- books/ebooks/PDFs: a bound stack, not a single sheet -- two
-   offset "pages" behind the cover give it real thickness. */
+   offset "pages" behind the cover give it real thickness, and a diagonal
+   gloss sheen on the cover itself (paper/cloth catching light at an
+   angle) is what a flat color block was missing. */
 .shelf-book {
   position: relative;
-  width: 104px;
+  width: 108px;
   height: 150px;
   filter: drop-shadow(3px 6px 5px rgba(0, 0, 0, 0.45));
 }
@@ -4146,6 +4172,13 @@ input[type="range"]::-webkit-slider-thumb {
   box-shadow: inset 3px 0 5px rgba(0, 0, 0, 0.3), inset 1px 0 0 rgba(255, 255, 255, 0.25),
     0 0 0 1px rgba(0, 0, 0, 0.15);
 }
+.shelf-book-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0) 22%, rgba(255, 255, 255, 0) 78%, rgba(255, 255, 255, 0.1) 100%);
+  pointer-events: none;
+}
 .shelf-book-cover-placeholder {
   display: flex;
   align-items: center;
@@ -4161,22 +4194,21 @@ input[type="range"]::-webkit-slider-thumb {
   text-align: center;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 6;
   -webkit-box-orient: vertical;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
-/* ---- photos: a framed picture, leaning slightly like it's propped up
-   against the wall rather than glued flat to it. */
+/* ---- photographs (jpg): a framed picture, propped up straight against
+   the wall -- not tilted, a real frame does not lean on its own. */
 .shelf-frame {
-  width: 118px;
+  width: 108px;
   height: 138px;
   box-sizing: border-box;
   padding: 8px;
   border-radius: 3px;
   background: linear-gradient(135deg, #c9a066, #7a5a34);
   box-shadow: 0 4px 7px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.25);
-  transform: rotate(-2deg);
 }
 .shelf-frame-mat {
   width: 100%;
@@ -4193,6 +4225,28 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .shelf-frame-photo-placeholder {
   background: #c7c2b4;
+}
+
+/* ---- non-photographic images (png/gif/webp/svg -- a screenshot,
+   graphic, flyer): a plain printed sheet standing straight, no frame. */
+.shelf-flyer {
+  width: 108px;
+  height: 148px;
+  box-sizing: border-box;
+  padding: 5px;
+  border-radius: 2px;
+  background: #f4f2ec;
+  box-shadow: 0 5px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+.shelf-flyer-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: 1px;
+}
+.shelf-flyer-placeholder {
+  background: #d8d4c6;
 }
 
 /* ---- video: a VHS tape lying face-out, its own thumbnail as the label
@@ -4301,48 +4355,51 @@ input[type="range"]::-webkit-slider-thumb {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
 }
 
-/* ---- folders: a real manila-folder silhouette (a back tab peeking
-   above a front flap) instead of the app's flat folder glyph -- the
-   folder's own name is written on the flap like a label, not captioned
-   underneath. */
+/* ---- folders: standing on their side like a hanging folder between
+   books (portrait, not lying flat), the tab poking out on the upper-right
+   edge -- instead of the app's flat folder glyph. The folder's own name
+   is written on the front like a label (kept upright/horizontal even
+   though the folder itself is "rotated" into a standing orientation),
+   not captioned underneath. */
 .shelf-folder {
   position: relative;
-  width: 100px;
-  height: 78px;
-  filter: drop-shadow(2px 5px 4px rgba(0, 0, 0, 0.45));
+  width: 108px;
+  height: 150px;
+  filter: drop-shadow(3px 6px 5px rgba(0, 0, 0, 0.45));
 }
-.shelf-folder-back {
+.shelf-folder-tab {
   position: absolute;
-  top: 0;
-  left: 8px;
-  right: 8px;
-  height: 16px;
-  border-radius: 4px 8px 0 0;
+  top: 10px;
+  right: 0;
+  width: 20px;
+  height: 34px;
+  border-radius: 0 6px 6px 0;
 }
 .shelf-folder-front {
   position: absolute;
-  top: 10px;
+  top: 0;
   left: 0;
-  right: 0;
+  right: 14px;
   bottom: 0;
-  border-radius: 2px 5px 5px 5px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), inset 0 -10px 14px rgba(0, 0, 0, 0.12);
+  border-radius: 2px 5px 5px 2px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), inset -14px 0 18px rgba(0, 0, 0, 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 8px;
+  padding: 10px 8px;
   box-sizing: border-box;
 }
 .shelf-folder-label {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 700;
   color: rgba(0, 0, 0, 0.62);
   text-align: center;
-  line-height: 1.25;
+  line-height: 1.3;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 7;
   -webkit-box-orient: vertical;
+  word-break: break-word;
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
@@ -4351,12 +4408,12 @@ input[type="range"]::-webkit-slider-thumb {
    face -- instead of a generic file-type icon. */
 .shelf-doc {
   position: relative;
-  width: 82px;
-  height: 104px;
+  width: 108px;
+  height: 150px;
   box-sizing: border-box;
-  padding: 10px 7px 8px;
+  padding: 14px 10px 10px;
   background: linear-gradient(160deg, #fbfaf4, #e7e3d6);
-  clip-path: polygon(0 0, 78% 0, 100% 20%, 100% 100%, 0 100%);
+  clip-path: polygon(0 0, 80% 0, 100% 14%, 100% 100%, 0 100%);
   filter: drop-shadow(2px 5px 4px rgba(0, 0, 0, 0.4));
   display: flex;
   flex-direction: column;
@@ -4369,20 +4426,20 @@ input[type="range"]::-webkit-slider-thumb {
   position: absolute;
   top: 0;
   right: 0;
-  width: 22%;
-  height: 20%;
+  width: 20%;
+  height: 15%;
   background: linear-gradient(135deg, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.22));
   clip-path: polygon(0 0, 100% 0, 100% 100%);
 }
 .shelf-doc-name {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: #3a3730;
   text-align: center;
-  line-height: 1.25;
+  line-height: 1.3;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 7;
   -webkit-box-orient: vertical;
   word-break: break-word;
 }
