@@ -62,6 +62,7 @@ import { SavedSearchDigest } from "./components/SavedSearchDigest";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
 import { NotesGrid } from "./components/NotesGrid";
+import { LibraryShelf } from "./components/LibraryShelf";
 import { ContactsGrid } from "./components/ContactsGrid";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
@@ -4223,6 +4224,10 @@ function Explorer({ home }: { home: string }) {
       // any other view.
       { key: "notes", label: "Notes" },
       { key: "contacts", label: "Contacts" },
+      // Experiment: a folder of PDFs/ebooks as an actual wooden bookshelf
+      // (see LibraryShelf) instead of an icon grid -- explicitly a first
+      // pass at the idea, not a finished look.
+      { key: "library", label: "Library" },
     ];
     const items: MenuItem[] = options.map((o) => ({
       label: view === o.key && !showDigest ? `✓ ${o.label}` : o.label,
@@ -5405,6 +5410,12 @@ function Explorer({ home }: { home: string }) {
                 withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
               }
               onActivateOther={(entry) => activate(curDir, entry)}
+              onMenu={(e, entry) => entryMenu(e, entry)}
+            />
+          ) : view === "library" ? (
+            <LibraryShelf
+              entries={entries}
+              onOpen={(entry) => activate(curDir, entry)}
               onMenu={(e, entry) => entryMenu(e, entry)}
             />
           ) : view === "listPreview" ? (
