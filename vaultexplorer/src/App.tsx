@@ -2086,6 +2086,7 @@ function Explorer({ home }: { home: string }) {
     searchExpanded,
     canGoUp,
     goUp,
+    refresh,
   });
   backStateRef.current = {
     mobileEditorTarget,
@@ -2095,6 +2096,7 @@ function Explorer({ home }: { home: string }) {
     searchExpanded,
     canGoUp,
     goUp,
+    refresh,
   };
   useEffect(() => {
     if (!mobile) return;
@@ -2103,6 +2105,7 @@ function Explorer({ home }: { home: string }) {
       const s = backStateRef.current;
       if (s.mobileEditorTarget) {
         setMobileEditorTarget(null);
+        s.refresh();
         return;
       }
       if (s.menu) {
@@ -3413,6 +3416,14 @@ function Explorer({ home }: { home: string }) {
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  // Same desktop-trash-vs-mobile/vault-confirm split the regular context
+  // menu's "Move to Trash"/"Delete" already uses -- the Notes grid's quick
+  // trash-icon action just skips having to right-click first.
+  function deleteNoteQuick(entry: Entry) {
+    if (!inVault && !mobile) trashSelection([entry.name]);
+    else setPending({ kind: "delete", names: [entry.name] });
   }
 
   async function emptyTrashNow() {
@@ -5374,11 +5385,16 @@ function Explorer({ home }: { home: string }) {
               entries={entries}
               curDir={curDir}
               inVault={inVault}
+              tags={tags}
+              pinnedPaths={pinnedPaths}
               onOpenNote={(entry, fullPath) =>
                 withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
               }
               onActivateOther={(entry) => activate(curDir, entry)}
               onMenu={(e, entry) => entryMenu(e, entry)}
+              onDelete={deleteNoteQuick}
+              onTogglePin={togglePin}
+              onSetColor={setTagFor}
             />
           ) : view === "contacts" ? (
             <ContactsGrid
@@ -5632,7 +5648,10 @@ function Explorer({ home }: { home: string }) {
           <div className="settings-screen-header">
             <button
               className="settings-back-btn"
-              onClick={() => setMobileEditorTarget(null)}
+              onClick={() => {
+                setMobileEditorTarget(null);
+                refresh();
+              }}
               aria-label="Back"
             >
               <ChevronLeft size={18} />
