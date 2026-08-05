@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { openPath as osOpen } from "@tauri-apps/plugin-opener";
-import { api, YoutubeResult, ImageResult, BookResult, YoutubeSearchFilters } from "../api";
+import { api, osOpen, YoutubeResult, ImageResult, BookResult, YoutubeSearchFilters, VideoProvider } from "../api";
 import { ChevronLeft, SearchGlyph, SaveGlyph, FileIcon } from "../icons";
 import folderVideosIcon from "../assets/foldericons/folder-videos.svg";
 import folderImagesIcon from "../assets/foldericons/folder-images.svg";
@@ -45,6 +44,14 @@ export function InternetView({
   const [books, setBooks] = useState<BookResult[]>([]);
   const [searched, setSearched] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
+  // Only YouTube gets inline results (see webfind.rs's module doc comment
+  // for why the others don't); picking one of them just opens that site's
+  // own search in the system browser instead.
+  const [videoProviders, setVideoProviders] = useState<VideoProvider[]>([{ id: "youtube", label: "YouTube" }]);
+  const [provider, setProvider] = useState("youtube");
+  useEffect(() => {
+    api.listVideoProviders().then(setVideoProviders).catch(() => {});
+  }, []);
   // Click-to-select on a result tile, purely visual (no selection-driven
   // actions yet, same as the rest of this experiment) -- but without it,
   // clicking a tile before double-clicking gave no feedback at all, unlike
@@ -53,6 +60,16 @@ export function InternetView({
 
   async function runSearch(q: string, f: YoutubeSearchFilters, m: Mode) {
     if (!q.trim()) return;
+    if (m === "videos" && provider !== "youtube") {
+      setError("");
+      try {
+        const url = await api.providerSearchUrl(provider, q);
+        await osOpen(url);
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
+    }
     setLoading(true);
     setError("");
     setSearched(true);
@@ -144,8 +161,13 @@ export function InternetView({
     );
   }
 
+  const activeProviderLabel = videoProviders.find((p) => p.id === provider)?.label ?? "YouTube";
   const placeholder =
-    mode === "videos" ? "Search YouTube…" : mode === "images" ? "Search images…" : "Search for a PDF…";
+    mode === "videos"
+      ? `Search ${activeProviderLabel}…`
+      : mode === "images"
+      ? "Search images…"
+      : "Search for a PDF…";
 
   return (
     <div className="internet-view">
@@ -164,7 +186,7 @@ export function InternetView({
           />
         </div>
         <button className="tool-btn wide-btn" onClick={() => runSearch(query, filters, mode)} disabled={loading}>
-          Search
+          {mode === "videos" && provider !== "youtube" ? "Open" : "Search"}
         </button>
         <button
           className="tool-btn"
@@ -178,8 +200,16 @@ export function InternetView({
       </div>
       {mode === "videos" && (
         <div className="internet-filters">
+          <select className="settings-select" value={provider} onChange={(e) => setProvider(e.target.value)}>
+            {videoProviders.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
           <select
             className="settings-select"
+            disabled={provider !== "youtube"}
             value={filters.uploadDate ?? ""}
             onChange={(e) =>
               setFilters((f) => ({ ...f, uploadDate: e.target.value ? (Number(e.target.value) as 1 | 2 | 3 | 4 | 5) : null }))
@@ -193,6 +223,7 @@ export function InternetView({
           </select>
           <select
             className="settings-select"
+            disabled={provider !== "youtube"}
             value={filters.duration ?? ""}
             onChange={(e) =>
               setFilters((f) => ({ ...f, duration: e.target.value ? (Number(e.target.value) as 1 | 2 | 3) : null }))
@@ -206,6 +237,7 @@ export function InternetView({
           <label className="checkbox-row">
             <input
               type="checkbox"
+              disabled={provider !== "youtube"}
               checked={filters.sortByDate}
               onChange={(e) => setFilters((f) => ({ ...f, sortByDate: e.target.checked }))}
             />

@@ -1625,12 +1625,11 @@ pub fn run() {
             change_vault_password,
             #[cfg(desktop)]
             open_path,
-            #[cfg(desktop)]
             webfind::search_youtube,
-            #[cfg(desktop)]
             webfind::search_images,
-            #[cfg(desktop)]
             webfind::search_books,
+            webfind::list_video_providers,
+            webfind::provider_search_url,
             #[cfg(desktop)]
             terminal::open_terminal,
             #[cfg(desktop)]
@@ -1653,6 +1652,8 @@ pub fn run() {
             android::android_export_contacts,
             #[cfg(target_os = "android")]
             android::android_import_contacts,
+            #[cfg(target_os = "android")]
+            android::android_open_path,
             #[cfg(target_os = "android")]
             android::android_download_and_install_apk,
             #[cfg(target_os = "android")]

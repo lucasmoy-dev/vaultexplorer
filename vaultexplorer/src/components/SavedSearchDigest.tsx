@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { openPath as osOpen } from "@tauri-apps/plugin-opener";
-import { api, Entry, YoutubeResult, ImageResult, BookResult, joinPath } from "../api";
+import { api, osOpen, Entry, YoutubeResult, ImageResult, BookResult, joinPath } from "../api";
 import { FileIcon } from "../icons";
 import { SavedInternetSearch } from "./InternetView";
 

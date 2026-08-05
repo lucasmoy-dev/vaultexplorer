@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { openPath as osOpen } from "@tauri-apps/plugin-opener";
-import { Entry, api, joinPath } from "../api";
+import { Entry, api, osOpen, joinPath } from "../api";
 import { parseVCard, cleanPhoneForLink } from "../vcard";
 import { FileIcon } from "../icons";
 import { displayEntryName } from "../entryHelpers";

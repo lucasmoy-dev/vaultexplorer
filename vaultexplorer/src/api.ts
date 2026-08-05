@@ -1,4 +1,44 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { openPath as pluginOpenPath } from "@tauri-apps/plugin-opener";
+
+// Resolved once and cached -- every caller awaits the same promise instead
+// of re-invoking the command per call. A *failed* attempt is not cached:
+// the very first invoke can reject if it races a cold-start IPC bridge
+// (same race App.tsx's own mobile-detection retry loop documents) --
+// caching that would permanently misroute every osOpen call for the rest
+// of the session instead of just retrying next time.
+let mobilePlatform: Promise<boolean> | null = null;
+function isMobilePlatformCached(): Promise<boolean> {
+  if (!mobilePlatform) {
+    mobilePlatform = invoke<boolean>("is_mobile_platform").catch(() => {
+      mobilePlatform = null;
+      return false;
+    });
+  }
+  return mobilePlatform;
+}
+
+// Opens a local file path or a URL with whatever the OS has registered for
+// it -- the one thing every caller actually wants, whether that's a real
+// file (`osOpen(fullPath)`) or a link (`osOpen("https://...")`).
+//
+// On Android this is NOT a thin wrapper around `@tauri-apps/plugin-opener`
+// for a local path: that plugin's Android side has a bug where `openPath`
+// sends its mobile plugin a bare JSON string instead of the `{url: ...}`
+// object its own Kotlin `OpenArgs` requires, throwing
+// "no String-argument constructor... to deserialize from String value" on
+// every single file open there (see `android_open_path` in
+// `src-tauri/src/android.rs`, which this routes to instead). URLs go
+// through the plugin as before -- only real filesystem paths hit the
+// local replacement.
+export async function osOpen(target: string): Promise<void> {
+  const isUrl = /^[a-z][a-z0-9+.-]*:/i.test(target);
+  if (!isUrl && (await isMobilePlatformCached())) {
+    await invoke<void>("android_open_path", { path: target });
+    return;
+  }
+  await pluginOpenPath(target);
+}
 
 export interface ProgressEvent {
   done: number;
@@ -85,7 +125,8 @@ export const api = {
     invoke<void>("android_pin_folder_shortcut", { id, label, url, iconBase64 }),
   androidContactsPermissionGranted: () => invoke<boolean>("android_contacts_permission_granted"),
   androidRequestContactsPermission: () => invoke<void>("android_request_contacts_permission"),
-  androidExportContacts: (destDir: string) => invoke<number>("android_export_contacts", { destDir }),
+  androidExportContacts: (destDir: string) =>
+    invoke<{ exported: number; failed_names: string[] }>("android_export_contacts", { destDir }),
   androidImportContacts: (vcfPaths: string[]) => invoke<void>("android_import_contacts", { vcfPaths }),
   androidDownloadAndInstallApk: (url: string) => invoke<void>("android_download_and_install_apk", { url }),
   androidCanInstallPackages: () => invoke<boolean>("android_can_install_packages"),
@@ -99,6 +140,8 @@ export const api = {
     }),
   searchImages: (query: string) => invoke<ImageResult[]>("search_images", { query }),
   searchBooks: (query: string) => invoke<BookResult[]>("search_books", { query }),
+  listVideoProviders: () => invoke<VideoProvider[]>("list_video_providers"),
+  providerSearchUrl: (provider: string, query: string) => invoke<string>("provider_search_url", { provider, query }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>
@@ -466,6 +509,11 @@ export interface BookResult {
   title: string;
   url: string;
   snippet: string | null;
+}
+
+export interface VideoProvider {
+  id: string;
+  label: string;
 }
 
 export interface Drive {

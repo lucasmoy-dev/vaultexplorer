@@ -3,6 +3,40 @@ use crate::errmap::ToStringErr;
 #[cfg(target_os = "android")]
 use tauri::Manager;
 
+/// `env.find_class` resolves against whatever classloader the *current
+/// thread* is implicitly attached under. That's fine for framework
+/// classes (always on the boot classpath, visible from any classloader),
+/// but every one of this file's JNI callbacks runs on a thread Tauri
+/// attaches to the JVM itself -- not one the app's own code created --
+/// so its implicit classloader is the plain boot one, which can't see
+/// classes bundled in the app's own dex (any `androidx.*` class,
+/// `FileProvider` among them). `find_class`ing one of those throws
+/// `NoClassDefFoundError: Class not found using the boot class loader;
+/// no stack trace available` -- confirmed live (not a hypothetical) via
+/// this exact call inside `android_open_path`, which is what prompted
+/// pulling this out and fixing it in the two older call sites too.
+/// Loading through the Activity's own classloader instead -- the one
+/// that actually has the app's dex in its search path -- is the
+/// standard fix for this well-known JNI pitfall. `binary_name` is the
+/// dotted form (`android.foo.Bar`), not the slash form `find_class`
+/// wants.
+#[cfg(target_os = "android")]
+fn find_app_class<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    activity: &jni::objects::JObject,
+    binary_name: &str,
+) -> Result<jni::objects::JClass<'a>, jni::errors::Error> {
+    use jni::objects::JValue;
+    let activity_class = env.call_method(activity, "getClass", "()Ljava/lang/Class;", &[])?.l()?;
+    let class_loader =
+        env.call_method(&activity_class, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+    let name = env.new_string(binary_name)?;
+    let class_obj = env
+        .call_method(&class_loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&name)])?
+        .l()?;
+    Ok(jni::objects::JClass::from(class_obj))
+}
+
 /// `jni::errors::Error::JavaException` is a unit variant -- the crate
 /// deliberately doesn't auto-extract the pending exception's message, so
 /// its `Display` always prints the same generic "Java exception was
@@ -499,14 +533,26 @@ pub(crate) fn android_request_contacts_permission(app: tauri::AppHandle) -> Resu
 /// by hand: less JNI, and it's the same vCard the Contacts app's own
 /// "Share" would produce.
 #[cfg(target_os = "android")]
+#[derive(serde::Serialize)]
+pub(crate) struct ContactExportSummary {
+    pub exported: usize,
+    // Names of contacts whose vCard stream came back null or failed to
+    // write -- capped so the message stays readable, not because more
+    // than a handful is expected. Previously a per-contact failure was
+    // just skipped (`written = false`) with the reason thrown away, so
+    // "0 exported" and "no permission" looked identical from the outside.
+    pub failed_names: Vec<String>,
+}
+
+#[cfg(target_os = "android")]
 #[tauri::command]
-pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -> Result<usize, String> {
+pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -> Result<ContactExportSummary, String> {
     let window = app.get_webview_window("main").ok_or("no main window")?;
     let (tx, rx) = std::sync::mpsc::channel();
     let sent = window.with_webview(move |pw| {
         let jni = pw.jni_handle();
         jni.exec(move |env, activity, _webview| {
-            let mut run = || -> Result<usize, jni::errors::Error> {
+            let mut run = || -> Result<ContactExportSummary, jni::errors::Error> {
                 use jni::objects::JValue;
 
                 let resolver = env
@@ -546,7 +592,7 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                     )?
                     .l()?;
                 if cursor.is_null() {
-                    return Ok(0);
+                    return Ok(ContactExportSummary { exported: 0, failed_names: vec![] });
                 }
                 let id_idx = env
                     .call_method(&cursor, "getColumnIndex", "(Ljava/lang/String;)I", &[JValue::Object(&id_col)])?
@@ -554,9 +600,17 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                 let name_idx = env
                     .call_method(&cursor, "getColumnIndex", "(Ljava/lang/String;)I", &[JValue::Object(&name_col)])?
                     .i()?;
-                std::fs::create_dir_all(&dest_dir).ok();
+                if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+                    // Surfaced immediately rather than silently proceeding to
+                    // export 0 with no explanation -- a missing/denied
+                    // destination is the one failure that affects every
+                    // contact identically, so it's worth its own message
+                    // instead of showing up as N generic per-contact ones.
+                    return Ok(ContactExportSummary { exported: 0, failed_names: vec![format!("could not create {dest_dir}: {e}")] });
+                }
                 let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-                let mut count = 0usize;
+                let mut exported = 0usize;
+                let mut failed_names: Vec<String> = Vec::new();
                 loop {
                     let has_next = env.call_method(&cursor, "moveToNext", "()Z", &[])?.z()?;
                     if !has_next {
@@ -571,7 +625,7 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                     // java"). with_local_frame scopes them to one contact at a
                     // time, so the table never grows past what a single
                     // contact needs regardless of how many are exported.
-                    let written = env.with_local_frame(16, |env| -> Result<bool, jni::errors::Error> {
+                    let (raw_name, failure) = env.with_local_frame(16, |env| -> Result<(String, Option<String>), jni::errors::Error> {
                         let id = env.call_method(&cursor, "getLong", "(I)J", &[JValue::Int(id_idx)])?.j()?;
                         let name_obj = env
                             .call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[JValue::Int(name_idx)])?
@@ -609,7 +663,7 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                             )?
                             .l()?;
                         if stream.is_null() {
-                            return Ok(false);
+                            return Ok((raw_name, Some("the contacts provider returned no vCard data for it".to_string())));
                         }
                         let buf = env.new_byte_array(4096)?;
                         let mut out: Vec<u8> = Vec::new();
@@ -626,14 +680,19 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                         }
                         let _ = env.call_method(&stream, "close", "()V", &[]);
                         let full_path = std::path::Path::new(&dest_dir).join(&file_name);
-                        Ok(std::fs::write(&full_path, &out).is_ok())
+                        let failure = std::fs::write(&full_path, &out).err().map(|e| e.to_string());
+                        Ok((raw_name, failure))
                     })?;
-                    if written {
-                        count += 1;
+                    if let Some(reason) = failure {
+                        if failed_names.len() < 8 {
+                            failed_names.push(format!("{raw_name} ({reason})"));
+                        }
+                    } else {
+                        exported += 1;
                     }
                 }
                 let _ = env.call_method(&cursor, "close", "()V", &[]);
-                Ok(count)
+                Ok(ContactExportSummary { exported, failed_names })
             };
             let result = run().map_err(|e| describe_jni_error(env, e));
             let _ = tx.send(result);
@@ -677,7 +736,7 @@ pub(crate) fn android_import_contacts(app: tauri::AppHandle, vcf_paths: Vec<Stri
                             &[JValue::Object(&authority_suffix)],
                         )?
                         .l()?;
-                    let file_provider_class = env.find_class("androidx/core/content/FileProvider")?;
+                    let file_provider_class = find_app_class(env, activity, "androidx.core.content.FileProvider")?;
 
                     // Scoped per file for the same reason as the export loop
                     // below (see its comment): each iteration allocates ~8
@@ -738,6 +797,129 @@ pub(crate) fn android_import_contacts(app: tauri::AppHandle, vcf_paths: Vec<Stri
     rx.recv_timeout(std::time::Duration::from_secs(10)).map_err(|_| "timed out".to_string())?
 }
 
+/// A small extension->MIME table, plain Rust rather than a JNI call into
+/// `android.webkit.MimeTypeMap` -- that class lives outside the boot
+/// classpath (unbundled WebView), and `find_class`ing it from the native
+/// thread `jni_handle().exec()` runs on throws `NoClassDefFoundError:
+/// Class not found using the boot class loader` (confirmed live, not a
+/// hypothetical: this was the first implementation, replaced after
+/// hitting exactly that on-device). Covers the kinds this app already
+/// distinguishes elsewhere (see `icons.tsx`'s `kindOf`); anything else
+/// falls back to `*/*`, which still gets the system's normal app-chooser
+/// rather than failing outright.
+#[cfg(target_os = "android")]
+fn mime_for_ext(ext: &str) -> &'static str {
+    match ext {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "heic" | "heif" => "image/heic",
+        "mp4" | "m4v" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "avi" => "video/x-msvideo",
+        "3gp" => "video/3gpp",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" | "oga" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "zip" => "application/zip",
+        "apk" => "application/vnd.android.package-archive",
+        _ => "*/*",
+    }
+}
+
+/// Opens an arbitrary file with whatever app the system has registered for
+/// its type, via the same FileProvider + `ACTION_VIEW` handoff
+/// `android_import_contacts` above uses for a `.vcf` -- this is what
+/// double-clicking a file that isn't a recognized in-app preview type
+/// (an image, video, PDF...) resolves to.
+///
+/// This exists as a local replacement for `tauri-plugin-opener`'s
+/// `openPath`, not a wrapper around it: that plugin's Android side has a
+/// bug where its Rust `open_path` sends the mobile plugin a bare JSON
+/// string instead of the `{url: ...}` object its own Kotlin `OpenArgs`
+/// requires to deserialize (`no String-argument constructor... to
+/// deserialize from String value`, thrown for every single file open on
+/// Android) -- `open_url` on the same crate version does wrap its payload
+/// correctly, so this is specifically a `open_path` regression, not
+/// something wrong on this app's end. Filed upstream; until it's fixed,
+/// opening a real file needs this instead.
+///
+/// The MIME type comes from `mime_for_ext` above, not Android's own
+/// `MimeTypeMap` -- see that function's comment for why.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn android_open_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let window = app.get_webview_window("main").ok_or("no main window")?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sent = window.with_webview(move |pw| {
+        let jni = pw.jni_handle();
+        jni.exec(move |env, activity, _webview| {
+            let mut run = || -> Result<(), jni::errors::Error> {
+                use jni::objects::JValue;
+
+                let pkg_name = env.call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?.l()?;
+                let authority_suffix = env.new_string(".fileprovider")?;
+                let authority = env
+                    .call_method(
+                        &pkg_name,
+                        "concat",
+                        "(Ljava/lang/String;)Ljava/lang/String;",
+                        &[JValue::Object(&authority_suffix)],
+                    )?
+                    .l()?;
+                let file_provider_class = find_app_class(env, activity, "androidx.core.content.FileProvider")?;
+                let file_class = env.find_class("java/io/File")?;
+                let path_str = env.new_string(&path)?;
+                let file = env.new_object(file_class, "(Ljava/lang/String;)V", &[JValue::Object(&path_str)])?;
+                let uri = env
+                    .call_static_method(
+                        &file_provider_class,
+                        "getUriForFile",
+                        "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
+                        &[JValue::Object(activity), JValue::Object(&authority), JValue::Object(&file)],
+                    )?
+                    .l()?;
+
+                let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+                let mime = env.new_string(mime_for_ext(&ext))?;
+
+                let action = env.new_string("android.intent.action.VIEW")?;
+                let intent_class = env.find_class("android/content/Intent")?;
+                let intent = env.new_object(intent_class, "(Ljava/lang/String;)V", &[JValue::Object(&action)])?;
+                env.call_method(
+                    &intent,
+                    "setDataAndType",
+                    "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+                    &[JValue::Object(&uri), JValue::Object(&mime)],
+                )?;
+                // FLAG_GRANT_READ_URI_PERMISSION(1) | FLAG_ACTIVITY_NEW_TASK(0x10000000)
+                env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(1 | 0x1000_0000)])?;
+                env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+                eprintln!("android_open_path: step 13 done");
+                Ok(())
+            };
+            let result = run().map_err(|e| describe_jni_error(env, e));
+            let _ = tx.send(result);
+        });
+    });
+    if sent.is_err() {
+        return Err("failed to reach the webview".into());
+    }
+    rx.recv_timeout(std::time::Duration::from_secs(10)).map_err(|_| "timed out".to_string())?
+}
+
 /// Downloads an APK (a GitHub release asset URL, see `checkForUpdate` on
 /// the JS side) into this app's own cache dir, then hands it to the
 /// system's package installer via `ACTION_VIEW` -- same FileProvider +
@@ -781,7 +963,7 @@ pub(crate) fn android_download_and_install_apk(app: tauri::AppHandle, url: Strin
                         &[JValue::Object(&authority_suffix)],
                     )?
                     .l()?;
-                let file_provider_class = env.find_class("androidx/core/content/FileProvider")?;
+                let file_provider_class = find_app_class(env, activity, "androidx.core.content.FileProvider")?;
                 let file_class = env.find_class("java/io/File")?;
                 let path_str = env.new_string(&apk_path_str)?;
                 let file = env.new_object(file_class, "(Ljava/lang/String;)V", &[JValue::Object(&path_str)])?;

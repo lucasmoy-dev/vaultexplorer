@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { openPath as osOpen } from "@tauri-apps/plugin-opener";
-import { api, formatSize, joinPath } from "../../api";
+import { api, osOpen, formatSize, joinPath } from "../../api";
 import { PHONE_STORAGE_PATH } from "../../constants";
 import { ComputerGlyph, ChevronLeft } from "../../icons";
 import { Dropdown } from "../../ContextMenu";
@@ -444,8 +443,12 @@ export function SettingsScreen({
   }
   async function exportContacts() {
     await withContactsPermission(async () => {
-      const count = await api.androidExportContacts(exportDir);
-      setContactsMsg(`Exported ${count} contact${count === 1 ? "" : "s"} to ${exportDir}`);
+      const { exported, failed_names } = await api.androidExportContacts(exportDir);
+      let msg = `Exported ${exported} contact${exported === 1 ? "" : "s"} to ${exportDir}`;
+      if (failed_names.length > 0) {
+        msg += ` -- failed: ${failed_names.join("; ")}`;
+      }
+      setContactsMsg(msg);
     });
   }
   async function importContacts() {

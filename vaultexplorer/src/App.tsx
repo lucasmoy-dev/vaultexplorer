@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { openPath as osOpen } from "@tauri-apps/plugin-opener";
 import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -16,6 +15,7 @@ import {
   formatDate,
   TAG_COLORS,
   ENCRYPTED_FILE_EXT,
+  osOpen,
 } from "./api";
 import { TitleBar, TrafficLights } from "./TitleBar";
 import { ContextMenu, MenuState, MenuItem } from "./ContextMenu";
@@ -2570,11 +2570,11 @@ function Explorer({ home }: { home: string }) {
     if (ARCHIVE_EXT_RE.test(entry.name)) {
       return mountArchive(dir, entry);
     }
-    // Saved Internet search (see InternetView) -- desktop-only, same as
-    // the feature it reopens. Malformed/hand-edited JSON just surfaces as
-    // a normal error rather than silently falling through to a text-editor
-    // open, which would show raw JSON that looks broken for no reason.
-    if (!mobile && /\.(ytsearch|imgsearch|booksearch)$/i.test(entry.name)) {
+    // Saved Internet search (see InternetView). Malformed/hand-edited JSON
+    // just surfaces as a normal error rather than silently falling through
+    // to a text-editor open, which would show raw JSON that looks broken
+    // for no reason.
+    if (/\.(ytsearch|imgsearch|booksearch)$/i.test(entry.name)) {
       try {
         const saved = JSON.parse(await api.fsReadText(full)) as SavedInternetSearch;
         if (saved.kind !== "videos" && saved.kind !== "images" && saved.kind !== "books") {
@@ -4845,14 +4845,19 @@ function Explorer({ home }: { home: string }) {
           }}
         >
           {!favCollapsed && "Favorites"}
-          <button
-            type="button"
-            className="sidebar-section-collapse-btn"
-            title={favCollapsed ? "Expand Favorites" : "Collapse Favorites"}
-            onClick={() => setFavCollapsed((v) => !v)}
-          >
-            {favCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-          </button>
+          {/* Collapsing this section has no real use on a phone-width
+              sidebar (there's no icon-only mode worth collapsing into
+              there) -- desktop keeps the toggle. */}
+          {!mobile && (
+            <button
+              type="button"
+              className="sidebar-section-collapse-btn"
+              title={favCollapsed ? "Expand Favorites" : "Collapse Favorites"}
+              onClick={() => setFavCollapsed((v) => !v)}
+            >
+              {favCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+            </button>
+          )}
         </div>
         {/* Drive enumeration (df/lsblk) is meaningless inside an Android
             app sandbox -- there's no second disk to show, and nothing here
@@ -4878,19 +4883,15 @@ function Explorer({ home }: { home: string }) {
           </div>
         )}
         {/* Experimental (see InternetView) -- fake "Videos"/"Images"
-            folders backed by live search, not a real path. Desktop-only:
-            no reason it couldn't run on mobile too, but this hasn't been
-            tried there yet and the sidebar real-estate is tighter. */}
-        {!mobile && (
-          <div
-            className={`sidebar-item ${showInternet ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
-            title={favCollapsed ? "Internet" : undefined}
-            onClick={openInternet}
-          >
-            <span className="sidebar-ico place">🌐</span>
-            {!favCollapsed && "Internet"}
-          </div>
-        )}
+            folders backed by live search, not a real path. */}
+        <div
+          className={`sidebar-item ${showInternet ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
+          title={favCollapsed ? "Internet" : undefined}
+          onClick={openInternet}
+        >
+          <span className="sidebar-ico place">🌐</span>
+          {!favCollapsed && "Internet"}
+        </div>
         {favorites.map((f, i) => {
           const active = !showMyComputer && !showInternet && loc.kind === "fs" && loc.path === f.path;
           return (

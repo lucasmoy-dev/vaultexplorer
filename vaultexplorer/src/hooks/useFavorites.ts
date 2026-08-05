@@ -48,11 +48,10 @@ export function useFavorites(home: string, mobile: boolean) {
   useEffect(() => {
     if (!mobile || hadSavedFavorites.current) return;
     setFavPaths([
-      home,
       joinPath(PHONE_STORAGE_PATH, "Documents"),
       joinPath(PHONE_STORAGE_PATH, "Pictures"),
+      joinPath(PHONE_STORAGE_PATH, "DCIM/Camera"),
       joinPath(PHONE_STORAGE_PATH, "Download"),
-      PHONE_STORAGE_PATH,
     ]);
   }, [mobile, home]);
   // The fix above only ever fires for a brand-new install (gated on
