@@ -99,17 +99,6 @@ export const api = {
     }),
   searchImages: (query: string) => invoke<ImageResult[]>("search_images", { query }),
   searchBooks: (query: string) => invoke<BookResult[]>("search_books", { query }),
-  torrentProvidersList: () => invoke<TorrentProvider[]>("torrent_providers_list"),
-  torrentProviderAdd: (name: string, urlTemplate: string) =>
-    invoke<TorrentProvider[]>("torrent_provider_add", { name, urlTemplate }),
-  torrentProviderRemove: (id: string) => invoke<TorrentProvider[]>("torrent_provider_remove", { id }),
-  torrentSearch: (providerId: string, query: string) =>
-    invoke<TorrentSearchResult[]>("torrent_search", { providerId, query }),
-  torrentListFiles: (sourceUrl: string) => invoke<TorrentFile[]>("torrent_list_files", { sourceUrl }),
-  torrentStreamUrl: (sourceUrl: string, fileIndex: number) =>
-    invoke<string>("torrent_stream_url", { sourceUrl, fileIndex }),
-  torrentDownload: (sourceUrl: string, fileIndex: number, destDir: string, channel: Channel<ProgressEvent>) =>
-    invoke<string>("torrent_download", { sourceUrl, fileIndex, destDir, channel }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>
@@ -474,30 +463,9 @@ export interface ImageResult {
 }
 
 export interface BookResult {
-  identifier: string;
   title: string;
-  creator: string | null;
-  year: number | null;
-  thumbnail: string;
-  details_url: string;
-}
-
-export interface TorrentProvider {
-  id: string;
-  name: string;
-  url_template: string;
-  builtin: boolean;
-}
-
-export interface TorrentSearchResult {
-  title: string;
-  source_url: string;
-}
-
-export interface TorrentFile {
-  index: number;
-  name: string;
-  length: number;
+  url: string;
+  snippet: string | null;
 }
 
 export interface Drive {

@@ -1,6 +1,6 @@
 [package]
 name = "vaultexplorer"
-version = "0.2.6"
+version = "0.2.7"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -40,7 +40,6 @@ tauri-plugin-dialog = "2.7.2"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-deep-link = "2.4.9"
 qrcode = "0.14.1"
-librqbit = { version = "8.1.1", features = ["http-api", "tracing-subscriber-utils"] }
 
 # Desktop-only integrations: every one of these either shells out to a
 # binary that simply isn't present on a mobile OS (git, rclone, syncthing,

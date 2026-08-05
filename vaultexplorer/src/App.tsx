@@ -1101,15 +1101,6 @@ function Explorer({ home }: { home: string }) {
     refresh();
     return path;
   }
-  // A torrent file "download" (see InternetView's Torrents mode) into
-  // curDir, tracked in the same Tasks footer as any other copy/compress --
-  // fire-and-forget from the caller's perspective, same as those.
-  function downloadTorrentFile(sourceUrl: string, fileIndex: number, fileName: string) {
-    api
-      .torrentDownload(sourceUrl, fileIndex, curDir, beginProgress(`Downloading "${fileName}"`))
-      .then(() => refresh())
-      .catch((e) => setError(String(e)));
-  }
   // A folder holding nothing but .ytsearch (or nothing but .imgsearch, or
   // nothing but .booksearch) files gets an auto-preview digest instead of
   // the normal file view -- desktop-only, same as the rest of Internet
@@ -5328,11 +5319,7 @@ function Explorer({ home }: { home: string }) {
               onMenu={driveMenu}
             />
           ) : showInternet ? (
-            <InternetView
-              initial={internetInitial}
-              onSave={saveInternetSearch}
-              onDownloadTorrentFile={downloadTorrentFile}
-            />
+            <InternetView initial={internetInitial} onSave={saveInternetSearch} />
           ) : searchResults !== null ? (
             <SearchResults
               query={searchQuery}

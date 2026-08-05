@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { openPath as osOpen } from "@tauri-apps/plugin-opener";
 import { api, Entry, YoutubeResult, ImageResult, BookResult, joinPath } from "../api";
+import { FileIcon } from "../icons";
 import { SavedInternetSearch } from "./InternetView";
 
 type Section = {
@@ -110,14 +111,11 @@ export function SavedSearchDigest({
                   </div>
                 ))}
               {ext === "booksearch" &&
-                s.books?.map((b) => (
-                  <div
-                    key={b.identifier}
-                    className="entry icon"
-                    title={b.title}
-                    onDoubleClick={() => osOpen(b.details_url).catch(() => {})}
-                  >
-                    <img className="internet-thumb" src={b.thumbnail} draggable={false} />
+                s.books?.map((b, i) => (
+                  <div key={i} className="entry icon" title={b.title} onDoubleClick={() => osOpen(b.url).catch(() => {})}>
+                    <span className="entry-icon">
+                      <FileIcon entry={{ name: "book.pdf", is_dir: false, size: 0, mtime: 0 }} />
+                    </span>
                     <span className="entry-name">{b.title}</span>
                   </div>
                 ))}

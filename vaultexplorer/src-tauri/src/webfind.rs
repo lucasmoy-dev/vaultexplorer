@@ -17,9 +17,14 @@
 //! acceptable for an experiment explicitly framed as "might not work out",
 //! not something to build a real feature's only code path on.
 //!
-//! `search_books` is the one exception: the Internet Archive's
-//! `advancedsearch.php` is a real, documented, keyless JSON API (not
-//! scraped HTML), so it's meaningfully more stable than the other two.
+//! `search_books` used to be the one exception here (Internet Archive's
+//! `advancedsearch.php`, a real documented API) -- but that only ever
+//! covers Archive.org's own public-domain/openly-licensed collection, so
+//! it came up empty for anything outside it (a mainstream book someone's
+//! actually looking for). It's now a plain DuckDuckGo web search scoped
+//! to `filetype:pdf`, same "read the HTML a browser would get" technique
+//! as the other two -- whatever it finds is whatever's already publicly
+//! posted somewhere, same as searching "X filetype:pdf" in any browser.
 
 use crate::errmap::ToStringErr;
 use serde::Serialize;
@@ -43,12 +48,9 @@ pub struct ImageResult {
 
 #[derive(Serialize, Clone)]
 pub struct BookResult {
-    pub identifier: String,
     pub title: String,
-    pub creator: Option<String>,
-    pub year: Option<i64>,
-    pub thumbnail: String,
-    pub details_url: String,
+    pub url: String,
+    pub snippet: Option<String>,
 }
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
@@ -227,45 +229,100 @@ pub(crate) fn search_images(query: String) -> Result<Vec<ImageResult>, String> {
         .collect())
 }
 
+/// Minimal `application/x-www-form-urlencoded`-style decode (`+` and
+/// `%XX`) -- enough for DuckDuckGo's redirect-link `uddg=` param, without
+/// pulling in a full URL-encoding crate just for this one field.
+fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Strips `<...>` tags (DDG wraps matched keywords in `<b>...</b>` inside
+/// result titles/snippets) and unescapes the handful of HTML entities that
+/// actually show up there -- not a general HTML-to-text converter, just
+/// enough for a title/snippet.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&").replace("&#x27;", "'").replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 pub(crate) fn search_books(query: String) -> Result<Vec<BookResult>, String> {
-    let mut url = reqwest::Url::parse("https://archive.org/advancedsearch.php").str_err()?;
-    url.query_pairs_mut()
-        .append_pair("q", &format!("{query} AND mediatype:texts"))
-        .append_pair("fl[]", "identifier")
-        .append_pair("fl[]", "title")
-        .append_pair("fl[]", "creator")
-        .append_pair("fl[]", "year")
-        .append_pair("rows", "30")
-        .append_pair("page", "1")
-        .append_pair("output", "json");
-    let json: serde_json::Value = http_client()?.get(url).send().str_err()?.json().str_err()?;
-    let docs = json
-        .get("response")
-        .and_then(|r| r.get("docs"))
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
-    Ok(docs
-        .into_iter()
-        .filter_map(|d| {
-            let identifier = d.get("identifier")?.as_str()?.to_string();
-            // `creator` can be a single string or an array of strings
-            // (multi-author items) -- both seen live against the real API.
-            let creator = d.get("creator").and_then(|c| {
-                c.as_str().map(str::to_string).or_else(|| {
-                    c.as_array()?.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ").into()
-                })
-            });
-            Some(BookResult {
-                title: d.get("title").and_then(|t| t.as_str()).unwrap_or(&identifier).to_string(),
-                creator,
-                year: d.get("year").and_then(|y| y.as_i64().or_else(|| y.as_str()?.parse().ok())),
-                thumbnail: format!("https://archive.org/services/img/{identifier}"),
-                details_url: format!("https://archive.org/details/{identifier}"),
-                identifier,
-            })
-        })
-        .collect())
+    let mut url = reqwest::Url::parse("https://html.duckduckgo.com/html/").str_err()?;
+    url.query_pairs_mut().append_pair("q", &format!("{query} filetype:pdf"));
+    let html = http_client()?.get(url).send().str_err()?.text().str_err()?;
+
+    let link_marker = "<a rel=\"nofollow\" href=\"";
+    let snippet_marker = "class=\"result__snippet\"";
+    let mut results = Vec::new();
+    let mut cursor = 0usize;
+    while results.len() < 30 {
+        let Some(rel) = html[cursor..].find(link_marker) else { break };
+        let href_start = cursor + rel + link_marker.len();
+        let Some(href_end_rel) = html[href_start..].find('"') else { break };
+        let raw_href = &html[href_start..href_start + href_end_rel];
+        cursor = href_start + href_end_rel;
+
+        // DDG's html results link through its own redirect
+        // (`//duckduckgo.com/l/?uddg=<encoded-real-url>&...`) rather than
+        // linking the real URL directly -- `uddg` is the part worth
+        // keeping.
+        let real_url = raw_href
+            .split_once("uddg=")
+            .and_then(|(_, rest)| percent_decode(rest.split('&').next().unwrap_or(rest)))
+            .unwrap_or_else(|| raw_href.to_string());
+        if !real_url.starts_with("http") {
+            continue;
+        }
+
+        let Some(tag_end_rel) = html[cursor..].find('>') else { break };
+        let title_start = cursor + tag_end_rel + 1;
+        let Some(title_end_rel) = html[title_start..].find("</a>") else { break };
+        let title = strip_tags(&html[title_start..title_start + title_end_rel]);
+        cursor = title_start + title_end_rel;
+        if title.trim().is_empty() {
+            continue;
+        }
+
+        // Cosmetic only (shown next to the result) -- a miss just leaves
+        // it blank rather than dropping the result.
+        let snippet = html[cursor..(cursor + 2000).min(html.len())].find(snippet_marker).and_then(|p| {
+            let after = &html[cursor + p..];
+            let s = after.find('>')? + 1;
+            let e = after[s..].find("</a>")?;
+            Some(strip_tags(&after[s..s + e]).trim().to_string())
+        });
+
+        results.push(BookResult { title: title.trim().to_string(), url: real_url, snippet });
+    }
+    Ok(results)
 }

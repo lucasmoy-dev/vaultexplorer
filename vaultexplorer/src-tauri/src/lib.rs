@@ -23,8 +23,6 @@ mod git_sync;
 mod fs_watch;
 #[cfg(desktop)]
 mod local_sync;
-#[cfg(desktop)]
-mod torrents;
 mod info;
 mod machine;
 mod metadata;
@@ -1633,20 +1631,6 @@ pub fn run() {
             webfind::search_images,
             #[cfg(desktop)]
             webfind::search_books,
-            #[cfg(desktop)]
-            torrents::torrent_providers_list,
-            #[cfg(desktop)]
-            torrents::torrent_provider_add,
-            #[cfg(desktop)]
-            torrents::torrent_provider_remove,
-            #[cfg(desktop)]
-            torrents::torrent_search,
-            #[cfg(desktop)]
-            torrents::torrent_list_files,
-            #[cfg(desktop)]
-            torrents::torrent_stream_url,
-            #[cfg(desktop)]
-            torrents::torrent_download,
             #[cfg(desktop)]
             terminal::open_terminal,
             #[cfg(desktop)]
