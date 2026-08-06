@@ -543,40 +543,35 @@ pub struct PlayableSource {
 /// Resolves a search result's `page_url` to something the standalone
 /// player window can actually render with nothing else on screen --
 /// verified live against each site's real markup, not guessed:
-///   - xhamster: the video ID is already the pageURL's own trailing
-///     `xh...` slug token, and `/embed/<id>` is xhamster's own
-///     chrome-free player page for it -- no extra fetch needed.
-///   - cuevana3: the search result page links one level deeper to a
-///     `ver/` page with a plain `<source src="...">` mp4 -- fetched and
-///     scraped here, once, on open (not at search time, since it's a
-///     real per-item network request the search grid shouldn't pay for
-///     up front just to show a thumbnail).
+///   - xhamster: `/embed/<id>` loads and its play button visibly
+///     responds to a click, but playback never actually starts --
+///     confirmed live on more than one video, unaffected by a
+///     no-referrer attempt -- a real WebKitGTK/player incompatibility,
+///     not something fixable through the embed URL. Returns a clear
+///     error instead of a play button that silently does nothing.
+///   - cuevana3: the `ver/` page's plain `<source src="...">` mp4 turned
+///     out to be a decoy -- confirmed live: its Content-Length is only a
+///     few MB regardless of the movie's real runtime, and the page's own
+///     "Ver" menu triggers a separate AJAX call (not yet reverse-
+///     engineered) to swap in the real player. Reported directly as
+///     "plays an intro, not the real content" -- this returns a clear
+///     error instead of silently playing the wrong video.
 ///   - animeflv: its episode player is filled in by client-side JS from
 ///     data this plain HTTP fetch never receives (confirmed empty on
 ///     multiple real episode pages, with/without cookies/headers) --
 ///     not solvable without a headless browser, so this returns a clear
 ///     error instead of a broken/blank player.
 #[tauri::command]
-pub(crate) fn resolve_provider_playable(provider: String, page_url: String) -> Result<PlayableSource, String> {
+pub(crate) fn resolve_provider_playable(provider: String, _page_url: String) -> Result<PlayableSource, String> {
     match provider.as_str() {
-        "xhamster" => {
-            let id = page_url
-                .trim_end_matches('/')
-                .rsplit('-')
-                .next()
-                .filter(|s| s.starts_with("xh"))
-                .ok_or("couldn't find a video id in this page's URL")?;
-            Ok(PlayableSource { kind: "iframe".into(), url: format!("https://{}/embed/{id}", xhamster_domain()) })
-        }
-        "cuevana3" => {
-            let base = page_url.trim_end_matches('/');
-            let ver_url = format!("{base}/ver/");
-            let html = http_client()?.get(&ver_url).send().str_err()?.text().str_err()?;
-            let marker = "<source src=\"";
-            let start = html.find(marker).ok_or("couldn't find a video source on this page")?.saturating_add(marker.len());
-            let end = html[start..].find('"').ok_or("malformed video source tag")?;
-            Ok(PlayableSource { kind: "video".into(), url: html[start..start + end].to_string() })
-        }
+        "xhamster" => Err(
+            "xHamster's embed player doesn't actually start playback in this app -- opening in your browser instead."
+                .to_string(),
+        ),
+        "cuevana3" => Err(
+            "Cuevana3's real video only loads after picking a server on its own page -- opening in your browser instead."
+                .to_string(),
+        ),
         "animeflv" => Err("AnimeFLV's player needs JavaScript this app's scraper can't run -- opening in your browser instead.".to_string()),
         other => Err(format!("unknown provider: {other}")),
     }

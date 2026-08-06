@@ -4454,6 +4454,12 @@ function Explorer({ home }: { home: string }) {
         ],
       });
     }
+    if (!mobile && !inVault) {
+      // Same action as the per-folder "More" submenu entry -- here the
+      // target is the folder you're standing in (curDir) rather than one
+      // of its children, since this fired on empty space, not an entry.
+      items.push({ label: "Reorganize & Clean…", onClick: () => setReorganizeTarget(curDir) });
+    }
     items.push(
       { type: "separator" },
       { label: "Paste", shortcut: "⌘V", disabled: !clipboard || clipboard.kind !== loc.kind, onClick: paste }

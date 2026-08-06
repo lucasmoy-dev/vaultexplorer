@@ -12,7 +12,7 @@ import {
   PlayerItem,
 } from "../api";
 import { ChevronLeft, SearchGlyph, SaveGlyph, FileIcon } from "../icons";
-import { Dropdown } from "../ContextMenu";
+import { ContextMenu, Dropdown, MenuState } from "../ContextMenu";
 import { useSelection } from "../hooks/useSelection";
 import folderVideosIcon from "../assets/foldericons/folder-videos.svg";
 import folderImagesIcon from "../assets/foldericons/folder-images.svg";
@@ -83,6 +83,7 @@ export function InternetView({
   // copy since this grid's items/container are entirely separate from
   // the real filesystem one.
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<MenuState>(null);
 
   // The ordered key list for whatever's currently rendered -- same key
   // format each tile below already uses (v.id / `p${i}` / `i${i}` /
@@ -97,14 +98,17 @@ export function InternetView({
   }
 
   // AnimeFLV's episode player is filled in by client-side JS this app's
-  // scraper has no way to run (see resolve_provider_playable's own doc
-  // comment) -- opening externally is the honest fallback for it, same
-  // as every provider before the standalone player existed. The other
-  // three are confirmed embeddable (verified live against each site's
-  // real markup): YouTube via its own official embed, xhamster/cuevana3
-  // via resolve_provider_playable.
+  // scraper has no way to run, cuevana3's static scrape turned out to be
+  // a decoy clip (not the real movie), and xhamster's own embed player
+  // registers the click (its play button visibly changes state) but
+  // never actually starts decoding/playing -- confirmed live, on more
+  // than one video, and unaffected by a no-referrer attempt -- a real
+  // WebKitGTK/player incompatibility, not something fixable through the
+  // embed URL. Opening externally is the honest fallback for all three
+  // (see resolve_provider_playable's own doc comment). Only YouTube is
+  // confirmed to actually play in-app.
   function canPlayInApp(): boolean {
-    return !mobile && mode === "videos" && provider !== "animeflv";
+    return !mobile && mode === "videos" && provider === "youtube";
   }
 
   function openResult(key: string) {
@@ -127,6 +131,51 @@ export function InternetView({
       const b = books[Number(key.slice(1))];
       if (b) osOpen(b.url).catch(() => {});
     }
+  }
+
+  // The real, external page/file URL for a result -- distinct from
+  // openResult, which for playable videos opens the in-app player
+  // instead. "Open in Browser" always means the real external URL,
+  // even for a video that would otherwise open in-app.
+  function resultUrl(key: string): string | null {
+    if (mode === "videos" && provider === "youtube") return `https://www.youtube.com/watch?v=${key}`;
+    if (mode === "videos") return providerVideos[Number(key.slice(1))]?.page_url ?? null;
+    if (mode === "images") return images[Number(key.slice(1))]?.image ?? null;
+    if (mode === "books") return books[Number(key.slice(1))]?.url ?? null;
+    return null;
+  }
+
+  // Right-click on a result: "Open in Browser" (always the real
+  // external URL, regardless of in-app playback) + "Copy Link" -- the
+  // same two actions available for every result type. Reported
+  // directly as missing on every kind (videos/images/books alike).
+  function onTileContextMenu(key: string, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!selected.has(key)) selectOnly(key);
+    const keys = selected.has(key) && selected.size > 1 ? [...selected] : [key];
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          label: keys.length > 1 ? `Open ${keys.length} in Browser` : "Open in Browser",
+          onClick: () => {
+            for (const k of keys) {
+              const u = resultUrl(k);
+              if (u) osOpen(u).catch(() => {});
+            }
+          },
+        },
+        {
+          label: "Copy Link",
+          onClick: () => {
+            const links = keys.map(resultUrl).filter((u): u is string => !!u);
+            if (links.length) navigator.clipboard.writeText(links.join("\n")).catch(() => {});
+          },
+        },
+      ],
+    });
   }
 
   // Same geometric row/column measurement App.tsx's own file grid uses
@@ -533,6 +582,7 @@ export function InternetView({
                   if (mobile) osOpen(`https://www.youtube.com/watch?v=${v.id}`).catch(() => {});
                 }}
                 onDoubleClick={() => openResult(v.id)}
+                onContextMenu={(e) => onTileContextMenu(v.id, e)}
               >
                 <span className="entry-icon">
                   <img className="internet-thumb" src={v.thumbnail} draggable={false} />
@@ -559,6 +609,7 @@ export function InternetView({
                   if (mobile) osOpen(v.page_url).catch(() => {});
                 }}
                 onDoubleClick={() => openResult(`p${i}`)}
+                onContextMenu={(e) => onTileContextMenu(`p${i}`, e)}
               >
                 <span className="entry-icon">
                   {v.thumbnail ? (
@@ -586,6 +637,7 @@ export function InternetView({
                   if (mobile) osOpen(img.image).catch(() => {});
                 }}
                 onDoubleClick={() => osOpen(img.image).catch(() => {})}
+                onContextMenu={(e) => onTileContextMenu(`i${i}`, e)}
               >
                 <img className="internet-thumb" src={img.thumbnail} draggable={false} />
                 <span className="entry-name">{img.title}</span>
@@ -606,6 +658,7 @@ export function InternetView({
                   if (mobile) osOpen(b.url).catch(() => {});
                 }}
                 onDoubleClick={() => osOpen(b.url).catch(() => {})}
+                onContextMenu={(e) => onTileContextMenu(`b${i}`, e)}
               >
                 <span className="entry-icon">
                   <FileIcon entry={{ name: "book.pdf", is_dir: false, size: 0, mtime: 0 }} />
@@ -627,6 +680,7 @@ export function InternetView({
           }}
         />
       )}
+      <ContextMenu state={contextMenu} onClose={() => setContextMenu(null)} />
     </div>
   );
 }

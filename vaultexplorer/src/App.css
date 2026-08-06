@@ -4559,23 +4559,20 @@ input[type="range"]::-webkit-slider-thumb {
   outline: none;
 }
 .internet-results {
-  padding: 14px 12px;
-  /* Wider columns than the base .entries.icon grid, and a much bigger
-     gap -- these tiles carry a noticeably bigger thumbnail (see
-     .internet-thumb) than the base file grid's, and the base grid's own
-     tight 6px/4px gap (fine for small square icons) read as crammed
-     once the tiles got this much bigger, not actually overlapping but
-     close enough to look cluttered -- reported directly. */
-  grid-template-columns: repeat(auto-fill, minmax(calc(150px * var(--icon-scale)), calc(180px * var(--icon-scale))));
-  gap: 22px 16px;
+  padding: 20px 18px;
+  /* Reported twice as still too crammed even after a first widening
+     pass -- this time the gap grows along with the thumbnail (see
+     .internet-thumb) instead of just the thumbnail alone, so more
+     columns don't get squeezed to fit; auto-fill + a wide minmax floor
+     means fewer, more spaced-out columns rather than many tight ones. */
+  grid-template-columns: repeat(auto-fill, minmax(calc(210px * var(--icon-scale)), calc(240px * var(--icon-scale))));
+  gap: 36px 28px;
 }
 .internet-thumb {
-  /* 1.5x the original 96x64 -- reported directly that a full 2x (192x128)
-     made the grid feel cramped once every tile was that much bigger with
-     the same tight file-grid gap; this pairs the bigger gap above with a
-     more modest size increase instead of pushing both to the extreme. */
-  width: calc(144px * var(--icon-scale, 1));
-  height: calc(96px * var(--icon-scale, 1));
+  /* Back up to the original full-2x ask (192x128) now that the gap
+     above is big enough to keep it from reading as cluttered. */
+  width: calc(192px * var(--icon-scale, 1));
+  height: calc(128px * var(--icon-scale, 1));
   object-fit: cover;
   border-radius: 6px;
   background: var(--field-bg);

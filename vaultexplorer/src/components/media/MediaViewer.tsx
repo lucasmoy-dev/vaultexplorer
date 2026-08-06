@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api } from "../../api";
-import { ChevronLeft, ChevronRight, CloseGlyph, PencilGlyph, RotateGlyph, ShareGlyph, TrashGlyph } from "../../icons";
+import { ChevronLeft, ChevronRight, CloseGlyph, PencilGlyph, RotateGlyph, TrashGlyph } from "../../icons";
+import { ContextMenu, MenuState } from "../../ContextMenu";
 import { ImageStage } from "./ImageStage";
 import { VideoStage } from "./VideoStage";
 import { AudioStage } from "./AudioStage";
@@ -141,6 +142,7 @@ export function MediaViewer({
   const [rotateSignal, setRotateSignal] = useState(0);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [overflowMenu, setOverflowMenu] = useState<MenuState>(null);
   // While the current image is zoomed in, a one-finger pan is ImageStage's
   // gesture to interpret, not this shell's swipe-to-navigate -- see
   // ImageStage's `onZoomChange` doc comment for the bug this fixes.
@@ -431,10 +433,10 @@ export function MediaViewer({
       onTouchEnd={onTouchEnd}
     >
       <div className="media-viewer-card" onMouseDown={(e) => e.stopPropagation()}>
-        <div className={`mv-toolbar ${isImage ? "mv-toolbar-bottom" : ""}`}>
-          <button className="mv-icon-btn" onClick={onClose} aria-label="Close" title="Close (Esc)">
-            <CloseGlyph size={18} />
-          </button>
+        {/* Bottom-anchored is a mobile-only convention (thumb reach) --
+            reported directly that it read as wrong on desktop, where the
+            title belongs at the top like everything else here. */}
+        <div className={`mv-toolbar ${isImage && mobile ? "mv-toolbar-bottom" : ""}`}>
           <div className="mv-title" title={current?.name ?? ""}>
             {current?.name ?? ""}
           </div>
@@ -454,29 +456,56 @@ export function MediaViewer({
                 </button>
               </>
             )}
-            {mobile && (
+            {/* Delete lives in the "..." overflow now, not as its own
+                always-visible icon -- reported directly. The armed
+                confirm chip still shows inline (right next to the
+                overflow button) once "Delete" has been picked once, so
+                the existing tap-again-to-confirm safety window survives
+                the menu closing after the first click. */}
+            {deleteArmed && (
               <button
-                className="mv-icon-btn"
-                onClick={handleShare}
-                disabled={!resolvedAbsPath || sharing}
-                aria-label="Share"
-                title="Share"
+                className="mv-icon-btn mv-delete-btn armed"
+                onClick={armOrConfirmDelete}
+                disabled={deleting}
+                aria-label="Confirm delete"
+                title="Click again to confirm"
               >
-                <ShareGlyph size={17} />
+                <TrashGlyph size={16} />
+                <span className="mv-delete-label">Confirm</span>
               </button>
             )}
             <button
-              className={`mv-icon-btn mv-delete-btn ${deleteArmed ? "armed" : ""}`}
-              onClick={armOrConfirmDelete}
-              disabled={deleting}
-              aria-label={deleteArmed ? "Confirm delete" : "Delete"}
-              title={deleteArmed ? "Click again to confirm" : "Delete"}
+              className="mv-icon-btn"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setOverflowMenu({
+                  x: r.right,
+                  y: r.bottom + 4,
+                  items: [
+                    ...(mobile
+                      ? [
+                          {
+                            label: "Share",
+                            disabled: !resolvedAbsPath || sharing,
+                            onClick: handleShare,
+                          },
+                        ]
+                      : []),
+                    { label: "Delete", danger: true, onClick: armOrConfirmDelete },
+                  ],
+                });
+              }}
+              aria-label="More"
+              title="More"
             >
-              <TrashGlyph size={16} />
-              {deleteArmed && <span className="mv-delete-label">Confirm</span>}
+              ⋯
+            </button>
+            <button className="mv-icon-btn" onClick={onClose} aria-label="Close" title="Close (Esc)">
+              <CloseGlyph size={18} />
             </button>
           </div>
         </div>
+        <ContextMenu state={overflowMenu} onClose={() => setOverflowMenu(null)} />
 
         <button
           className={`mv-nav-btn mv-nav-prev ${hasPrev ? "" : "hidden"}`}

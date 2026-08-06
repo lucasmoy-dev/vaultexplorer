@@ -13,6 +13,7 @@ import {
   VolumeMuteGlyph,
 } from "../../icons";
 import { useMediaBlobSrc } from "../../hooks/useMediaBlobSrc";
+import { Dropdown } from "../../ContextMenu";
 import "./AudioStage.css";
 
 // AudioStage -- the "now playing" mini music-player shown inside the
@@ -459,19 +460,12 @@ export function AudioStage({
           >
             <ReverseGlyph size={16} />
           </button>
-          <select
+          <Dropdown
             className="audio-speed"
-            value={rate}
-            onChange={(e) => setSpeed(Number(e.target.value))}
-            title="Playback speed"
-            aria-label="Playback speed"
-          >
-            {SPEEDS.map((s) => (
-              <option key={s} value={s}>
-                {s}x
-              </option>
-            ))}
-          </select>
+            value={String(rate)}
+            options={SPEEDS.map((s) => ({ value: String(s), label: `${s}x` }))}
+            onChange={(v) => setSpeed(Number(v))}
+          />
         </div>
 
         <div className="audio-volume-row">

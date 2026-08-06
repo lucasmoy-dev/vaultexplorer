@@ -12,7 +12,7 @@
 //! so a bad call is still recoverable.
 
 use crate::errmap::ToStringErr;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use tauri::ipc::Channel;
 
@@ -35,6 +35,11 @@ briefly, one line at a time. When you're done, give a short summary of what chan
 #[tauri::command]
 pub(crate) fn claude_reorganize_folder(path: String, channel: Channel<String>) -> Result<(), String> {
     let claude = which_claude().ok_or("Claude Code CLI (`claude`) not found on PATH")?;
+    // Prompt goes over stdin, not as a trailing positional arg: `--allowedTools`
+    // takes a variadic list, so a positional prompt string right after it gets
+    // swallowed as one more (invalid) tool name and `claude` sees no prompt at
+    // all ("Input must be provided either through stdin or as a prompt
+    // argument when using --print"). Stdin sidesteps the ambiguity entirely.
     let mut child = Command::new(&claude)
         .arg("--print")
         .arg("--dangerously-skip-permissions")
@@ -42,12 +47,18 @@ pub(crate) fn claude_reorganize_folder(path: String, channel: Channel<String>) -
         .arg(&path)
         .arg("--allowedTools")
         .arg("Bash,Read,Write,Edit,Glob,Grep")
-        .arg(build_prompt(&path))
         .current_dir(&path)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .str_err()?;
+
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let prompt = build_prompt(&path);
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(prompt.as_bytes());
+    });
 
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
