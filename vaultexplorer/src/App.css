@@ -4755,12 +4755,9 @@ input[type="range"]::-webkit-slider-thumb {
   background: #34c759;
 }
 .contact-action-whatsapp {
-  width: auto;
-  padding: 0 12px 0 10px;
+  width: 34px;
   color: #fff;
   background: #25d366;
-  font-size: 12.5px;
-  font-weight: 600;
 }
 
 /* ============================================================

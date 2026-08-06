@@ -77,7 +77,6 @@ function ContactRow({
             onClick={() => waLink && osOpen(waLink).catch(() => {})}
           >
             <ChatGlyph size={16} />
-            <span>WhatsApp</span>
           </button>
         </div>
       )}
