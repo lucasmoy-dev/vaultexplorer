@@ -135,6 +135,12 @@ export function ContactRow({
 function FolderRow({
   entry,
   isDropTarget,
+  selected,
+  editing,
+  editValue,
+  onEditChange,
+  onEditCommit,
+  onEditCancel,
   onOpen,
   onMenu,
   onDragOver,
@@ -143,6 +149,12 @@ function FolderRow({
 }: {
   entry: Entry;
   isDropTarget: boolean;
+  selected: boolean;
+  editing: boolean;
+  editValue: string;
+  onEditChange: (v: string) => void;
+  onEditCommit: () => void;
+  onEditCancel: () => void;
   onOpen: () => void;
   onMenu: (e: React.MouseEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -151,8 +163,12 @@ function FolderRow({
 }) {
   return (
     <div
-      className={`contact-row contact-folder-row ${isDropTarget ? "drop-target" : ""}`}
-      onClick={onOpen}
+      // data-name is what App's reveal effect looks for when it scrolls a
+      // just-created item into view -- without it, making a folder in this
+      // view selected nothing and scrolled nowhere.
+      data-name={entry.name}
+      className={`contact-row contact-folder-row ${isDropTarget ? "drop-target" : ""} ${selected ? "selected" : ""}`}
+      onClick={editing ? undefined : onOpen}
       onContextMenu={onMenu}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -162,7 +178,27 @@ function FolderRow({
         <FileIcon entry={entry} />
       </div>
       <div className="contact-info">
-        <div className="contact-name">{displayEntryName(entry, false)}</div>
+        {editing ? (
+          // A new folder opens straight into its own name field, same as
+          // the file grid does -- naming it is the next thing you want,
+          // and "untitled folder" sitting there needing a separate rename
+          // was the reported gap.
+          <input
+            autoFocus
+            className="contact-folder-name-edit"
+            value={editValue}
+            onChange={(e) => onEditChange(e.target.value)}
+            onFocus={(e) => e.currentTarget.select()}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={onEditCommit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onEditCommit();
+              if (e.key === "Escape") onEditCancel();
+            }}
+          />
+        ) : (
+          <div className="contact-name">{displayEntryName(entry, false)}</div>
+        )}
       </div>
     </div>
   );
@@ -193,6 +229,10 @@ export function ContactsGrid({
   pathFor,
   emptyMessage,
   header,
+  renaming,
+  onRenameChange,
+  onRenameCommit,
+  onRenameCancel,
 }: {
   entries: Entry[];
   curDir: string;
@@ -216,6 +256,12 @@ export function ContactsGrid({
   pathFor?: (entry: Entry) => string;
   emptyMessage?: string;
   header?: React.ReactNode;
+  // Inline rename of a folder row, driven by App's own renaming state so a
+  // freshly created folder can open straight into its name field.
+  renaming?: { name: string; value: string } | null;
+  onRenameChange?: (v: string) => void;
+  onRenameCommit?: () => void;
+  onRenameCancel?: () => void;
 }) {
   // Sorted by filename, not the parsed display name -- each row parses
   // its own vCard asynchronously (see ContactRow), so the *real* name
@@ -322,6 +368,12 @@ export function ContactsGrid({
             key={entry.name}
             entry={entry}
             isDropTarget={dropTargetName === entry.name}
+            selected={selected.has(entry.name)}
+            editing={renaming?.name === entry.name}
+            editValue={renaming?.name === entry.name ? renaming.value : ""}
+            onEditChange={(v) => onRenameChange?.(v)}
+            onEditCommit={() => onRenameCommit?.()}
+            onEditCancel={() => onRenameCancel?.()}
             onOpen={() => onActivateOther(entry)}
             onMenu={(e) => onMenu(e, entry)}
             onDragOver={(e) => {
@@ -467,8 +519,11 @@ export function ContactEditForm({
                     osOpen(`https://wa.me/${cleanPhoneForLink(primaryPhone).replace(/^\+/, "")}`).catch(() => {})
                   }
                 >
+                  {/* Icon only, same as the contact rows: the glyph plus
+                      its aria-label already say what it is, and the word
+                      made this button twice the size of the call button
+                      sitting next to it. */}
                   <ChatGlyph size={16} />
-                  <span>WhatsApp</span>
                 </button>
               </div>
             )}

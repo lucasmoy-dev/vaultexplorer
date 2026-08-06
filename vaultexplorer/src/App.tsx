@@ -5798,6 +5798,10 @@ function Explorer({ home }: { home: string }) {
               curDir={curDir}
               inVault={inVault}
               selection={selection}
+              renaming={renaming}
+              onRenameChange={(v) => setRenaming((r) => (r ? { ...r, value: v } : r))}
+              onRenameCommit={commitRename}
+              onRenameCancel={() => setRenaming(null)}
               onEditContact={(entry, fullPath) =>
                 withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
               }
