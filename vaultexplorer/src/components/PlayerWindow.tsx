@@ -1,15 +1,16 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { api, PlayerItem, PlayableSource } from "../api";
-import { ChevronLeft, ChevronRight, CloseGlyph } from "../icons";
+import { ChevronLeft, ChevronRight } from "../icons";
+import { TrafficLights } from "../TitleBar";
 import "./PlayerWindow.css";
 
 // PlayerWindow -- the standalone "just the video, nothing else" window
 // double-clicking a video result in InternetView opens (see App.tsx's
 // `?player=1` query-string routing, same convention as PickerView's
-// `?picker=`). One browser tab's worth of chrome (a title bar with
-// close/prev/next) over a single, full-bleed video -- no toolbar, no
-// sidebar, no gallery grid around it.
+// `?picker=`). Real window chrome (macOS traffic lights, with green mapped
+// to fullscreen the way every mac video player does) over a single,
+// full-bleed video -- no toolbar, no sidebar, no gallery grid around it.
 //
 // `kind` is the actual provider id ("youtube" | "xhamster" | "cuevana3")
 // rather than a generic "youtube vs provider" split -- every non-YouTube
@@ -21,11 +22,18 @@ export interface PlayerWindowProps {
   startIndex: number;
 }
 
+// How long the chrome (titlebar + prev/next arrows) stays up after the
+// last pointer movement. Matches the in-app VideoStage's own control
+// timeout so both players feel like the same player.
+const CHROME_HIDE_MS = 2600;
+
 export function PlayerWindow({ kind, items, startIndex }: PlayerWindowProps): React.JSX.Element {
   const [index, setIndex] = useState(Math.min(Math.max(startIndex, 0), Math.max(items.length - 1, 0)));
   const [source, setSource] = useState<PlayableSource | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const current = items[index] ?? null;
   const hasPrev = index > 0;
@@ -46,11 +54,9 @@ export function PlayerWindow({ kind, items, startIndex }: PlayerWindowProps): Re
                 // Not the embed URL directly: this window's origin is
                 // `tauri://localhost`, and handing YouTube a non-http
                 // origin is what error 153 ("video player configuration
-                // error") *is* -- the previous fix passed the real
-                // runtime origin, which on desktop is exactly the value
-                // YouTube refuses. youtube_embed_url instead returns a
-                // loopback page (see ytembed.rs) that embeds YouTube
-                // from a real `http://127.0.0.1:<port>` origin.
+                // error") *is*. youtube_embed_url returns a loopback page
+                // (see ytembed.rs) that embeds YouTube from a real
+                // `http://127.0.0.1:<port>` origin.
                 url: await api.youtubeEmbedUrl(current.key),
               }
             : await api.resolveProviderPlayable(kind, current.key);
@@ -67,34 +73,67 @@ export function PlayerWindow({ kind, items, startIndex }: PlayerWindowProps): Re
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.key]);
 
+  // Any pointer movement brings the chrome back and restarts its countdown.
+  // Deliberately not gated on "is playing": this window has no play state
+  // of its own for an <iframe> provider, and a still-visible titlebar over
+  // a paused video is the macOS behaviour anyway.
+  const wake = useCallback(() => {
+    setChromeVisible(true);
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setChromeVisible(false), CHROME_HIDE_MS);
+  }, []);
+
+  useEffect(() => {
+    wake();
+    return () => {
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+    };
+  }, [wake]);
+
   function goPrev() {
     if (hasPrev) setIndex((i) => i - 1);
   }
   function goNext() {
     if (hasNext) setIndex((i) => i + 1);
   }
-  function close() {
-    getCurrentWebviewWindow().close().catch(() => {});
-  }
+
+  // Native window fullscreen rather than the DOM Fullscreen API: the video
+  // lives in a cross-origin <iframe> for YouTube, so requesting DOM
+  // fullscreen on our own container leaves the player letterboxed inside
+  // it. Taking the whole window full-screen has no such problem and is
+  // what the green button means on macOS.
+  const toggleFullscreen = useCallback(async () => {
+    const win = getCurrentWebviewWindow();
+    try {
+      const isFs = await win.isFullscreen();
+      await win.setFullscreen(!isFs);
+    } catch {
+      // A window manager that refuses fullscreen shouldn't break playback.
+    }
+  }, []);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") close();
+      if (e.key === "Escape") getCurrentWebviewWindow().close().catch(() => {});
       else if (e.key === "ArrowLeft") goPrev();
       else if (e.key === "ArrowRight") goNext();
+      else if (e.key === "f" || e.key === "F") void toggleFullscreen();
+      wake();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasPrev, hasNext]);
+  }, [hasPrev, hasNext, toggleFullscreen, wake]);
 
   return (
-    <div className="player-window" data-tauri-drag-region>
+    <div
+      className={`player-window${chromeVisible ? "" : " chrome-hidden"}`}
+      onMouseMove={wake}
+      onTouchStart={wake}
+    >
       <div className="player-titlebar" data-tauri-drag-region>
-        <button className="player-icon-btn" onClick={close} aria-label="Close" title="Close (Esc)">
-          <CloseGlyph size={16} />
-        </button>
-        <div className="player-title" title={current?.title ?? ""}>
+        <TrafficLights onMaximize={toggleFullscreen} />
+        <div className="player-title" title={current?.title ?? ""} data-tauri-drag-region>
           {current?.title ?? ""}
         </div>
         <div className="player-titlebar-spacer" />

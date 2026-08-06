@@ -15,15 +15,35 @@
   overflow: hidden;
 }
 
+/* The titlebar floats over the video rather than taking a 40px slice out
+   of it: this window is the video, and a permanently reserved strip means
+   a permanently letterboxed picture. It fades out with the rest of the
+   chrome (see .chrome-hidden), so a playing video is eventually just the
+   video, full-bleed -- including in fullscreen. */
 .player-titlebar {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 10px;
   height: 40px;
   padding: 0 10px;
-  background: rgba(20, 20, 22, 0.95);
-  border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
+  transition: opacity 0.35s ease;
+}
+/* Opacity + pointer-events rather than display/visibility: this has to
+   animate, and a hidden bar must not keep swallowing clicks meant for the
+   player underneath it. */
+.player-window.chrome-hidden .player-titlebar,
+.player-window.chrome-hidden .player-nav-btn {
+  opacity: 0;
+  pointer-events: none;
+}
+.player-window.chrome-hidden {
+  cursor: none;
 }
 .player-title {
   flex: 1;
@@ -98,7 +118,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.12s ease, opacity 0.35s ease;
 }
 .player-nav-btn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.6);

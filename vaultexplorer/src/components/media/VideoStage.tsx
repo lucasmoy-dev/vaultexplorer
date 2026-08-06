@@ -75,32 +75,66 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [scrubbing, setScrubbing] = useState(false);
+  const [playError, setPlayError] = useState("");
 
-  // Web Audio graph: element -> GainNode -> speakers, built once and
-  // reused across every video in the gallery (the same <video> element is
-  // reused, only its `src` changes) -- createMediaElementSource throws if
-  // called twice on the same element.
+  // Web Audio graph: element -> GainNode -> speakers. Built *lazily*, only
+  // once a volume above 100% is actually asked for.
+  //
+  // It used to be built eagerly on mount, and that alone stopped every
+  // local file from playing: routing an element whose src is an `asset://`
+  // URL through createMediaElementSource gives WebKit a media stream from
+  // an opaque origin, and it then refuses to load the resource at all --
+  // the reported "the video player doesn't work", reproduced as a black
+  // stage stuck at 0:00/0:00 while the very same file plays fine straight
+  // from the element (and the same asset:// URL renders fine as an image).
+  // Below 100% the element's own `volume` does the job with no graph, so
+  // the common case never touches Web Audio.
   const audioCtxRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
+  function ensureGain(): GainNode | null {
+    if (gainNodeRef.current) return gainNodeRef.current;
+    const el = videoRef.current;
+    if (!el) return null;
+    const AudioContextCtor =
+      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    try {
+      const ctx = new AudioContextCtor();
+      const source = ctx.createMediaElementSource(el);
+      const gain = ctx.createGain();
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      audioCtxRef.current = ctx;
+      gainNodeRef.current = gain;
+      void ctx.resume().catch(() => {});
+      return gain;
+    } catch {
+      // createMediaElementSource throws if this element was already
+      // routed once -- and there's nothing to recover, boost just stays
+      // unavailable rather than breaking playback.
+      return null;
+    }
+  }
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) return;
-    const ctx = new AudioContextCtor();
-    const source = ctx.createMediaElementSource(el);
-    const gain = ctx.createGain();
-    source.connect(gain);
-    gain.connect(ctx.destination);
-    audioCtxRef.current = ctx;
-    gainNodeRef.current = gain;
+    const wanted = muted ? 0 : volume;
+    // Only the >1 case needs the graph; everything else stays on the
+    // plain element so the boost feature can't cost normal playback.
+    const gain = wanted > 1 ? ensureGain() : gainNodeRef.current;
+    if (gain) {
+      el.volume = 1;
+      gain.gain.value = wanted;
+    } else {
+      el.volume = Math.min(wanted, 1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [volume, muted]);
+  useEffect(() => {
     return () => {
-      ctx.close().catch(() => {});
+      audioCtxRef.current?.close().catch(() => {});
     };
   }, []);
-  useEffect(() => {
-    if (gainNodeRef.current) gainNodeRef.current.gain.value = muted ? 0 : volume;
-  }, [volume, muted]);
 
   // A new src means a new video: snap state back to paused/0:00 rather
   // than showing the *previous* clip's progress for a frame while
@@ -204,7 +238,14 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
     if (el.paused || el.ended) {
       if (el.ended) el.currentTime = 0;
       audioCtxRef.current?.resume().catch(() => {});
-      void el.play().catch(() => {});
+      // Surfaced, not swallowed: a rejected play() (autoplay policy, a
+      // decode failure, a source the engine won't touch) used to leave
+      // the stage sitting silently at 0:00 with no clue why, which is
+      // most of why "the player doesn't work" took so long to pin down.
+      void el.play().then(
+        () => setPlayError(""),
+        (e: unknown) => setPlayError(String(e)),
+      );
     } else {
       el.pause();
     }
@@ -267,8 +308,14 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
         aria-label={name}
         className="video-stage-el"
         onClick={togglePlay}
+        onError={() => {
+          const err = videoRef.current?.error;
+          setPlayError(err ? `Media error ${err.code}: ${err.message || "no detail"}` : "Media error");
+        }}
         playsInline
       />
+
+      {playError && <p className="video-stage-error">{playError}</p>}
 
       {ended && (
         <button

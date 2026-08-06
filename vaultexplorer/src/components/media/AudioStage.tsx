@@ -115,30 +115,69 @@ export function AudioStage({
   const [seeking, setSeeking] = useState(false);
 
   // ---- Web Audio graph: element -> GainNode -> speakers -----------------
-  // Built once and reused across every track (the same <audio> element is
-  // reused for the whole gallery, only its `src` changes) --
-  // createMediaElementSource throws if called twice on the same element.
+  // Built *lazily* -- only once something actually needs it (a volume
+  // above 100%, or reverse playback, which decodes through the context
+  // anyway). Building it eagerly on mount broke playback outright for
+  // local files: an element whose src is an `asset://` URL, once routed
+  // through createMediaElementSource, hands WebKit a stream from an
+  // opaque origin and it stops loading the resource at all (see the same
+  // note in VideoStage). Below 100% the element's own `volume` is enough.
   const audioCtxRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
+  function ensureAudioCtx(): AudioContext | null {
+    if (audioCtxRef.current) return audioCtxRef.current;
+    const AudioContextCtor =
+      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    const ctx = new AudioContextCtor();
+    audioCtxRef.current = ctx;
+    return ctx;
+  }
+  function ensureGain(): GainNode | null {
+    if (gainNodeRef.current) return gainNodeRef.current;
+    const el = audioRef.current;
+    const ctx = ensureAudioCtx();
+    if (!el || !ctx) return null;
+    try {
+      const source = ctx.createMediaElementSource(el);
+      const gain = ctx.createGain();
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      gainNodeRef.current = gain;
+      void ctx.resume().catch(() => {});
+      return gain;
+    } catch {
+      return null;
+    }
+  }
+  // Reverse playback's own output node (see startReverseFrom).
+  const reverseGainRef = useRef<GainNode | null>(null);
+  function createReverseGain(ctx: AudioContext): GainNode {
+    const gain = ctx.createGain();
+    gain.gain.value = muted ? 0 : volume;
+    gain.connect(ctx.destination);
+    reverseGainRef.current = gain;
+    return gain;
+  }
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
-    const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) return;
-    const ctx = new AudioContextCtor();
-    const source = ctx.createMediaElementSource(el);
-    const gain = ctx.createGain();
-    source.connect(gain);
-    gain.connect(ctx.destination);
-    audioCtxRef.current = ctx;
-    gainNodeRef.current = gain;
+    const wanted = muted ? 0 : volume;
+    if (reverseGainRef.current) reverseGainRef.current.gain.value = wanted;
+    const gain = wanted > 1 ? ensureGain() : gainNodeRef.current;
+    if (gain) {
+      el.volume = 1;
+      gain.gain.value = wanted;
+    } else {
+      el.volume = Math.min(wanted, 1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [volume, muted]);
+  useEffect(() => {
     return () => {
-      ctx.close().catch(() => {});
+      audioCtxRef.current?.close().catch(() => {});
     };
   }, []);
-  useEffect(() => {
-    if (gainNodeRef.current) gainNodeRef.current.gain.value = muted ? 0 : volume;
-  }, [volume, muted]);
 
   // ---- reverse playback: decode -> reverse each channel -> AudioBufferSourceNode ----
   // <audio>/<video> have no real reverse-playback support (a negative
@@ -166,10 +205,15 @@ export function AudioStage({
   }
 
   function startReverseFrom(offsetSeconds: number) {
-    const ctx = audioCtxRef.current;
-    const gain = gainNodeRef.current;
+    const ctx = ensureAudioCtx();
     const buffer = reverseBufferRef.current;
-    if (!ctx || !gain || !buffer) return;
+    if (!ctx || !buffer) return;
+    // Its own gain, not the element's -- reverse playback doesn't go
+    // through the <audio> element at all, and routing the element into
+    // Web Audio just to borrow its gain node is exactly what breaks
+    // normal asset:// playback afterwards (see ensureGain above).
+    const gain = reverseGainRef.current ?? createReverseGain(ctx);
+    if (!gain) return;
     stopReverseNode();
     const node = ctx.createBufferSource();
     node.buffer = buffer;
@@ -191,7 +235,7 @@ export function AudioStage({
   }
 
   async function toggleReverse() {
-    const ctx = audioCtxRef.current;
+    const ctx = ensureAudioCtx();
     if (!ctx) return;
     if (reversed) {
       // Back to normal playback, resuming roughly where the reversed

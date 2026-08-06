@@ -206,3 +206,22 @@
 .video-speed:focus {
   outline: 1px solid var(--accent, #0a6cff);
 }
+
+/* Playback failures are shown on the stage instead of only in a console
+   nobody can open in a release build -- a silent black stage stuck at
+   0:00 is indistinguishable from "still loading". */
+.video-stage-error {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 80%;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #ff8a80;
+  font-size: 12.5px;
+  text-align: center;
+  z-index: 3;
+}

@@ -1,0 +1,249 @@
+//! A loopback HTTP server for local media files.
+//!
+//! `convertFileSrc` hands the webview an `asset://` URL, and WebKitGTK
+//! renders those fine for images -- but a `<video>`/`<audio>` element gets
+//! its bytes through GStreamer, not through the page's own loader, and it
+//! never plays a custom-scheme URL: the element sits at `readyState` 0
+//! with `duration` 0 forever, which is the long-standing "the video player
+//! doesn't work" report (black stage, 0:00/0:00, on every file, while the
+//! same path shown as an image works).
+//!
+//! So media is served over real HTTP from 127.0.0.1 instead, with the byte
+//! ranges a media element needs to seek. Access is deliberately narrow:
+//! loopback-only, and a URL only resolves if the frontend registered that
+//! exact path first and holds the random token minted for it -- this
+//! server never maps a URL path onto the filesystem, so there is no
+//! traversal surface.
+
+use crate::errmap::{LockExt, ToStringErr};
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+fn registry() -> &'static Mutex<HashMap<String, PathBuf>> {
+    static REG: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    REG.get_or_init(Default::default)
+}
+
+/// Tokens are per-path and per-run: enough to keep anything that isn't
+/// this webview from guessing a URL, without pretending to be a real
+/// capability system (the server is loopback-only to begin with).
+fn mint_token(path: &std::path::Path) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    // Process id + counter + a hash of the path: unique per run, stable
+    // for the same path so re-opening a file reuses one registry entry.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in path.as_os_str().as_encoded_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:x}{:x}{:x}", std::process::id(), n, hash)
+}
+
+fn port() -> Result<u16, String> {
+    static PORT: OnceLock<Result<u16, String>> = OnceLock::new();
+    PORT.get_or_init(start_server).clone()
+}
+
+fn start_server() -> Result<u16, String> {
+    let server = tiny_http::Server::http("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = server.server_addr().to_ip().ok_or("no TCP address")?.port();
+    std::thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let token = query_param(request.url(), "t").unwrap_or_default();
+            let path = registry().lock_safe().get(&token).cloned();
+            let range = header_value(&request, "range");
+            match path {
+                Some(p) => {
+                    if let Err(_e) = serve_file(request, &p, range.as_deref()) {
+                        // A dropped connection (the element seeked away
+                        // mid-response) is the normal case here, not
+                        // something worth tearing the server down for.
+                    }
+                }
+                None => {
+                    let _ = request.respond(tiny_http::Response::empty(404));
+                }
+            }
+        }
+    });
+    Ok(port)
+}
+
+fn header_value(request: &tiny_http::Request, name: &'static str) -> Option<String> {
+    // `equiv` wants a &'static str (tiny_http compares against interned
+    // field names), so this takes one rather than allocating a HeaderField
+    // per lookup.
+    request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv(name))
+        .map(|h| h.value.as_str().to_string())
+}
+
+fn query_param(url: &str, key: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+/// `bytes=START-[END]` -- the only form a media element sends. A
+/// suffix range (`bytes=-N`) is answered as "from N bytes before the
+/// end", which is what a container probing its trailer asks for.
+fn parse_range(raw: &str, len: u64) -> Option<(u64, u64)> {
+    let spec = raw.strip_prefix("bytes=")?.split(',').next()?.trim();
+    let (start_s, end_s) = spec.split_once('-')?;
+    if start_s.is_empty() {
+        let n: u64 = end_s.parse().ok()?;
+        let n = n.min(len);
+        return Some((len.saturating_sub(n), len.saturating_sub(1)));
+    }
+    let start: u64 = start_s.parse().ok()?;
+    if start >= len {
+        return None;
+    }
+    let end = if end_s.is_empty() {
+        len - 1
+    } else {
+        end_s.parse::<u64>().ok()?.min(len - 1)
+    };
+    if end < start {
+        return None;
+    }
+    Some((start, end))
+}
+
+fn header(name: &str, value: &str) -> tiny_http::Header {
+    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes())
+        .unwrap_or_else(|_| unreachable!("header built from a checked literal"))
+}
+
+fn serve_file(request: tiny_http::Request, path: &std::path::Path, range: Option<&str>) -> Result<(), String> {
+    let mut file = File::open(path).str_err()?;
+    let len = file.metadata().str_err()?.len();
+    let mime = mime_for(path);
+
+    match range.and_then(|r| parse_range(r, len)) {
+        Some((start, end)) => {
+            let count = end - start + 1;
+            file.seek(SeekFrom::Start(start)).str_err()?;
+            let response = tiny_http::Response::new(
+                tiny_http::StatusCode(206),
+                vec![
+                    header("Content-Type", &mime),
+                    header("Accept-Ranges", "bytes"),
+                    header("Content-Range", &format!("bytes {start}-{end}/{len}")),
+                ],
+                file.take(count),
+                Some(count as usize),
+                None,
+            );
+            request.respond(response).str_err()
+        }
+        None => {
+            let response = tiny_http::Response::new(
+                tiny_http::StatusCode(200),
+                vec![header("Content-Type", &mime), header("Accept-Ranges", "bytes")],
+                file,
+                Some(len as usize),
+                None,
+            );
+            request.respond(response).str_err()
+        }
+    }
+}
+
+/// Enough of a mapping for what this app opens; anything unrecognized is
+/// left to the element's own sniffing rather than mislabeled.
+fn mime_for(path: &std::path::Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "mp4" | "m4v" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "avi" => "video/x-msvideo",
+        "ogv" => "video/ogg",
+        "mp3" => "audio/mpeg",
+        "m4a" | "aac" => "audio/mp4",
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+/// Registers `path` and returns the loopback URL a media element can play.
+#[tauri::command]
+pub fn media_url(path: String) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err(format!("Not a file: {path}"));
+    }
+    let token = mint_token(&p);
+    registry().lock_safe().insert(token.clone(), p);
+    let port = port()?;
+    Ok(format!("http://127.0.0.1:{port}/media?t={token}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("ve-mediaserver-{}-{name}", std::process::id()));
+        let mut f = File::create(&p).expect("create");
+        f.write_all(bytes).expect("write");
+        p
+    }
+
+    #[test]
+    fn serves_whole_file_and_byte_ranges() {
+        let path = temp_file("whole.mp4", b"0123456789");
+        let url = media_url(path.to_string_lossy().to_string()).expect("url");
+
+        let client = reqwest::blocking::Client::new();
+        let whole = client.get(&url).send().expect("send");
+        assert_eq!(whole.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(whole.text().expect("text"), "0123456789");
+
+        let part = client.get(&url).header("Range", "bytes=2-5").send().expect("send");
+        assert_eq!(part.status().as_u16(), 206);
+        assert_eq!(part.headers().get("content-range").unwrap(), "bytes 2-5/10");
+        assert_eq!(part.text().expect("text"), "2345");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn refuses_an_unregistered_token() {
+        // Force the server up, then ask for a token nothing minted.
+        let path = temp_file("reg.mp4", b"x");
+        let url = media_url(path.to_string_lossy().to_string()).expect("url");
+        let bogus = url.rsplit_once("t=").expect("token").0.to_string() + "t=nope";
+        let res = reqwest::blocking::get(&bogus).expect("send");
+        assert_eq!(res.status().as_u16(), 404);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn parses_the_range_forms_a_media_element_sends() {
+        assert_eq!(parse_range("bytes=0-", 10), Some((0, 9)));
+        assert_eq!(parse_range("bytes=2-5", 10), Some((2, 5)));
+        assert_eq!(parse_range("bytes=-3", 10), Some((7, 9)));
+        assert_eq!(parse_range("bytes=20-", 10), None);
+    }
+}

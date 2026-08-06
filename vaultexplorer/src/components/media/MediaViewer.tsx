@@ -197,7 +197,15 @@ export function MediaViewer({
     (async () => {
       try {
         const abs = current.inVault ? await api.openPath(current.fullPath) : current.fullPath;
-        const url = convertFileSrc(abs);
+        // Video and audio go through the loopback media server, not
+        // `asset://`: WebKitGTK hands media elements to GStreamer, which
+        // never loads a custom scheme -- the element just sits at 0:00
+        // with a black stage forever (see mediaserver.rs). Images are
+        // fetched by the page itself and load from asset:// fine, so they
+        // stay on the cheaper path. Mobile keeps its own blob fallback
+        // (useMediaBlobSrc), which is already proven there.
+        const needsServer = !mobile && (current.kind === "video" || current.kind === "audio");
+        const url = needsServer ? await api.mediaUrl(abs) : convertFileSrc(abs);
         srcCache.current.set(current.fullPath, url);
         absPathCache.current.set(current.fullPath, abs);
         if (!cancelled) {

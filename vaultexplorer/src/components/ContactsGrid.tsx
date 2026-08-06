@@ -7,6 +7,10 @@ import { useAutoSaveText } from "../hooks/useAutoSaveText";
 import { EditableFileName } from "./PreviewColumn";
 import { useSelection } from "../hooks/useSelection";
 
+// What this grid needs from whoever owns the selection -- the shape
+// useSelection() already returns, so App can hand its own straight in.
+export type SelectionApi = ReturnType<typeof useSelection>;
+
 function isVcf(entry: Entry): boolean {
   return !entry.is_dir && entry.name.toLowerCase().endsWith(".vcf");
 }
@@ -177,7 +181,7 @@ export function ContactsGrid({
   entries,
   curDir,
   inVault,
-  revealSelected,
+  selection,
   onEditContact,
   onActivateOther,
   onMenu,
@@ -193,14 +197,14 @@ export function ContactsGrid({
   entries: Entry[];
   curDir: string;
   inVault: boolean;
-  // App's own selection, used only when it has just created a file and
-  // wants that row highlighted and scrolled into view (selectAndReveal in
-  // App.tsx). Selection *inside* this grid -- click, ctrl/shift, marquee,
-  // drag-to-folder -- is local state (useSelection below); this prop just
-  // seeds it so a reveal lights up the right row.
-  // Omitted by the search-results call-site, which has no create flow of
-  // its own to reveal into.
-  revealSelected?: Set<string>;
+  // The *app's* selection, not a private one. This grid used to run its
+  // own useSelection, which meant the mobile selection toolbar ("N
+  // selected" / "Deselect All") was reading a different set than the rows
+  // were drawing: it always saw 0 selected here, so its button said
+  // "Select All" and cancelling a selection selected everything instead
+  // -- exactly the reported behaviour. One selection, owned by App.
+  // Omitted by the search-results call-site, which is read-only.
+  selection?: SelectionApi;
   onEditContact: (entry: Entry, fullPath: string) => void;
   onActivateOther: (entry: Entry) => void;
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
@@ -224,10 +228,10 @@ export function ContactsGrid({
   const contactNames = contacts.map((c) => c.name);
   const fullPathOf = (entry: Entry) => (pathFor ? pathFor(entry) : joinPath(curDir, entry.name));
 
-  const { selected, setSelected, selectOnly, toggle, selectRange } = useSelection();
-  useEffect(() => {
-    if (revealSelected?.size) setSelected(new Set(revealSelected));
-  }, [revealSelected]);
+  // A read-only grid (search results) gets a no-op selection rather than
+  // a second source of truth.
+  const fallback = useSelection();
+  const { selected, setSelected, selectOnly, toggle, selectRange } = selection ?? fallback;
   const [dragNames, setDragNames] = useState<string[]>([]);
   const [dropTargetName, setDropTargetName] = useState<string | null>(null);
   const [error, setError] = useState("");

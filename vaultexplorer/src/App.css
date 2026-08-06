@@ -4248,12 +4248,16 @@ input[type="range"]::-webkit-slider-thumb {
   background: linear-gradient(180deg, #ffe2b0, #e0a24e);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
+/* The front face is the board seen edge-on, so it should read as a plank
+   a couple of centimetres thick, not a slab -- 24px looked like the
+   latter. Thinner face + the unchanged lip above it gives the shelf a
+   lighter, more furniture-like edge. */
 .shelf-board-face {
   position: absolute;
   left: 0;
   right: 0;
   top: 16px;
-  height: 24px;
+  height: 15px;
   background-image: var(--wood-grain),
     linear-gradient(180deg, #c47a34 0%, #96591f 30%, #6e3c17 65%, #3c2109 100%);
   background-repeat: repeat, no-repeat;
@@ -4287,6 +4291,10 @@ input[type="range"]::-webkit-slider-thumb {
   position: relative;
   z-index: 1;
   height: 150px;
+  /* Items sat a touch high above the board's lip -- 5px down is where
+     they read as actually resting on the wood rather than hovering just
+     over it (measured against .shelf-board-lip's own top edge). */
+  transform: translateY(5px);
   display: flex;
   flex-direction: column;
   align-items: center;

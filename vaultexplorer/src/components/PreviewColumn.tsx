@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { Entry, api, joinPath, parentPath, formatSize, formatDate } from "../api";
 import { Loc } from "../types";
 import { FileIcon, CopyGlyph, CheckGlyph, kindOf } from "../icons";
@@ -127,7 +126,9 @@ function MediaPreview({
       // A vault file's real bytes only exist behind its FUSE mount; the
       // vault-relative path means nothing to the webview.
       const abs = inVault ? await api.openPath(fullPath) : fullPath;
-      setSrc(convertFileSrc(abs));
+      // Same reason MediaViewer does this: a media element can't load an
+      // asset:// URL under WebKitGTK (see mediaserver.rs).
+      setSrc(await api.mediaUrl(abs));
     } catch (e) {
       setError(String(e));
     }

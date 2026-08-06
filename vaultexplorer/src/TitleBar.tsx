@@ -8,7 +8,11 @@ import { api } from "./api";
 
 const appWindow = getCurrentWindow();
 
-export function TrafficLights() {
+// `onMaximize` overrides the green button for windows where "bigger" means
+// something more specific than the OS maximize -- the media/player windows
+// map it to real fullscreen, which is what a green button does in every
+// macOS video player.
+export function TrafficLights({ onMaximize }: { onMaximize?: () => void } = {}) {
   const [hovering, setHovering] = useState(false);
   return (
     <div
@@ -30,7 +34,11 @@ export function TrafficLights() {
           </svg>
         )}
       </button>
-      <button className="tl tl-max" aria-label="Maximize" onClick={() => appWindow.toggleMaximize()}>
+      <button
+        className="tl tl-max"
+        aria-label="Maximize"
+        onClick={() => (onMaximize ? onMaximize() : appWindow.toggleMaximize())}
+      >
         {hovering && (
           <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
             <path d="M4 4v4h4zM8 8V4H4z" fill="#0a3d00" />

@@ -931,8 +931,9 @@ function Explorer({ home }: { home: string }) {
   }, [driveSyncedPaths, gitSyncedPaths]);
   const [sortKey, setSortKey] = useState<"name" | "date" | "size" | "kind" | "created">("name");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
+  const selection = useSelection();
   const { selected, setSelected, lastClicked, setLastClicked, selectOnly, toggle, selectRange: selectRangeByNames } =
-    useSelection();
+    selection;
   // See the `selectionMode` declaration above -- exits on its own once
   // nothing is left selected, same convention as Google Files/Photos, so
   // there's no separate "still in select mode with 0 picked" limbo state.
@@ -5706,7 +5707,7 @@ function Explorer({ home }: { home: string }) {
               entries={entries}
               curDir={curDir}
               inVault={inVault}
-              revealSelected={selected}
+              selection={selection}
               onEditContact={(entry, fullPath) =>
                 withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
               }

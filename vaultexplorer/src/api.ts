@@ -171,6 +171,7 @@ export const api = {
   downloadWebResult: (url: string, destDir: string, filename: string, channel: Channel<ProgressEvent>) =>
     invoke<void>("download_web_result", { url, destDir, filename, channel }),
   youtubeEmbedUrl: (videoId: string) => invoke<string>("youtube_embed_url", { videoId }),
+  mediaUrl: (path: string) => invoke<string>("media_url", { path }),
   openPlayerWindow: (kind: string, items: PlayerItem[], index: number) =>
     invoke<void>("open_player_window", { kind, items: JSON.stringify(items), index }),
   openTerminal: (path: string, terminal: string) =>
