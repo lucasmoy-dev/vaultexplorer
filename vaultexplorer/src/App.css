@@ -4525,6 +4525,10 @@ input[type="range"]::-webkit-slider-thumb {
 .notes-other-tile:hover {
   background: var(--row-hover, rgba(127, 127, 127, 0.12));
 }
+.notes-other-tile.selected {
+  background: var(--selection-bg, var(--accent));
+  color: #fff;
+}
 .notes-empty {
   color: var(--text-2);
   font-size: 13px;
@@ -4689,6 +4693,13 @@ input[type="range"]::-webkit-slider-thumb {
   padding: 10px 4px;
   border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
   cursor: pointer;
+}
+.contact-row.selected {
+  background: var(--selection-bg, var(--accent));
+  color: #fff;
+}
+.contact-row.selected .contact-phone {
+  color: rgba(255, 255, 255, 0.8);
 }
 .contact-avatar {
   flex-shrink: 0;

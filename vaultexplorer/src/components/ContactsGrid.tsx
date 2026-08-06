@@ -12,12 +12,14 @@ function ContactRow({
   entry,
   fullPath,
   inVault,
+  selected,
   onEdit,
   onMenu,
 }: {
   entry: Entry;
   fullPath: string;
   inVault: boolean;
+  selected: boolean;
   onEdit: () => void;
   onMenu: (e: React.MouseEvent) => void;
 }) {
@@ -50,7 +52,12 @@ function ContactRow({
   const waLink = phone ? `https://wa.me/${cleanPhoneForLink(phone).replace(/^\+/, "")}` : undefined;
 
   return (
-    <div className="contact-row" onClick={onEdit} onContextMenu={onMenu}>
+    <div
+      className={`contact-row ${selected ? "selected" : ""}`}
+      data-name={entry.name}
+      onClick={onEdit}
+      onContextMenu={onMenu}
+    >
       <div className="contact-avatar">
         {parsed?.photoDataUrl ? (
           <img src={parsed.photoDataUrl} alt="" className="contact-avatar-photo" />
@@ -95,6 +102,7 @@ export function ContactsGrid({
   entries,
   curDir,
   inVault,
+  selected,
   onEditContact,
   onActivateOther,
   onMenu,
@@ -102,6 +110,7 @@ export function ContactsGrid({
   entries: Entry[];
   curDir: string;
   inVault: boolean;
+  selected: Set<string>;
   onEditContact: (entry: Entry, fullPath: string) => void;
   onActivateOther: (entry: Entry) => void;
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
@@ -122,6 +131,7 @@ export function ContactsGrid({
             entry={entry}
             fullPath={joinPath(curDir, entry.name)}
             inVault={inVault}
+            selected={selected.has(entry.name)}
             onEdit={() => onEditContact(entry, joinPath(curDir, entry.name))}
             onMenu={(e) => onMenu(e, entry)}
           />
@@ -132,7 +142,8 @@ export function ContactsGrid({
           {others.map((entry) => (
             <button
               key={entry.name}
-              className="notes-other-tile"
+              className={`notes-other-tile ${selected.has(entry.name) ? "selected" : ""}`}
+              data-name={entry.name}
               onClick={() => onActivateOther(entry)}
               onContextMenu={(e) => onMenu(e, entry)}
             >
