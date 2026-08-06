@@ -166,6 +166,8 @@ export const api = {
     invoke<ProviderVideoResult[]>("search_provider_videos", { provider, query }),
   resolveProviderPlayable: (provider: string, pageUrl: string) =>
     invoke<PlayableSource>("resolve_provider_playable", { provider, pageUrl }),
+  listAnimeflvEpisodes: (pageUrl: string) =>
+    invoke<AnimeflvEpisode[]>("list_animeflv_episodes", { pageUrl }),
   openPlayerWindow: (kind: string, items: PlayerItem[], index: number) =>
     invoke<void>("open_player_window", { kind, items: JSON.stringify(items), index }),
   openTerminal: (path: string, terminal: string) =>
@@ -611,6 +613,12 @@ export interface ProviderVideoResult {
   thumbnail: string;
   page_url: string;
   duration: string | null;
+}
+
+export interface AnimeflvEpisode {
+  number: number;
+  thumbnail: string;
+  page_url: string;
 }
 
 export interface Drive {

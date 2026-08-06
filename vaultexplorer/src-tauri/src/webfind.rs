@@ -532,6 +532,87 @@ pub(crate) fn search_provider_videos(provider: String, query: String) -> Result<
     }
 }
 
+#[derive(Serialize, Clone)]
+pub struct AnimeflvEpisode {
+    pub number: f64,
+    pub thumbnail: String,
+    pub page_url: String,
+}
+
+/// Finds a top-level `[...]` JS array literal right after `marker`,
+/// respecting quoted strings so a title containing `[`/`]` can't
+/// terminate the scan early. Returns the array's own `[...]` slice
+/// (still JSON, ready for `serde_json::from_str`).
+fn find_js_array<'a>(html: &'a str, marker: &str) -> Option<&'a str> {
+    let after = &html[html.find(marker)? + marker.len()..];
+    let open = after.find('[')?;
+    let bytes = after.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &c) in bytes.iter().enumerate().skip(open) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_string = true,
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&after[open..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A show's page renders its episode list client-side from two `var`s
+/// left in a plain `<script>` tag -- `anime_info` (`[id, name, slug]`)
+/// and `episodes` (`[[number, internal_id], ...]`, newest first, and
+/// `number` isn't always an integer -- OVAs/specials show up as e.g.
+/// `13.5`). Both are valid JSON once sliced out, no HTML parsing needed.
+/// Confirmed live against the site's own `funciones.js`: an episode's
+/// real page is `/ver/<slug>-<number>` and its thumbnail is
+/// `cdn.animeflv.net/screenshots/<anime_id>/<number>/th_3.jpg`.
+#[tauri::command]
+pub(crate) fn list_animeflv_episodes(page_url: String) -> Result<Vec<AnimeflvEpisode>, String> {
+    let html = http_client()?.get(&page_url).send().str_err()?.text().str_err()?;
+
+    let anime_info: Vec<serde_json::Value> = serde_json::from_str(
+        find_js_array(&html, "var anime_info = ").ok_or("couldn't find this show's info on the page")?,
+    )
+    .str_err()?;
+    let anime_id = anime_info.first().and_then(|v| v.as_str()).unwrap_or("0");
+    let slug = anime_info.get(2).and_then(|v| v.as_str()).ok_or("couldn't read this show's slug")?;
+
+    let episodes: Vec<(f64, i64)> = serde_json::from_str(
+        find_js_array(&html, "var episodes = ").ok_or("couldn't find this show's episode list on the page")?,
+    )
+    .str_err()?;
+
+    let domain = animeflv_domain();
+    let mut list: Vec<AnimeflvEpisode> = episodes
+        .into_iter()
+        .map(|(number, _internal_id)| AnimeflvEpisode {
+            number,
+            thumbnail: format!("https://cdn.animeflv.net/screenshots/{anime_id}/{number}/th_3.jpg"),
+            page_url: format!("https://{domain}/ver/{slug}-{number}"),
+        })
+        .collect();
+    list.sort_by(|a, b| a.number.total_cmp(&b.number));
+    Ok(list)
+}
+
 #[derive(Serialize)]
 pub struct PlayableSource {
     // "iframe" (a same-site chrome-free embed URL) or "video" (a raw,
