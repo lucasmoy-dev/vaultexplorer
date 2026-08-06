@@ -16,6 +16,7 @@ import {
   TAG_COLORS,
   ENCRYPTED_FILE_EXT,
   osOpen,
+  PlayerItem,
 } from "./api";
 import { TitleBar, TrafficLights } from "./TitleBar";
 import { ContextMenu, MenuState, MenuItem } from "./ContextMenu";
@@ -44,7 +45,6 @@ import {
   CloudSyncGlyph,
   LocalSyncGlyph,
   SettingsGlyph,
-  LockGlyph,
   NewFileGlyph,
   NewFolderGlyph,
   PasteGlyph,
@@ -69,6 +69,8 @@ import { LibraryShelf } from "./components/LibraryShelf";
 import { ContactsGrid } from "./components/ContactsGrid";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
+import { PlayerWindow } from "./components/PlayerWindow";
+import { ReorganizeSheet } from "./components/sheets/reorganize-sheet";
 import { buildSyncSubmenu } from "./menus";
 import { useSelection } from "./hooks/useSelection";
 import { useFavorites } from "./hooks/useFavorites";
@@ -745,6 +747,7 @@ function Explorer({ home }: { home: string }) {
 
   const [frozenPaths, setFrozenPaths] = useState<Set<string>>(new Set());
   const [unfreezeTarget, setUnfreezeTarget] = useState<string | null>(null);
+  const [reorganizeTarget, setReorganizeTarget] = useState<string | null>(null);
   const refreshFrozen = useCallback(() => {
     api
       .listFrozenFolders()
@@ -3886,6 +3889,22 @@ function Explorer({ home }: { home: string }) {
   function entryMenu(e: React.MouseEvent, entry: Entry): void {
     e.preventDefault();
     e.stopPropagation();
+    // On mobile, the only way this fires at all is a long-press (there's
+    // no right-click) -- and a long-press on a file grid is, on every
+    // comparable app (Google Photos/Files, iOS Files), the entry point
+    // into multi-select, landing directly on "this item selected, ready
+    // to tap more" rather than a menu you have to read and tap "Select"
+    // in first. Reported directly as hard to use, with an explicit ask
+    // for the best real UX here, not the least code -- this is that:
+    // one gesture to start selecting more than one file, no extra tap.
+    // Once already selecting, a long-press instead reaches this same
+    // menu as before (below), since that's the only way to get bulk
+    // actions for more than one file without a dedicated action bar.
+    if (mobile && !selectionMode) {
+      setSelectionMode(true);
+      selectOnly(entry.name);
+      return;
+    }
     if (!selected.has(entry.name)) selectOnly(entry.name);
     const many = selected.size > 1 && selected.has(entry.name);
     const targetNames = many ? [...selected] : [entry.name];
@@ -4240,6 +4259,9 @@ function Explorer({ home }: { home: string }) {
             ? { label: "Unfreeze…", onClick: () => setUnfreezeTarget(path) }
             : { label: "Freeze…", onClick: () => setPending({ kind: "freeze", entry }) }
         );
+        // Shells out to the `claude` CLI (see reorganize.rs) -- no
+        // equivalent on Android.
+        moreItems.push({ label: "Reorganize & Clean…", onClick: () => setReorganizeTarget(path) });
       }
     }
     items.push({ type: "submenu", label: "More", items: moreItems });
@@ -4296,13 +4318,6 @@ function Explorer({ home }: { home: string }) {
         danger: true,
         onClick: () => setPending({ kind: "delete", names: targetNames }),
       });
-    }
-    // No ⌘/⇧-click on touch to add more items to a selection -- "Select"
-    // is the entry point into that mode instead (see `selectionMode`);
-    // once in it, this same long-press menu still works for the single
-    // item pressed (`many` is false there), so it stays reachable.
-    if (mobile && !selectionMode) {
-      items.unshift({ label: "Select", onClick: () => setSelectionMode(true) }, { type: "separator" });
     }
     setMenu({ x: e.clientX, y: e.clientY, items });
   }
@@ -4369,11 +4384,14 @@ function Explorer({ home }: { home: string }) {
     // tab bar -- anchoring the menu below it (like on desktop) means it
     // opens hard against the bottom edge, gets clamped back upward by
     // ContextMenu's own viewport check, and lands roughly where the button
-    // already was: low and off to the right. Anchoring near the top-left
-    // instead (reported directly: "más arriba y a la izquierda") puts it
-    // somewhere it's actually comfortable to reach and read on a phone.
+    // already was: low and off to the right. Opening upward from the
+    // button's own top edge (anchorBottom) instead keeps it right where a
+    // thumb already is, just clear of the tab bar underneath -- a modest
+    // correction, not moving it to the opposite corner of the screen
+    // (confirmed too far the other way: "se fue arriba a la izquierda de
+    // todo").
     if (mobile) {
-      setMenu({ x: 12, y: 12, items });
+      setMenu({ x: Math.max(12, r.left - 20), y: r.top - 4, items, anchorBottom: true });
     } else {
       setMenu({ x: r.left, y: r.bottom + 4, items });
     }
@@ -4664,18 +4682,6 @@ function Explorer({ home }: { home: string }) {
   // settings touched (the closest thing to "vaults I've used before").
   // Jumping into an entry that's since been locked re-prompts for its
   // password the same way tapping it in a folder listing would.
-  function openVaultsMenu(e: React.MouseEvent) {
-    const known = new Set([...unlockedRoots, ...Object.keys(vaultSettings)]);
-    const r = e.currentTarget.getBoundingClientRect();
-    const items: MenuItem[] =
-      known.size === 0
-        ? [{ label: "No vaults yet", disabled: true, onClick: () => {} }]
-        : [...known].sort().map((root) => ({
-            label: unlockedRoots.has(root) ? `${baseName(root)} 🔓` : baseName(root),
-            onClick: () => go({ kind: "vault", root, rel: "" }),
-          }));
-    setMenu({ x: r.left, y: r.top, items });
-  }
   const favorites = favPaths.map((path) => ({
     label: favLabel(path),
     path,
@@ -5267,6 +5273,16 @@ function Explorer({ home }: { home: string }) {
               <div className="toolbar-title">{selected.size} selected</div>
               <button
                 className="tool-btn wide-btn"
+                onClick={() =>
+                  setSelected(
+                    selected.size === entries.length ? new Set() : new Set(entries.map((en) => en.name))
+                  )
+                }
+              >
+                {selected.size === entries.length ? "Deselect All" : "Select All"}
+              </button>
+              <button
+                className="tool-btn wide-btn"
                 onClick={(e) => {
                   const anyName = [...selected][0];
                   const anyEntry = entries.find((en) => en.name === anyName);
@@ -5296,9 +5312,15 @@ function Explorer({ home }: { home: string }) {
             >
               <ChevronRight />
             </button>
-            <button className="tool-btn" onClick={goUp} disabled={!canGoUp} aria-label="Up">
-              <ChevronUp />
-            </button>
+            {/* Reported as unused on mobile (a parent breadcrumb segment
+                already does the same "go up" job, right above this
+                toolbar) -- kept for desktop, where it's a real toolbar
+                convention. */}
+            {!mobile && (
+              <button className="tool-btn" onClick={goUp} disabled={!canGoUp} aria-label="Up">
+                <ChevronUp />
+              </button>
+            )}
             <button className="tool-btn refresh-btn" onClick={() => refresh()} aria-label="Refresh">
               <RefreshGlyph />
             </button>
@@ -5703,15 +5725,14 @@ function Explorer({ home }: { home: string }) {
           </button>
           <button
             className="mobile-tab"
-            onClick={() => home && openFavorite(home)}
+            // "My Computer"'s mobile equivalent -- a phone has one storage
+            // volume, not a drive list, so Home jumps straight to its real
+            // root instead (same target as the "My Device" sidebar entry).
+            onClick={() => go({ kind: "fs", path: PHONE_STORAGE_PATH })}
             aria-label="Home"
           >
             <DiskGlyph size={22} />
             <span>Home</span>
-          </button>
-          <button className="mobile-tab" onClick={openVaultsMenu} aria-label="Vaults">
-            <LockGlyph size={22} />
-            <span>Vaults</span>
           </button>
           <button className="mobile-tab" onClick={() => setSettingsOpen(true)} aria-label="Settings">
             <SettingsGlyph size={22} />
@@ -6023,6 +6044,13 @@ function Explorer({ home }: { home: string }) {
           onClose={() => setUnfreezeTarget(null)}
         />
       )}
+      {reorganizeTarget && (
+        <ReorganizeSheet
+          path={reorganizeTarget}
+          onDone={() => refresh()}
+          onClose={() => setReorganizeTarget(null)}
+        />
+      )}
       {infoTarget && (
         <GetInfoSheet
           entry={infoTarget.entry}
@@ -6058,6 +6086,7 @@ function Explorer({ home }: { home: string }) {
           startIndex={mediaViewer.startIndex}
           onClose={() => setMediaViewer(null)}
           onDeleted={() => refresh()}
+          onFileChanged={() => refresh()}
           mobile={mobile}
         />
       )}
@@ -6120,6 +6149,22 @@ export default function App() {
         initialFilters={initialFilters}
         initialFolder={params.get("folder")}
         directory={params.get("directory") === "true"}
+      />
+    );
+  }
+
+  if (params.get("player") === "1") {
+    let items: PlayerItem[] = [];
+    try {
+      items = JSON.parse(params.get("items") ?? "[]");
+    } catch {
+      /* malformed items -- PlayerWindow renders an empty playlist */
+    }
+    return (
+      <PlayerWindow
+        kind={params.get("kind") ?? "youtube"}
+        items={items}
+        startIndex={Number(params.get("index") ?? "0")}
       />
     );
   }

@@ -27,7 +27,17 @@ export type MenuItem =
       onClick: () => void;
     };
 
-export type MenuState = { x: number; y: number; items: MenuItem[] } | null;
+export type MenuState = {
+  x: number;
+  y: number;
+  items: MenuItem[];
+  // When set, `y` is where the menu's *bottom* edge should land (it grows
+  // upward from there) instead of the usual top-left anchor -- for a
+  // trigger button near the bottom of the screen, where opening downward
+  // (the default) immediately overflows and gets clamped back up to
+  // wherever it lands, not necessarily near the button at all.
+  anchorBottom?: boolean;
+} | null;
 
 // Off-screen until measured -- avoids a flash at the wrong spot before the
 // layout effect below repositions it (that effect runs before paint, so
@@ -209,11 +219,13 @@ export function Dropdown<T extends string>({
   options,
   onChange,
   className,
+  disabled,
 }: {
   value: T;
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
   className?: string;
+  disabled?: boolean;
 }) {
   const [menu, setMenu] = useState<MenuState>(null);
   const current = options.find((o) => o.value === value);
@@ -221,6 +233,7 @@ export function Dropdown<T extends string>({
     <>
       <button
         type="button"
+        disabled={disabled}
         className={`settings-select dropdown-trigger ${className ?? ""}`}
         onClick={(e) => {
           // A second click on the trigger while its own menu is already
@@ -264,7 +277,7 @@ export function ContextMenu({ state, onClose }: { state: MenuState; onClose: () 
     const menu = ref.current.getBoundingClientRect();
     const pad = 8;
     let left = state.x;
-    let top = state.y;
+    let top = state.anchorBottom ? state.y - menu.height : state.y;
     if (left + menu.width + pad > window.innerWidth) left = window.innerWidth - menu.width - pad;
     if (top + menu.height + pad > window.innerHeight) top = window.innerHeight - menu.height - pad;
     setPos({ left: Math.max(pad, left), top: Math.max(pad, top) });

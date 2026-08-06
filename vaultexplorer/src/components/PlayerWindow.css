@@ -1,0 +1,115 @@
+/* PlayerWindow -- standalone "just the video" window. A whole separate
+   Tauri window (not an overlay inside the main one, see App.tsx's
+   `?player=1` routing), fixed dark chrome regardless of theme -- same
+   reasoning as MediaViewer/AudioStage: a real player, not a themed app
+   surface. Borrows MediaViewer.css's icon-button/nav-chevron shapes
+   rather than inventing new ones. */
+
+.player-window {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  color: #f5f5f7;
+  overflow: hidden;
+}
+
+.player-titlebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 10px;
+  background: rgba(20, 20, 22, 0.95);
+  border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
+}
+.player-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player-titlebar-spacer {
+  width: 34px;
+  flex: none;
+}
+
+.player-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.player-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.player-stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.player-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #000;
+}
+.player-status {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+}
+.player-error {
+  max-width: 80%;
+  text-align: center;
+  color: #ff8a80;
+}
+
+.player-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.player-nav-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.6);
+}
+.player-nav-prev {
+  left: 14px;
+}
+.player-nav-next {
+  right: 14px;
+}
+.player-nav-btn.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}

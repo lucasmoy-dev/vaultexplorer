@@ -592,6 +592,32 @@ export function ShareGlyph({ size = 15 }: GlyphProps) {
   );
 }
 
+// Lucide `phone` -- ContactsGrid's Call button. Colored green via CSS at
+// the call site (a plain dark glyph read as "doesn't actually invite a
+// tap", reported directly), not baked in here like the status glyphs
+// above -- every other icon in this file inherits its color from
+// context, and this one's context is "the call button", not "always
+// green everywhere".
+export function PhoneGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={2}>
+      <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384" />
+    </L>
+  );
+}
+
+// Lucide `message-circle` -- ContactsGrid's WhatsApp button. No real
+// brand-mark icon set is vendored here, so this is a generic chat bubble
+// (colored WhatsApp green via CSS, labeled "WhatsApp" in text) rather
+// than an inaccurate logo.
+export function ChatGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={2}>
+      <path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0 -4.777-4.719" />
+    </L>
+  );
+}
+
 // Lucide `usb`.
 export function UsbDriveGlyph({ size = 15 }: GlyphProps) {
   return (

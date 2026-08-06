@@ -59,7 +59,7 @@ pub struct PortalState {
 /// Minimal percent-encoder for stuffing a filename into the picker window's
 /// URL query string -- pulling in a whole crate for this one call site
 /// isn't worth it.
-fn url_encode(s: &str) -> String {
+pub(crate) fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

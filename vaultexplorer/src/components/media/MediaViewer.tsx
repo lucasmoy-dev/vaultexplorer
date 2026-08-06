@@ -87,6 +87,13 @@ export interface MediaViewerProps {
   startIndex: number;
   onClose: () => void;
   onDeleted: (fullPath: string) => void;
+  // Fired after a rotate or an ImageEditor save actually lands new bytes
+  // on disk -- MediaViewer's own resolvedSrc cache-busts itself fine (the
+  // open photo shows the edit immediately), but the file *grid* behind it
+  // has no way to know its thumbnail for this path just went stale until
+  // something tells it to re-check. Reported directly: edits saved but
+  // the background grid's thumbnail never updated until a manual refresh.
+  onFileChanged: (fullPath: string) => void;
   mobile: boolean;
 }
 
@@ -108,6 +115,7 @@ export function MediaViewer({
   startIndex,
   onClose,
   onDeleted,
+  onFileChanged,
   mobile,
 }: MediaViewerProps): React.JSX.Element {
   const [gallery, setGallery] = useState<GalleryEntry[]>(initialGallery);
@@ -389,6 +397,7 @@ export function MediaViewer({
   function handleRotated() {
     if (!current || !resolvedSrc) return;
     srcCache.current.set(current.fullPath, cacheBust(resolvedSrc));
+    onFileChanged(current.fullPath);
   }
 
   // ImageEditor persists its own edit to disk before calling this -- unlike
@@ -400,6 +409,7 @@ export function MediaViewer({
       const busted = cacheBust(resolvedSrc);
       srcCache.current.set(current.fullPath, busted);
       setResolvedSrc(busted);
+      onFileChanged(current.fullPath);
     }
     setEditingOpen(false);
   }

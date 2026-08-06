@@ -148,11 +148,26 @@ export const api = {
       uploadDate: filters.uploadDate,
       duration: filters.duration,
     }),
-  searchImages: (query: string) => invoke<ImageResult[]>("search_images", { query }),
+  searchImages: (query: string, filters?: ImageSearchFilters) =>
+    invoke<ImageResult[]>("search_images", {
+      query,
+      filters: filters
+        ? {
+            file_type: filters.fileType,
+            size: filters.size,
+            color: filters.color,
+            layout: filters.layout,
+          }
+        : null,
+    }),
   searchBooks: (query: string) => invoke<BookResult[]>("search_books", { query }),
   listVideoProviders: () => invoke<VideoProvider[]>("list_video_providers"),
   searchProviderVideos: (provider: string, query: string) =>
     invoke<ProviderVideoResult[]>("search_provider_videos", { provider, query }),
+  resolveProviderPlayable: (provider: string, pageUrl: string) =>
+    invoke<PlayableSource>("resolve_provider_playable", { provider, pageUrl }),
+  openPlayerWindow: (kind: string, items: PlayerItem[], index: number) =>
+    invoke<void>("open_player_window", { kind, items: JSON.stringify(items), index }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>
@@ -187,6 +202,8 @@ export const api = {
   fsSecureDelete: (paths: string[], channel: Channel<ProgressEvent>) =>
     invoke<void>("fs_secure_delete", { paths, channel }),
   fsTrash: (path: string) => invoke<void>("fs_trash", { path }),
+  claudeReorganizeFolder: (path: string, channel: Channel<string>) =>
+    invoke<void>("claude_reorganize_folder", { path, channel }),
   trashDir: () => invoke<string>("trash_dir"),
   emptyTrash: () => invoke<void>("empty_trash"),
   trashRestoreAll: () => invoke<void>("trash_restore_all"),
@@ -522,6 +539,42 @@ export interface ImageResult {
   thumbnail: string;
   image: string;
   source_url: string;
+}
+
+// The standalone player window's playlist entry -- `key` is a video id for
+// youtube (embed URL built client-side, no lookup needed) or a page_url for
+// every other provider (resolved to a real playable source on open via
+// resolveProviderPlayable, since that needs a live per-item fetch).
+export interface PlayerItem {
+  title: string;
+  key: string;
+}
+
+export interface PlayableSource {
+  kind: "iframe" | "video";
+  url: string;
+}
+
+export interface ImageSearchFilters {
+  fileType: "photo" | "clipart" | "gif" | "transparent" | "line" | null;
+  size: "Small" | "Medium" | "Large" | "Wallpaper" | null;
+  color:
+    | "color"
+    | "Monochrome"
+    | "Red"
+    | "Orange"
+    | "Yellow"
+    | "Green"
+    | "Blue"
+    | "Purple"
+    | "Pink"
+    | "Brown"
+    | "Black"
+    | "Gray"
+    | "Teal"
+    | "White"
+    | null;
+  layout: "Square" | "Tall" | "Wide" | null;
 }
 
 export interface BookResult {

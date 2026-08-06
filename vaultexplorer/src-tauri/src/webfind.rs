@@ -222,8 +222,29 @@ pub(crate) fn search_youtube(
     Ok(results)
 }
 
+/// Optional narrowing for `search_images` -- maps to DuckDuckGo's own
+/// image-tab filter chips, confirmed live against the real `i.js`
+/// endpoint (result counts genuinely shrink per filter, not just ignored):
+/// a comma-joined `key:value` list in the `f` query param, e.g.
+/// `type:photo,size:Large,color:Monochrome`. DDG has no literal
+/// width/height filter -- `size` (Small/Medium/Large/Wallpaper) is the
+/// closest real proxy for "dimensions", and there's no dedicated "png"
+/// type either -- "transparent" is the closest (transparency needs an
+/// alpha channel, which in practice means PNG/GIF/WebP, not JPEG).
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct ImageSearchFilters {
+    // "photo" | "clipart" | "gif" | "transparent" | "line"
+    pub file_type: Option<String>,
+    // "Small" | "Medium" | "Large" | "Wallpaper"
+    pub size: Option<String>,
+    // "color" | "Monochrome" | "Red" | "Orange" | ... (DDG's own palette)
+    pub color: Option<String>,
+    // "Square" | "Tall" | "Wide"
+    pub layout: Option<String>,
+}
+
 #[tauri::command]
-pub(crate) fn search_images(query: String) -> Result<Vec<ImageResult>, String> {
+pub(crate) fn search_images(query: String, filters: Option<ImageSearchFilters>) -> Result<Vec<ImageResult>, String> {
     let client = http_client()?;
 
     let mut search_url = reqwest::Url::parse("https://duckduckgo.com/").str_err()?;
@@ -236,6 +257,18 @@ pub(crate) fn search_images(query: String) -> Result<Vec<ImageResult>, String> {
     let end = after_quote.find(quote).ok_or("malformed search token")?;
     let vqd = &after_quote[..end];
 
+    let f = filters.unwrap_or_default();
+    let f_param = [
+        f.file_type.as_deref().map(|v| format!("type:{v}")),
+        f.size.as_deref().map(|v| format!("size:{v}")),
+        f.color.as_deref().map(|v| format!("color:{v}")),
+        f.layout.as_deref().map(|v| format!("layout:{v}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(",");
+
     let mut img_url = reqwest::Url::parse("https://duckduckgo.com/i.js").str_err()?;
     img_url
         .query_pairs_mut()
@@ -243,7 +276,7 @@ pub(crate) fn search_images(query: String) -> Result<Vec<ImageResult>, String> {
         .append_pair("o", "json")
         .append_pair("q", &query)
         .append_pair("vqd", vqd)
-        .append_pair("f", ",,,")
+        .append_pair("f", &f_param)
         .append_pair("p", "1");
     let json: serde_json::Value = client.get(img_url).send().str_err()?.json().str_err()?;
     let results = json.get("results").and_then(|r| r.as_array()).cloned().unwrap_or_default();
@@ -495,6 +528,56 @@ pub(crate) fn search_provider_videos(provider: String, query: String) -> Result<
         "animeflv" => search_animeflv(&query),
         "xhamster" => search_xhamster(&query),
         "cuevana3" => search_cuevana3(&query),
+        other => Err(format!("unknown provider: {other}")),
+    }
+}
+
+#[derive(Serialize)]
+pub struct PlayableSource {
+    // "iframe" (a same-site chrome-free embed URL) or "video" (a raw,
+    // directly-playable file URL for a native <video> element).
+    pub kind: String,
+    pub url: String,
+}
+
+/// Resolves a search result's `page_url` to something the standalone
+/// player window can actually render with nothing else on screen --
+/// verified live against each site's real markup, not guessed:
+///   - xhamster: the video ID is already the pageURL's own trailing
+///     `xh...` slug token, and `/embed/<id>` is xhamster's own
+///     chrome-free player page for it -- no extra fetch needed.
+///   - cuevana3: the search result page links one level deeper to a
+///     `ver/` page with a plain `<source src="...">` mp4 -- fetched and
+///     scraped here, once, on open (not at search time, since it's a
+///     real per-item network request the search grid shouldn't pay for
+///     up front just to show a thumbnail).
+///   - animeflv: its episode player is filled in by client-side JS from
+///     data this plain HTTP fetch never receives (confirmed empty on
+///     multiple real episode pages, with/without cookies/headers) --
+///     not solvable without a headless browser, so this returns a clear
+///     error instead of a broken/blank player.
+#[tauri::command]
+pub(crate) fn resolve_provider_playable(provider: String, page_url: String) -> Result<PlayableSource, String> {
+    match provider.as_str() {
+        "xhamster" => {
+            let id = page_url
+                .trim_end_matches('/')
+                .rsplit('-')
+                .next()
+                .filter(|s| s.starts_with("xh"))
+                .ok_or("couldn't find a video id in this page's URL")?;
+            Ok(PlayableSource { kind: "iframe".into(), url: format!("https://{}/embed/{id}", xhamster_domain()) })
+        }
+        "cuevana3" => {
+            let base = page_url.trim_end_matches('/');
+            let ver_url = format!("{base}/ver/");
+            let html = http_client()?.get(&ver_url).send().str_err()?.text().str_err()?;
+            let marker = "<source src=\"";
+            let start = html.find(marker).ok_or("couldn't find a video source on this page")?.saturating_add(marker.len());
+            let end = html[start..].find('"').ok_or("malformed video source tag")?;
+            Ok(PlayableSource { kind: "video".into(), url: html[start..start + end].to_string() })
+        }
+        "animeflv" => Err("AnimeFLV's player needs JavaScript this app's scraper can't run -- opening in your browser instead.".to_string()),
         other => Err(format!("unknown provider: {other}")),
     }
 }

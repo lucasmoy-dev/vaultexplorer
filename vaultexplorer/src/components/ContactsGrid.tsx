@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Entry, api, osOpen, joinPath } from "../api";
-import { parseVCard, cleanPhoneForLink } from "../vcard";
-import { FileIcon } from "../icons";
+import { parseVCard, cleanPhoneForLink, ParsedVCard } from "../vcard";
+import { FileIcon, PhoneGlyph, ChatGlyph } from "../icons";
 import { displayEntryName } from "../entryHelpers";
 
 function isVcf(entry: Entry): boolean {
@@ -21,7 +21,7 @@ function ContactRow({
   onEdit: () => void;
   onMenu: (e: React.MouseEvent) => void;
 }) {
-  const [parsed, setParsed] = useState<{ name: string; phones: string[] } | null>(null);
+  const [parsed, setParsed] = useState<ParsedVCard | null>(null);
   useEffect(() => {
     let cancelled = false;
     const read = inVault ? api.vaultReadText(fullPath) : api.fsReadText(fullPath);
@@ -30,7 +30,7 @@ function ContactRow({
         if (!cancelled) setParsed(parseVCard(text));
       })
       .catch(() => {
-        if (!cancelled) setParsed({ name: displayEntryName(entry, false), phones: [] });
+        if (!cancelled) setParsed({ name: displayEntryName(entry, false), phones: [], photoDataUrl: null });
       });
     return () => {
       cancelled = true;
@@ -51,7 +51,13 @@ function ContactRow({
 
   return (
     <div className="contact-row" onClick={onEdit} onContextMenu={onMenu}>
-      <div className="contact-avatar">{(parsed?.name || "?").charAt(0).toUpperCase()}</div>
+      <div className="contact-avatar">
+        {parsed?.photoDataUrl ? (
+          <img src={parsed.photoDataUrl} alt="" className="contact-avatar-photo" />
+        ) : (
+          (parsed?.name || "?").charAt(0).toUpperCase()
+        )}
+      </div>
       <div className="contact-info">
         <div className="contact-name">{parsed?.name ?? "…"}</div>
         {phone && <div className="contact-phone">{phone}</div>}
@@ -59,18 +65,19 @@ function ContactRow({
       {phone && (
         <div className="contact-actions" onClick={(e) => e.stopPropagation()}>
           <button
-            className="contact-action-btn"
-            aria-label="WhatsApp"
-            onClick={() => waLink && osOpen(waLink).catch(() => {})}
-          >
-            💬
-          </button>
-          <button
-            className="contact-action-btn"
+            className="contact-action-btn contact-action-call"
             aria-label="Call"
             onClick={() => dialLink && osOpen(dialLink).catch(() => {})}
           >
-            📞
+            <PhoneGlyph size={16} />
+          </button>
+          <button
+            className="contact-action-btn contact-action-whatsapp"
+            aria-label="WhatsApp"
+            onClick={() => waLink && osOpen(waLink).catch(() => {})}
+          >
+            <ChatGlyph size={16} />
+            <span>WhatsApp</span>
           </button>
         </div>
       )}
@@ -99,7 +106,12 @@ export function ContactsGrid({
   onActivateOther: (entry: Entry) => void;
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
 }) {
-  const contacts = entries.filter(isVcf);
+  // Sorted by filename, not the parsed display name -- each row parses
+  // its own vCard asynchronously (see ContactRow), so the *real* name
+  // isn't known up front without reading every file before rendering
+  // anything. Export already names each .vcf after the contact, so this
+  // is the same order in practice for the common case.
+  const contacts = entries.filter(isVcf).sort((a, b) => a.name.localeCompare(b.name));
   const others = entries.filter((e) => !isVcf(e));
   return (
     <div className="contacts-view">

@@ -2494,6 +2494,38 @@ li.md-task[draggable="true"] {
   font-size: 15px;
   font-weight: 700;
 }
+.reorganize-sheet {
+  width: 480px;
+}
+.reorganize-log {
+  height: 260px;
+  overflow-y: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--field-bg);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+.reorganize-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.reorganize-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--toolbar-border, rgba(127, 127, 127, 0.3));
+  border-top-color: var(--accent);
+  animation: reorganize-spin 0.8s linear infinite;
+  margin-right: auto;
+}
+@keyframes reorganize-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .sheet-card p {
   font-size: 13px;
   color: var(--text);
@@ -4519,15 +4551,40 @@ input[type="range"]::-webkit-slider-thumb {
   flex: 1;
   width: auto;
 }
+/* Focusable so arrow-key nav/select-all work without an extra click once
+   a tile's already been clicked -- outline suppressed since the file
+   grid it's mimicking has no focus ring either (selection itself is the
+   visual feedback). */
+.internet-results-wrap {
+  outline: none;
+}
 .internet-results {
-  padding-top: 4px;
+  padding: 14px 12px;
+  /* Wider columns than the base .entries.icon grid, and a much bigger
+     gap -- these tiles carry a noticeably bigger thumbnail (see
+     .internet-thumb) than the base file grid's, and the base grid's own
+     tight 6px/4px gap (fine for small square icons) read as crammed
+     once the tiles got this much bigger, not actually overlapping but
+     close enough to look cluttered -- reported directly. */
+  grid-template-columns: repeat(auto-fill, minmax(calc(150px * var(--icon-scale)), calc(180px * var(--icon-scale))));
+  gap: 22px 16px;
 }
 .internet-thumb {
-  width: calc(96px * var(--icon-scale, 1));
-  height: calc(64px * var(--icon-scale, 1));
+  /* 1.5x the original 96x64 -- reported directly that a full 2x (192x128)
+     made the grid feel cramped once every tile was that much bigger with
+     the same tight file-grid gap; this pairs the bigger gap above with a
+     more modest size increase instead of pushing both to the extreme. */
+  width: calc(144px * var(--icon-scale, 1));
+  height: calc(96px * var(--icon-scale, 1));
   object-fit: cover;
   border-radius: 6px;
   background: var(--field-bg);
+}
+.internet-results .entry.icon {
+  /* More breathing room between the thumbnail and the title/badge below
+     it than the base file grid's tiles need at their smaller icon size. */
+  gap: 8px;
+  padding: 10px 8px 12px;
 }
 .internet-filters {
   display: flex;
@@ -4648,6 +4705,12 @@ input[type="range"]::-webkit-slider-thumb {
   justify-content: center;
   font-weight: 700;
   font-size: 15px;
+  overflow: hidden;
+}
+.contact-avatar-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .contact-info {
   flex: 1;
@@ -4670,17 +4733,37 @@ input[type="range"]::-webkit-slider-thumb {
   flex-shrink: 0;
 }
 .contact-action-btn {
-  width: 34px;
   height: 34px;
-  border-radius: 50%;
+  border-radius: 17px;
   background: var(--field-bg);
   font-size: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
+  border: none;
+  padding: 0;
 }
 .contact-action-btn:hover {
-  background: var(--row-hover, rgba(127, 127, 127, 0.16));
+  filter: brightness(1.08);
+}
+/* Plain dark glyphs here read as "doesn't invite a tap" (reported
+   directly) -- call/WhatsApp are the two most common contact actions,
+   so they get their own recognizable colors instead of the neutral
+   icon-button look everything else in this app uses. WhatsApp's real
+   green, a clear "answer the phone" green for Call. */
+.contact-action-call {
+  width: 34px;
+  color: #fff;
+  background: #34c759;
+}
+.contact-action-whatsapp {
+  width: auto;
+  padding: 0 12px 0 10px;
+  color: #fff;
+  background: #25d366;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 /* ============================================================

@@ -33,6 +33,7 @@ mod portal;
 mod progress;
 mod rclone;
 mod recovery;
+mod reorganize;
 mod share;
 mod shred;
 mod sync;
@@ -1380,6 +1381,36 @@ fn open_extra_explorer_window(app: &tauri::AppHandle) {
     }
 }
 
+/// The standalone "just the video, nothing else" player window Internet's
+/// video results open into -- same `index.html?<mode>=...` query-string
+/// routing PickerView already uses (see portal.rs's `run_picker`), just a
+/// different mode. `items` is a pre-serialized JSON array (built on the JS
+/// side, since it's already holding the search results) rather than a Rust
+/// struct here -- this command's only job is getting that string safely
+/// into a URL and opening the window, not understanding its shape.
+#[cfg(desktop)]
+#[tauri::command]
+fn open_player_window(app: tauri::AppHandle, kind: String, items: String, index: usize) -> Result<(), String> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    let label = format!("player-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    let url = format!(
+        "index.html?player=1&kind={}&items={}&index={index}",
+        portal::url_encode(&kind),
+        portal::url_encode(&items)
+    );
+    let w = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title("Player")
+        .inner_size(960.0, 620.0)
+        .min_inner_size(360.0, 240.0)
+        .decorations(false)
+        .transparent(true)
+        .build()
+        .str_err()?;
+    let _ = w.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 255)));
+    let _ = w.set_focus();
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -1658,6 +1689,9 @@ pub fn run() {
             webfind::search_books,
             webfind::list_video_providers,
             webfind::search_provider_videos,
+            webfind::resolve_provider_playable,
+            #[cfg(desktop)]
+            open_player_window,
             #[cfg(desktop)]
             terminal::open_terminal,
             #[cfg(desktop)]
@@ -1748,6 +1782,8 @@ pub fn run() {
             recovery::recovery_list_disks,
             recovery::recovery_same_disk,
             recovery::recovery_run,
+            #[cfg(desktop)]
+            reorganize::claude_reorganize_folder,
             #[cfg(desktop)]
             freeze::freeze_folder,
             #[cfg(desktop)]

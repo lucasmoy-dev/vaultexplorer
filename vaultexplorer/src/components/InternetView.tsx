@@ -1,15 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   api,
   osOpen,
   YoutubeResult,
   ImageResult,
+  ImageSearchFilters,
   BookResult,
   YoutubeSearchFilters,
   VideoProvider,
   ProviderVideoResult,
+  PlayerItem,
 } from "../api";
 import { ChevronLeft, SearchGlyph, SaveGlyph, FileIcon } from "../icons";
+import { Dropdown } from "../ContextMenu";
+import { useSelection } from "../hooks/useSelection";
 import folderVideosIcon from "../assets/foldericons/folder-videos.svg";
 import folderImagesIcon from "../assets/foldericons/folder-images.svg";
 import folderBookIcon from "../assets/foldericons/folder-book.svg";
@@ -17,6 +21,7 @@ import folderBookIcon from "../assets/foldericons/folder-book.svg";
 type Mode = "root" | "videos" | "images" | "books";
 
 const DEFAULT_FILTERS: YoutubeSearchFilters = { sortByDate: false, uploadDate: null, duration: null };
+const DEFAULT_IMAGE_FILTERS: ImageSearchFilters = { fileType: null, size: null, color: null, layout: null };
 
 // A saved search's whole state, round-tripped through a `.ytsearch`/
 // `.imgsearch`/`.booksearch` file's JSON content (see `activate()` in
@@ -48,6 +53,7 @@ export function InternetView({
   const [mode, setMode] = useState<Mode>("root");
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<YoutubeSearchFilters>(DEFAULT_FILTERS);
+  const [imageFilters, setImageFilters] = useState<ImageSearchFilters>(DEFAULT_IMAGE_FILTERS);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [videos, setVideos] = useState<YoutubeResult[]>([]);
@@ -64,22 +70,204 @@ export function InternetView({
   useEffect(() => {
     api.listVideoProviders().then(setVideoProviders).catch(() => {});
   }, []);
-  // Click-to-select on a result tile, purely visual (no selection-driven
-  // actions yet, same as the rest of this experiment) -- but without it,
-  // clicking a tile before double-clicking gave no feedback at all, unlike
-  // every real file entry elsewhere in the app.
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // Selection/keyboard-nav behavior matching the real file grid (multi-
+  // select, shift-range, arrow keys) -- these results wear file icons and
+  // read as files everywhere else in this experiment, so they should
+  // behave like a file grid too, not a plain click-only tile list.
+  const { selected, setSelected, lastClicked, selectOnly, toggle, selectRange } = useSelection();
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const arrowAnchorRef = useRef<string | null>(null);
+  const arrowFocusRef = useRef<string | null>(null);
+  // Drag-to-select rectangle -- same technique as the real file grid's
+  // own marquee (App.tsx's onContentMouseDown), a self-contained local
+  // copy since this grid's items/container are entirely separate from
+  // the real filesystem one.
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+
+  // The ordered key list for whatever's currently rendered -- same key
+  // format each tile below already uses (v.id / `p${i}` / `i${i}` /
+  // `b${i}`), just centralized so keyboard nav and "select all" don't
+  // have to duplicate the per-mode branching four times.
+  function currentKeys(): string[] {
+    if (mode === "videos" && provider === "youtube") return videos.map((v) => v.id);
+    if (mode === "videos") return providerVideos.map((_, i) => `p${i}`);
+    if (mode === "images") return images.map((_, i) => `i${i}`);
+    if (mode === "books") return books.map((_, i) => `b${i}`);
+    return [];
+  }
+
+  // AnimeFLV's episode player is filled in by client-side JS this app's
+  // scraper has no way to run (see resolve_provider_playable's own doc
+  // comment) -- opening externally is the honest fallback for it, same
+  // as every provider before the standalone player existed. The other
+  // three are confirmed embeddable (verified live against each site's
+  // real markup): YouTube via its own official embed, xhamster/cuevana3
+  // via resolve_provider_playable.
+  function canPlayInApp(): boolean {
+    return !mobile && mode === "videos" && provider !== "animeflv";
+  }
+
+  function openResult(key: string) {
+    if (mode === "videos" && canPlayInApp()) {
+      const keys = currentKeys();
+      const playerItems: PlayerItem[] =
+        provider === "youtube"
+          ? videos.map((v) => ({ title: v.title, key: v.id }))
+          : providerVideos.map((v) => ({ title: v.title, key: v.page_url }));
+      api.openPlayerWindow(provider, playerItems, keys.indexOf(key)).catch(() => {});
+    } else if (mode === "videos" && provider === "youtube") {
+      osOpen(`https://www.youtube.com/watch?v=${key}`).catch(() => {});
+    } else if (mode === "videos") {
+      const v = providerVideos[Number(key.slice(1))];
+      if (v) osOpen(v.page_url).catch(() => {});
+    } else if (mode === "images") {
+      const img = images[Number(key.slice(1))];
+      if (img) osOpen(img.image).catch(() => {});
+    } else if (mode === "books") {
+      const b = books[Number(key.slice(1))];
+      if (b) osOpen(b.url).catch(() => {});
+    }
+  }
+
+  // Same geometric row/column measurement App.tsx's own file grid uses
+  // for arrow-key nav (see computeArrowTarget there) -- kept as a local,
+  // self-contained copy rather than reaching into that one, since this
+  // grid's items (data-key, not data-name) and container are entirely
+  // separate from the real filesystem grid.
+  function computeArrowTarget(direction: "up" | "down" | "left" | "right", fromKey: string): string | null {
+    const keys = currentKeys();
+    const container = resultsRef.current;
+    if (!container) return keys[0] ?? null;
+    const tiles = Array.from(container.querySelectorAll<HTMLElement>(".entry.icon"));
+    const rows: string[][] = [];
+    let lastTop = -1;
+    for (const tile of tiles) {
+      const key = tile.dataset.key;
+      if (!key) continue;
+      const top = tile.offsetTop;
+      if (rows.length === 0 || Math.abs(top - lastTop) > 4) {
+        rows.push([key]);
+        lastTop = top;
+      } else {
+        rows[rows.length - 1].push(key);
+      }
+    }
+    let r = -1;
+    let c = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const j = rows[i].indexOf(fromKey);
+      if (j !== -1) {
+        r = i;
+        c = j;
+        break;
+      }
+    }
+    if (r === -1) return keys[0] ?? null;
+    if (direction === "left") return rows[r][c - 1] ?? fromKey;
+    if (direction === "right") return rows[r][c + 1] ?? fromKey;
+    if (direction === "up") return rows[r - 1]?.[Math.min(c, rows[r - 1].length - 1)] ?? fromKey;
+    return rows[r + 1]?.[Math.min(c, rows[r + 1].length - 1)] ?? fromKey;
+  }
+
+  // Click semantics matching the real file grid: plain click selects
+  // only this tile, ctrl/cmd toggles it into/out of the selection,
+  // shift extends the range from the last-clicked anchor.
+  function handleTileClick(key: string, e: React.MouseEvent) {
+    if (e.shiftKey) selectRange(key, currentKeys());
+    else if (e.ctrlKey || e.metaKey) toggle(key);
+    else selectOnly(key);
+    arrowAnchorRef.current = key;
+    arrowFocusRef.current = key;
+  }
+
+  function onResultsMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest(".entry")) return;
+    if (!(e.metaKey || e.ctrlKey || e.shiftKey)) setSelected(new Set());
+    setMarquee({ x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY });
+  }
+  useEffect(() => {
+    if (!marquee) return;
+    const origin = { x: marquee.x0, y: marquee.y0 };
+    const rects = Array.from(resultsRef.current?.querySelectorAll<HTMLElement>(".entry.icon") ?? []).map((el) => ({
+      key: el.dataset.key,
+      rect: el.getBoundingClientRect(),
+    }));
+    const move = (e: MouseEvent) => {
+      setMarquee((m) => (m ? { ...m, x1: e.clientX, y1: e.clientY } : m));
+      const left = Math.min(origin.x, e.clientX);
+      const right = Math.max(origin.x, e.clientX);
+      const top = Math.min(origin.y, e.clientY);
+      const bottom = Math.max(origin.y, e.clientY);
+      const hit = new Set<string>();
+      for (const { key, rect: r } of rects) {
+        if (key && r.left < right && r.right > left && r.top < bottom && r.bottom > top) hit.add(key);
+      }
+      setSelected(hit);
+    };
+    const up = () => setMarquee(null);
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marquee !== null]);
+
+  function handleResultsKeyDown(e: React.KeyboardEvent) {
+    const keys = currentKeys();
+    if (keys.length === 0) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelected(new Set(keys));
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      for (const key of selected) openResult(key);
+      return;
+    }
+    const isArrow = e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight";
+    if (!isArrow) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const direction =
+      e.key === "ArrowUp" ? "up" : e.key === "ArrowDown" ? "down" : e.key === "ArrowLeft" ? "left" : "right";
+    if (e.shiftKey) {
+      if (!arrowAnchorRef.current || !keys.includes(arrowAnchorRef.current)) {
+        arrowAnchorRef.current = (lastClicked && keys.includes(lastClicked) ? lastClicked : null) ?? keys[0];
+      }
+      const currentFocus =
+        arrowFocusRef.current && keys.includes(arrowFocusRef.current) ? arrowFocusRef.current : arrowAnchorRef.current;
+      const target = computeArrowTarget(direction, currentFocus);
+      if (!target) return;
+      arrowFocusRef.current = target;
+      const anchorIdx = keys.indexOf(arrowAnchorRef.current);
+      const targetIdx = keys.indexOf(target);
+      const [lo, hi] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+      setSelected(new Set(keys.slice(lo, hi + 1)));
+      return;
+    }
+    const from = (lastClicked && keys.includes(lastClicked) ? lastClicked : null) ?? [...selected][0] ?? keys[0];
+    const target = selected.size === 0 ? from : computeArrowTarget(direction, from) ?? from;
+    selectOnly(target);
+    arrowAnchorRef.current = target;
+    arrowFocusRef.current = target;
+  }
 
   async function runSearch(q: string, f: YoutubeSearchFilters, m: Mode) {
     if (!q.trim()) return;
     setLoading(true);
     setError("");
     setSearched(true);
-    setSelectedKey(null);
+    setSelected(new Set());
     try {
       if (m === "videos" && provider !== "youtube") setProviderVideos(await api.searchProviderVideos(provider, q));
       else if (m === "videos") setVideos(await api.searchYoutube(q, f));
-      else if (m === "images") setImages(await api.searchImages(q));
+      else if (m === "images") setImages(await api.searchImages(q, imageFilters));
       else if (m === "books") setBooks(await api.searchBooks(q));
     } catch (e) {
       setError(String(e));
@@ -108,10 +296,11 @@ export function InternetView({
     setMode(next);
     setQuery("");
     setFilters(DEFAULT_FILTERS);
+    setImageFilters(DEFAULT_IMAGE_FILTERS);
     setSearched(false);
     setError("");
     setSaveMsg("");
-    setSelectedKey(null);
+    setSelected(new Set());
   }
 
   async function saveSearch() {
@@ -203,40 +392,36 @@ export function InternetView({
       </div>
       {mode === "videos" && (
         <div className="internet-filters">
-          <select className="settings-select" value={provider} onChange={(e) => setProvider(e.target.value)}>
-            {videoProviders.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-          <select
-            className="settings-select"
+          <Dropdown
+            value={provider}
+            options={videoProviders.map((p) => ({ value: p.id, label: p.label }))}
+            onChange={setProvider}
+          />
+          <Dropdown
             disabled={provider !== "youtube"}
-            value={filters.uploadDate ?? ""}
-            onChange={(e) =>
-              setFilters((f) => ({ ...f, uploadDate: e.target.value ? (Number(e.target.value) as 1 | 2 | 3 | 4 | 5) : null }))
+            value={String(filters.uploadDate ?? "")}
+            options={[
+              { value: "", label: "Any time" },
+              { value: "2", label: "Today" },
+              { value: "3", label: "This week" },
+              { value: "4", label: "This month" },
+              { value: "5", label: "This year" },
+            ]}
+            onChange={(v) =>
+              setFilters((f) => ({ ...f, uploadDate: v ? (Number(v) as 1 | 2 | 3 | 4 | 5) : null }))
             }
-          >
-            <option value="">Any time</option>
-            <option value="2">Today</option>
-            <option value="3">This week</option>
-            <option value="4">This month</option>
-            <option value="5">This year</option>
-          </select>
-          <select
-            className="settings-select"
+          />
+          <Dropdown
             disabled={provider !== "youtube"}
-            value={filters.duration ?? ""}
-            onChange={(e) =>
-              setFilters((f) => ({ ...f, duration: e.target.value ? (Number(e.target.value) as 1 | 2 | 3) : null }))
-            }
-          >
-            <option value="">Any length</option>
-            <option value="1">Under 4 minutes</option>
-            <option value="3">4-20 minutes</option>
-            <option value="2">Over 20 minutes</option>
-          </select>
+            value={String(filters.duration ?? "")}
+            options={[
+              { value: "", label: "Any length" },
+              { value: "1", label: "Under 4 minutes" },
+              { value: "3", label: "4-20 minutes" },
+              { value: "2", label: "Over 20 minutes" },
+            ]}
+            onChange={(v) => setFilters((f) => ({ ...f, duration: v ? (Number(v) as 1 | 2 | 3) : null }))}
+          />
           <label className="checkbox-row">
             <input
               type="checkbox"
@@ -246,6 +431,64 @@ export function InternetView({
             />
             Newest first
           </label>
+        </div>
+      )}
+      {mode === "images" && (
+        <div className="internet-filters">
+          <Dropdown
+            value={imageFilters.fileType ?? ""}
+            options={[
+              { value: "", label: "Any type" },
+              { value: "photo", label: "Photo" },
+              { value: "clipart", label: "Clipart" },
+              { value: "gif", label: "GIF" },
+              { value: "transparent", label: "Transparent" },
+              { value: "line", label: "Line drawing" },
+            ]}
+            onChange={(v) => setImageFilters((f) => ({ ...f, fileType: (v || null) as ImageSearchFilters["fileType"] }))}
+          />
+          <Dropdown
+            value={imageFilters.size ?? ""}
+            options={[
+              { value: "", label: "Any size" },
+              { value: "Small", label: "Small" },
+              { value: "Medium", label: "Medium" },
+              { value: "Large", label: "Large" },
+              { value: "Wallpaper", label: "Wallpaper" },
+            ]}
+            onChange={(v) => setImageFilters((f) => ({ ...f, size: (v || null) as ImageSearchFilters["size"] }))}
+          />
+          <Dropdown
+            value={imageFilters.color ?? ""}
+            options={[
+              { value: "", label: "Any color" },
+              { value: "color", label: "Color" },
+              { value: "Monochrome", label: "Black & white" },
+              { value: "Red", label: "Red" },
+              { value: "Orange", label: "Orange" },
+              { value: "Yellow", label: "Yellow" },
+              { value: "Green", label: "Green" },
+              { value: "Blue", label: "Blue" },
+              { value: "Purple", label: "Purple" },
+              { value: "Pink", label: "Pink" },
+              { value: "Brown", label: "Brown" },
+              { value: "Black", label: "Black" },
+              { value: "Gray", label: "Gray" },
+              { value: "Teal", label: "Teal" },
+              { value: "White", label: "White" },
+            ]}
+            onChange={(v) => setImageFilters((f) => ({ ...f, color: (v || null) as ImageSearchFilters["color"] }))}
+          />
+          <Dropdown
+            value={imageFilters.layout ?? ""}
+            options={[
+              { value: "", label: "Any layout" },
+              { value: "Square", label: "Square" },
+              { value: "Tall", label: "Tall" },
+              { value: "Wide", label: "Wide" },
+            ]}
+            onChange={(v) => setImageFilters((f) => ({ ...f, layout: (v || null) as ImageSearchFilters["layout"] }))}
+          />
         </div>
       )}
       {saveMsg && (
@@ -266,100 +509,123 @@ export function InternetView({
       {!loading && searched && mode === "books" && books.length === 0 && !error && (
         <div className="column-empty">No results.</div>
       )}
-      {mode === "videos" && provider === "youtube" && videos.length > 0 && (
-        <div className="entries icon internet-results">
-          {videos.map((v) => (
-            <div
-              key={v.id}
-              className={`entry icon ${selectedKey === v.id ? "selected" : ""}`}
-              title={v.title}
-              onClick={() => {
-                setSelectedKey(v.id);
-                // Touch has no double-click -- a single tap both selects
-                // and opens, same convention as the regular file browser
-                // (confirmed live: these results were unopenable on mobile
-                // before this, since dblclick never fires from a touch tap).
-                if (mobile) osOpen(`https://www.youtube.com/watch?v=${v.id}`).catch(() => {});
-              }}
-              onDoubleClick={() => osOpen(`https://www.youtube.com/watch?v=${v.id}`).catch(() => {})}
-            >
-              <span className="entry-icon">
-                <img className="internet-thumb" src={v.thumbnail} draggable={false} />
-                {v.duration && <span className="internet-badge">{v.duration}</span>}
-              </span>
-              <span className="entry-name">
-                {v.title}
-                {v.published && <span className="internet-published">{v.published}</span>}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      {mode === "videos" && provider !== "youtube" && providerVideos.length > 0 && (
-        <div className="entries icon internet-results">
-          {providerVideos.map((v, i) => (
-            <div
-              key={i}
-              className={`entry icon ${selectedKey === `p${i}` ? "selected" : ""}`}
-              title={v.title}
-              onClick={() => {
-                setSelectedKey(`p${i}`);
-                if (mobile) osOpen(v.page_url).catch(() => {});
-              }}
-              onDoubleClick={() => osOpen(v.page_url).catch(() => {})}
-            >
-              <span className="entry-icon">
-                {v.thumbnail ? (
+      <div
+        ref={resultsRef}
+        className="internet-results-wrap"
+        tabIndex={0}
+        onKeyDown={handleResultsKeyDown}
+        onMouseDown={onResultsMouseDown}
+      >
+        {mode === "videos" && provider === "youtube" && videos.length > 0 && (
+          <div className="entries icon internet-results">
+            {videos.map((v) => (
+              <div
+                key={v.id}
+                data-key={v.id}
+                className={`entry icon ${selected.has(v.id) ? "selected" : ""}`}
+                title={v.title}
+                onClick={(e) => {
+                  handleTileClick(v.id, e);
+                  // Touch has no double-click -- a single tap both selects
+                  // and opens, same convention as the regular file browser
+                  // (confirmed live: these results were unopenable on mobile
+                  // before this, since dblclick never fires from a touch tap).
+                  if (mobile) osOpen(`https://www.youtube.com/watch?v=${v.id}`).catch(() => {});
+                }}
+                onDoubleClick={() => openResult(v.id)}
+              >
+                <span className="entry-icon">
                   <img className="internet-thumb" src={v.thumbnail} draggable={false} />
-                ) : (
-                  <FileIcon entry={{ name: "video.mp4", is_dir: false, size: 0, mtime: 0 }} />
-                )}
-                {v.duration && <span className="internet-badge">{v.duration}</span>}
-              </span>
-              <span className="entry-name">{v.title}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {mode === "images" && images.length > 0 && (
-        <div className="entries icon internet-results">
-          {images.map((img, i) => (
-            <div
-              key={i}
-              className={`entry icon ${selectedKey === `i${i}` ? "selected" : ""}`}
-              title={img.title}
-              onClick={() => {
-                setSelectedKey(`i${i}`);
-                if (mobile) osOpen(img.image).catch(() => {});
-              }}
-              onDoubleClick={() => osOpen(img.image).catch(() => {})}
-            >
-              <img className="internet-thumb" src={img.thumbnail} draggable={false} />
-              <span className="entry-name">{img.title}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {mode === "books" && books.length > 0 && (
-        <div className="entries icon internet-results">
-          {books.map((b, i) => (
-            <div
-              key={i}
-              className={`entry icon ${selectedKey === `b${i}` ? "selected" : ""}`}
-              title={b.snippet ? `${b.title}\n${b.snippet}` : b.title}
-              onClick={() => {
-                setSelectedKey(`b${i}`);
-                if (mobile) osOpen(b.url).catch(() => {});
-              }}
-              onDoubleClick={() => osOpen(b.url).catch(() => {})}
-            >
-              <span className="entry-icon">
-                <FileIcon entry={{ name: "book.pdf", is_dir: false, size: 0, mtime: 0 }} />
-              </span>
-              <span className="entry-name">{b.title}</span>
-            </div>
-          ))}
-        </div>
+                  {v.duration && <span className="internet-badge">{v.duration}</span>}
+                </span>
+                <span className="entry-name">
+                  {v.title}
+                  {v.published && <span className="internet-published">{v.published}</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {mode === "videos" && provider !== "youtube" && providerVideos.length > 0 && (
+          <div className="entries icon internet-results">
+            {providerVideos.map((v, i) => (
+              <div
+                key={i}
+                data-key={`p${i}`}
+                className={`entry icon ${selected.has(`p${i}`) ? "selected" : ""}`}
+                title={v.title}
+                onClick={(e) => {
+                  handleTileClick(`p${i}`, e);
+                  if (mobile) osOpen(v.page_url).catch(() => {});
+                }}
+                onDoubleClick={() => openResult(`p${i}`)}
+              >
+                <span className="entry-icon">
+                  {v.thumbnail ? (
+                    <img className="internet-thumb" src={v.thumbnail} draggable={false} />
+                  ) : (
+                    <FileIcon entry={{ name: "video.mp4", is_dir: false, size: 0, mtime: 0 }} />
+                  )}
+                  {v.duration && <span className="internet-badge">{v.duration}</span>}
+                </span>
+                <span className="entry-name">{v.title}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {mode === "images" && images.length > 0 && (
+          <div className="entries icon internet-results">
+            {images.map((img, i) => (
+              <div
+                key={i}
+                data-key={`i${i}`}
+                className={`entry icon ${selected.has(`i${i}`) ? "selected" : ""}`}
+                title={img.title}
+                onClick={(e) => {
+                  handleTileClick(`i${i}`, e);
+                  if (mobile) osOpen(img.image).catch(() => {});
+                }}
+                onDoubleClick={() => osOpen(img.image).catch(() => {})}
+              >
+                <img className="internet-thumb" src={img.thumbnail} draggable={false} />
+                <span className="entry-name">{img.title}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {mode === "books" && books.length > 0 && (
+          <div className="entries icon internet-results">
+            {books.map((b, i) => (
+              <div
+                key={i}
+                data-key={`b${i}`}
+                className={`entry icon ${selected.has(`b${i}`) ? "selected" : ""}`}
+                title={b.snippet ? `${b.title}\n${b.snippet}` : b.title}
+                onClick={(e) => {
+                  handleTileClick(`b${i}`, e);
+                  if (mobile) osOpen(b.url).catch(() => {});
+                }}
+                onDoubleClick={() => osOpen(b.url).catch(() => {})}
+              >
+                <span className="entry-icon">
+                  <FileIcon entry={{ name: "book.pdf", is_dir: false, size: 0, mtime: 0 }} />
+                </span>
+                <span className="entry-name">{b.title}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {marquee && (
+        <div
+          className="marquee"
+          style={{
+            left: Math.min(marquee.x0, marquee.x1),
+            top: Math.min(marquee.y0, marquee.y1),
+            width: Math.abs(marquee.x1 - marquee.x0),
+            height: Math.abs(marquee.y1 - marquee.y0),
+          }}
+        />
       )}
     </div>
   );
