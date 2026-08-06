@@ -130,6 +130,15 @@ pub struct MachineSummary {
     pub cpu_model: String,
     pub cpu_cores: u32,
     pub ram_total: u64,
+    /// MemAvailable, not MemFree: free memory on Linux is mostly cache
+    /// that would be handed back on demand, so MemFree reads as "almost
+    /// nothing left" on a perfectly healthy machine. Available is what a
+    /// person means by free.
+    pub ram_available: u64,
+    pub swap_total: u64,
+    pub swap_free: u64,
+    pub uptime_secs: u64,
+    pub load1: f32,
     pub os_name: String,
     pub disks: Vec<Drive>,
 }
@@ -170,7 +179,38 @@ pub fn summary() -> MachineSummary {
         .into_iter()
         .filter(|d| d.mountpoint.is_some() || d.removable)
         .collect();
-    MachineSummary { cpu_model, cpu_cores, ram_total, os_name, disks }
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let kb_field = |prefix: &str| -> u64 {
+        read_proc_field(&meminfo, prefix)
+            .and_then(|v| v.split_whitespace().next().map(|s| s.to_string()))
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map(|kb| kb * 1024)
+            .unwrap_or(0)
+    };
+    let ram_available = kb_field("MemAvailable");
+    let swap_total = kb_field("SwapTotal");
+    let swap_free = kb_field("SwapFree");
+    let uptime_secs = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|t| t.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()))
+        .map(|s| s as u64)
+        .unwrap_or(0);
+    let load1 = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|t| t.split_whitespace().next().and_then(|s| s.parse::<f32>().ok()))
+        .unwrap_or(0.0);
+    MachineSummary {
+        cpu_model,
+        cpu_cores,
+        ram_total,
+        ram_available,
+        swap_total,
+        swap_free,
+        uptime_secs,
+        load1,
+        os_name,
+        disks,
+    }
 }
 
 #[cfg(desktop)]

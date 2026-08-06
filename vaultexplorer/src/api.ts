@@ -648,6 +648,12 @@ export interface MachineSummary {
   cpu_model: string;
   cpu_cores: number;
   ram_total: number;
+  // MemAvailable, not MemFree -- see the note on the Rust side.
+  ram_available: number;
+  swap_total: number;
+  swap_free: number;
+  uptime_secs: number;
+  load1: number;
   os_name: string;
   disks: Drive[];
 }

@@ -74,6 +74,7 @@ import { PickerView } from "./components/PickerView";
 import { PlayerWindow } from "./components/PlayerWindow";
 import { MediaWindow } from "./components/MediaWindow";
 import { FreeUpSpaceView } from "./components/FreeUpSpaceView";
+import { DeviceView } from "./components/DeviceView";
 import { ReorganizeSheet } from "./components/sheets/reorganize-sheet";
 import { buildSyncSubmenu } from "./menus";
 import { useSelection } from "./hooks/useSelection";
@@ -1094,6 +1095,10 @@ function Explorer({ home }: { home: string }) {
   // it swaps the whole content area for a drive list instead of calling
   // `go()` -- picking a mounted drive there is what actually navigates.
   const [showMyComputer, setShowMyComputer] = useState(false);
+  // "My Device" is the capacity dashboard (disks, RAM, uptime); "My
+  // Computer" stays the drive *browser*. One entry was doing both and
+  // neither well.
+  const [showDevice, setShowDevice] = useState(false);
   const [favCollapsed, setFavCollapsed] = useState(false);
   const [drives, setDrives] = useState<import("./api").Drive[]>([]);
   const [drivesError, setDrivesError] = useState("");
@@ -1130,6 +1135,7 @@ function Explorer({ home }: { home: string }) {
     setShowInternet(true);
     setShowMyComputer(false);
     setFreeUpSpaceOpen(false);
+    setShowDevice(false);
     setSearchResults(null);
     setInternetInitial(null);
   }
@@ -1137,6 +1143,7 @@ function Explorer({ home }: { home: string }) {
     setShowInternet(true);
     setShowMyComputer(false);
     setFreeUpSpaceOpen(false);
+    setShowDevice(false);
     setSearchResults(null);
     setInternetInitial(saved);
   }
@@ -2061,6 +2068,7 @@ function Explorer({ home }: { home: string }) {
     }
     setShowMyComputer(false);
     setFreeUpSpaceOpen(false);
+    setShowDevice(false);
     setShowInternet(false);
     cancelPendingRenameClick();
     if (target.kind === "vault") {
@@ -2103,6 +2111,8 @@ function Explorer({ home }: { home: string }) {
     if (showMyComputer || showInternet) {
       setShowMyComputer(false);
       setFreeUpSpaceOpen(false);
+      setShowDevice(false);
+    setShowDevice(false);
       setShowInternet(false);
       setInternetInitial(null);
       return;
@@ -2114,6 +2124,8 @@ function Explorer({ home }: { home: string }) {
     if (showMyComputer || showInternet) {
       setShowMyComputer(false);
       setFreeUpSpaceOpen(false);
+      setShowDevice(false);
+    setShowDevice(false);
       setShowInternet(false);
       setInternetInitial(null);
       return;
@@ -5159,6 +5171,23 @@ function Explorer({ home }: { home: string }) {
             {!favCollapsed && "My Computer"}
           </div>
         )}
+        {!mobile && (
+          <div
+            className={`sidebar-item ${showDevice ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
+            title={favCollapsed ? "My Device" : undefined}
+            onClick={() => {
+              setShowMyComputer(false);
+              setShowInternet(false);
+              setFreeUpSpaceOpen(false);
+              setShowDevice(true);
+            }}
+          >
+            <span className="sidebar-ico place">
+              <SmartphoneGlyph size={22} />
+            </span>
+            {!favCollapsed && "My Device"}
+          </div>
+        )}
         {/* Experimental (see InternetView) -- fake "Videos"/"Images"
             folders backed by live search, not a real path. */}
         <div
@@ -5640,7 +5669,15 @@ function Explorer({ home }: { home: string }) {
               />
             </div>
           )}
-          {freeUpSpaceOpen ? (
+          {showDevice ? (
+            <DeviceView
+              onOpenDrive={(d) => d.mountpoint && go({ kind: "fs", path: d.mountpoint })}
+              onFreeUpSpace={() => {
+                setShowDevice(false);
+                setFreeUpSpaceOpen(true);
+              }}
+            />
+          ) : freeUpSpaceOpen ? (
             <FreeUpSpaceView
               favPaths={favPaths}
               home={home ?? ""}
