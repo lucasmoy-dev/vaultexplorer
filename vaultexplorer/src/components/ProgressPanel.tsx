@@ -7,9 +7,14 @@ import { ProgressOp } from "../types";
 export function ProgressPanel({
   ops,
   onCancel,
+  mobile,
 }: {
   ops: ProgressOp[];
   onCancel: (op: ProgressOp) => void;
+  // Mobile has no footer to sit in -- the status bar this normally lives
+  // in isn't part of that layout, so a running task was invisible there.
+  // Floats above the content instead, clear of the bottom safe area.
+  mobile?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   if (ops.length === 0) return null;
@@ -17,7 +22,7 @@ export function ProgressPanel({
   const chipLabel = ops.length === 1 ? ops[0].label : `${ops.length} tasks`;
 
   return (
-    <div className="actions-indicator">
+    <div className={`actions-indicator${mobile ? " floating" : ""}`}>
       {open && (
         <div className="actions-popover" onMouseDown={(e) => e.stopPropagation()}>
           <div className="actions-popover-head">

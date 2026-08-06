@@ -73,8 +73,8 @@ import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
 import { PlayerWindow } from "./components/PlayerWindow";
 import { MediaWindow } from "./components/MediaWindow";
+import { FreeUpSpaceView } from "./components/FreeUpSpaceView";
 import { ReorganizeSheet } from "./components/sheets/reorganize-sheet";
-import { FreeUpSpaceSheet } from "./components/sheets/free-up-space-sheet";
 import { buildSyncSubmenu } from "./menus";
 import { useSelection } from "./hooks/useSelection";
 import { useFavorites } from "./hooks/useFavorites";
@@ -1129,12 +1129,14 @@ function Explorer({ home }: { home: string }) {
   function openInternet() {
     setShowInternet(true);
     setShowMyComputer(false);
+    setFreeUpSpaceOpen(false);
     setSearchResults(null);
     setInternetInitial(null);
   }
   function openInternetSearchFile(saved: SavedInternetSearch) {
     setShowInternet(true);
     setShowMyComputer(false);
+    setFreeUpSpaceOpen(false);
     setSearchResults(null);
     setInternetInitial(saved);
   }
@@ -2058,6 +2060,7 @@ function Explorer({ home }: { home: string }) {
       }
     }
     setShowMyComputer(false);
+    setFreeUpSpaceOpen(false);
     setShowInternet(false);
     cancelPendingRenameClick();
     if (target.kind === "vault") {
@@ -2099,6 +2102,7 @@ function Explorer({ home }: { home: string }) {
   function goBack() {
     if (showMyComputer || showInternet) {
       setShowMyComputer(false);
+      setFreeUpSpaceOpen(false);
       setShowInternet(false);
       setInternetInitial(null);
       return;
@@ -2109,6 +2113,7 @@ function Explorer({ home }: { home: string }) {
   function goForward() {
     if (showMyComputer || showInternet) {
       setShowMyComputer(false);
+      setFreeUpSpaceOpen(false);
       setShowInternet(false);
       setInternetInitial(null);
       return;
@@ -3643,10 +3648,13 @@ function Explorer({ home }: { home: string }) {
   // vault (vault entries have no trash equivalent; those still go through
   // the confirm+permanent flow below).
   async function trashSelection(names: string[]) {
+    const paths = names.map((name) => joinPath(curDir, name));
     try {
-      for (const name of names) {
-        await api.fsTrash(joinPath(curDir, name));
-      }
+      // One call for the whole selection, with an Actions row: this used
+      // to be one IPC round-trip per file on the main thread, so deleting
+      // a few thousand froze the window with nothing to show for it.
+      await api.fsTrashMany(paths, beginProgress(paths.length === 1 ? `Deleting "${names[0]}"` : `Deleting ${paths.length} items`));
+      setSelected(new Set());
       refresh();
     } catch (e) {
       setError(String(e));
@@ -5352,7 +5360,11 @@ function Explorer({ home }: { home: string }) {
         <div
           className={`sidebar-item ${favCollapsed ? "icon-only" : ""}`}
           title={favCollapsed ? "Free Up Space" : undefined}
-          onClick={() => setFreeUpSpaceOpen(true)}
+          onClick={() => {
+            setShowMyComputer(false);
+            setShowInternet(false);
+            setFreeUpSpaceOpen(true);
+          }}
         >
           <span className="sidebar-ico place">🧹</span>
           {!favCollapsed && "Free Up Space"}
@@ -5628,7 +5640,14 @@ function Explorer({ home }: { home: string }) {
               />
             </div>
           )}
-          {showMyComputer ? (
+          {freeUpSpaceOpen ? (
+            <FreeUpSpaceView
+              favPaths={favPaths}
+              home={home ?? ""}
+              onDeleted={() => refresh()}
+              beginProgress={beginProgress}
+            />
+          ) : showMyComputer ? (
             <MyComputerView
               drives={drives}
               error={drivesError}
@@ -5891,7 +5910,7 @@ function Explorer({ home }: { home: string }) {
                 })()
               : `${entries.length} ${entries.length === 1 ? "item" : "items"}`}
           </span>
-          <ProgressPanel ops={progressOps} onCancel={cancelProgress} />
+          <ProgressPanel ops={progressOps} onCancel={cancelProgress} mobile={mobile} />
           {inVault && <span className="status-loc">🔒 Encrypted Vault</span>}
         </div>
       </div>
@@ -6242,14 +6261,6 @@ function Explorer({ home }: { home: string }) {
           onDone={() => refresh()}
           onBackground={beginIndeterminate}
           onClose={() => setReorganizeTarget(null)}
-        />
-      )}
-      {freeUpSpaceOpen && (
-        <FreeUpSpaceSheet
-          favPaths={favPaths}
-          home={home}
-          onDeleted={() => refresh()}
-          onClose={() => setFreeUpSpaceOpen(false)}
         />
       )}
       {infoTarget && (

@@ -552,6 +552,49 @@ fn fs_trash(path: String) -> Result<(), String> {
     trash::delete(&path).str_err()
 }
 
+/// Trash a whole selection in one call.
+///
+/// Deleting thousands of files used to be one IPC round-trip *per file*,
+/// each running `trash::delete` synchronously on the main thread -- so the
+/// window froze for as long as it took and nothing showed the progress.
+/// `trash::delete_all` hands the whole list to the platform's trash
+/// implementation at once (a single D-Bus/portal call rather than N of
+/// them, which is where nearly all of the time went), and it runs off the
+/// UI thread with a cancellable Actions row.
+///
+/// Chunked rather than one giant call so progress moves and a cancel is
+/// honoured partway through; the chunk size is a balance between those two
+/// and the per-call overhead that made this slow to begin with.
+#[cfg(desktop)]
+#[tauri::command]
+async fn fs_trash_many(
+    paths: Vec<String>,
+    channel: tauri::ipc::Channel<progress::ProgressEvent>,
+    registry: tauri::State<'_, ops::OpRegistry>,
+) -> Result<(), String> {
+    const CHUNK: usize = 64;
+    let op_id = channel.id();
+    let cancel = registry.register(op_id).cancel;
+    let total = paths.len() as u64;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let reporter = progress::ProgressReporter::new_cancellable(channel, total.max(1), cancel);
+        let mut done = 0u64;
+        for chunk in paths.chunks(CHUNK) {
+            if reporter.is_cancelled() {
+                return Err("Cancelled".to_string());
+            }
+            trash::delete_all(chunk).str_err()?;
+            done += chunk.len() as u64;
+            reporter.report(done);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    registry.finish(op_id);
+    result
+}
+
 /// No mobile equivalent of the desktop version above: the `trash` crate has
 /// no Android/iOS backend, and there's no universal "OS trash can" concept
 /// for an arbitrary file path there -- MediaStore's own IS_TRASHED purgatory
@@ -1783,6 +1826,8 @@ pub fn run() {
             fs_delete,
             shred::fs_secure_delete,
             fs_trash,
+            #[cfg(desktop)]
+            fs_trash_many,
             largefiles::scan_large_files,
             #[cfg(desktop)]
             trash_dir,

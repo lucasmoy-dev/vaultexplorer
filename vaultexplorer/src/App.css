@@ -4706,7 +4706,10 @@ input[type="range"]::-webkit-slider-thumb {
   /* Tracks flex to fill the row (1fr) instead of being capped at a fixed
      max: these tiles are thumbnail-led, so leftover width is better spent
      on bigger thumbnails than on a growing gutter. */
-  grid-template-columns: repeat(auto-fill, minmax(calc(240px * var(--icon-scale, 1)), 1fr));
+  /* 300px floor, not 240: reported as "everything is tiny" at the narrow
+     window widths this app is actually used at, where a 240px floor still
+     fit four columns of postage stamps. Fewer, bigger tiles. */
+  grid-template-columns: repeat(auto-fill, minmax(calc(300px * var(--icon-scale, 1)), 1fr));
   gap: 26px 18px;
 }
 /* The base file grid sizes .entry-icon as a fixed 64x64 glyph slot, which
@@ -5151,4 +5154,23 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .is-mobile .settings-select {
   border-radius: 10px;
+}
+
+/* Actions indicator on mobile: the footer/status bar it normally sits in
+   isn't part of the mobile layout, so a running copy/download/reorganize
+   had nowhere to show itself. Floating bottom-right keeps it visible over
+   whatever view is open, above the home-indicator safe area. */
+.actions-indicator.floating {
+  position: fixed;
+  right: 14px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 1500;
+}
+.actions-indicator.floating .actions-chip {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.actions-indicator.floating .actions-popover {
+  right: 0;
+  bottom: 42px;
+  max-width: min(92vw, 420px);
 }

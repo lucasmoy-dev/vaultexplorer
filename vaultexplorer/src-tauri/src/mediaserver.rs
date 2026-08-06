@@ -54,21 +54,31 @@ fn start_server() -> Result<u16, String> {
     let port = server.server_addr().to_ip().ok_or("no TCP address")?.port();
     std::thread::spawn(move || {
         for request in server.incoming_requests() {
-            let token = query_param(request.url(), "t").unwrap_or_default();
-            let path = registry().lock_safe().get(&token).cloned();
-            let range = header_value(&request, "range");
-            match path {
-                Some(p) => {
-                    if let Err(_e) = serve_file(request, &p, range.as_deref()) {
-                        // A dropped connection (the element seeked away
-                        // mid-response) is the normal case here, not
-                        // something worth tearing the server down for.
+            // One thread per request, not a single serial loop: a media
+            // element keeps a read-ahead response open on one connection
+            // while seeking on another, so serving requests one at a time
+            // deadlocks it -- the first response never finishes draining
+            // and the second never gets answered, and the element gives up
+            // with NotSupportedError. That is why small files played and
+            // real (large) ones didn't. Covered by the concurrency test
+            // below.
+            std::thread::spawn(move || {
+                let token = query_param(request.url(), "t").unwrap_or_default();
+                let path = registry().lock_safe().get(&token).cloned();
+                let range = header_value(&request, "range");
+                match path {
+                    Some(p) => {
+                        if let Err(_e) = serve_file(request, &p, range.as_deref()) {
+                            // A dropped connection (the element seeked away
+                            // mid-response) is the normal case here, not
+                            // something worth logging or retrying.
+                        }
+                    }
+                    None => {
+                        let _ = request.respond(tiny_http::Response::empty(404));
                     }
                 }
-                None => {
-                    let _ = request.respond(tiny_http::Response::empty(404));
-                }
-            }
+            });
         }
     });
     Ok(port)
@@ -128,6 +138,17 @@ fn serve_file(request: tiny_http::Request, path: &std::path::Path, range: Option
     let mut file = File::open(path).str_err()?;
     let len = file.metadata().str_err()?.len();
     let mime = mime_for(path);
+
+    // A HEAD is how a player asks "how big is this and can I seek in it"
+    // before it streams anything -- answer the headers with no body, since
+    // writing one would desynchronize the connection.
+    if request.method() == &tiny_http::Method::Head {
+        let response = tiny_http::Response::empty(200)
+            .with_header(header("Content-Type", &mime))
+            .with_header(header("Accept-Ranges", "bytes"))
+            .with_header(header("Content-Length", &len.to_string()));
+        return request.respond(response).str_err();
+    }
 
     match range.and_then(|r| parse_range(r, len)) {
         Some((start, end)) => {
@@ -224,6 +245,34 @@ mod tests {
         assert_eq!(part.status().as_u16(), 206);
         assert_eq!(part.headers().get("content-range").unwrap(), "bytes 2-5/10");
         assert_eq!(part.text().expect("text"), "2345");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A media element opens a second connection while the first is still
+    /// streaming (it reads ahead on one and seeks on another), so a server
+    /// that answers one request at a time deadlocks the player: the first
+    /// response never finishes draining, the second never gets served, and
+    /// the element gives up with NotSupportedError. Reproduced here with a
+    /// file big enough that the first response can't fit in socket buffers.
+    #[test]
+    fn serves_a_second_request_while_the_first_is_still_open() {
+        let big = vec![b'x'; 8 * 1024 * 1024];
+        let path = temp_file("concurrent.mp4", &big);
+        let url = media_url(path.to_string_lossy().to_string()).expect("url");
+
+        let client = reqwest::blocking::Client::new();
+        // Held open deliberately: never read to completion.
+        let _first = client.get(&url).send().expect("first response");
+
+        let second = client
+            .get(&url)
+            .header("Range", "bytes=100-199")
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .expect("second response while the first is still open");
+        assert_eq!(second.status().as_u16(), 206);
+        assert_eq!(second.text().expect("text").len(), 100);
 
         let _ = std::fs::remove_file(path);
     }
