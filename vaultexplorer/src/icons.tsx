@@ -129,7 +129,10 @@ export function kindOf(entry: Entry): Kind {
   // to read as "a video/image/book file" in the UI, so they borrow the
   // same icon as the kind of result they reopen.
   if (/\.(png|jpe?g|gif|webp|bmp|svg|heic|tiff?|imgsearch)$/.test(l)) return "image";
-  if (/\.(mp4|mkv|mov|avi|webm|m4v|ytsearch)$/.test(l)) return "video";
+  // A `.youtube.url` (or any `.url`) saved from an Internet result is a
+  // link, not media -- but it stands in for a video the same way a saved
+  // search does, so it reads as one in the grid.
+  if (/\.(mp4|mkv|mov|avi|webm|m4v|ytsearch)$/.test(l) || /\.(youtube|video)\.url$/.test(l)) return "video";
   if (/\.(mp3|wav|flac|ogg|aac|m4a)$/.test(l)) return "audio";
   if (/\.(pdf|booksearch)$/.test(l)) return "pdf";
   if (/\.(zip|tar|gz|7z|rar|bz2|xz)$/.test(l)) return "archive";

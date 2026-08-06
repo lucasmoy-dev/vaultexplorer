@@ -2777,6 +2777,26 @@ function Explorer({ home }: { home: string }) {
       }
       return;
     }
+    // A `.url` shortcut -- what dropping an Internet video result into a
+    // folder writes (see downloadInternetItems). Opening it should do what
+    // opening the result did, not show the shortcut's own text: a YouTube
+    // link goes to the in-app player window, anything else to the browser.
+    if (/\.url$/i.test(entry.name)) {
+      try {
+        const body = await api.fsReadText(full);
+        const url = body.match(/^URL=(.+)$/mi)?.[1]?.trim();
+        if (!url) throw new Error("This shortcut has no URL in it.");
+        const ytId = url.match(/[?&]v=([A-Za-z0-9_-]{5,})/)?.[1];
+        if (ytId && !mobile) {
+          await api.openPlayerWindow("youtube", [{ key: ytId, title: entry.name.replace(/\.youtube\.url$|\.url$/i, "") }], 0);
+        } else {
+          await osOpen(url);
+        }
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
+    }
     if (mobile && !appSettings.mobileExternalEditor && isPlainTextEntry(entry)) {
       setMobileEditorTarget({ entry, fullPath: full, inVault: false });
       return;
@@ -3503,7 +3523,15 @@ function Explorer({ home }: { home: string }) {
   async function downloadInternetItems(items: InternetDownloadItem[], destDir: string) {
     try {
       for (const item of items) {
-        await api.downloadWebResult(item.url, destDir, item.filename, beginProgress(`Downloading "${item.filename}"`));
+        if (item.linkBody) {
+          // A video result has no file on the web to fetch -- dropping one
+          // into a folder writes a real `.youtube.url` shortcut instead,
+          // so the result becomes a file you own: movable, copyable,
+          // renameable, and reopenable like anything else.
+          await api.fsWriteText(joinPath(destDir, item.filename), item.linkBody);
+        } else {
+          await api.downloadWebResult(item.url, destDir, item.filename, beginProgress(`Downloading "${item.filename}"`));
+        }
       }
       refresh();
     } catch (e) {

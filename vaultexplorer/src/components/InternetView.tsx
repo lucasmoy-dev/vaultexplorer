@@ -30,6 +30,12 @@ type Mode = "root" | "videos" | "images" | "books";
 export interface InternetDownloadItem {
   url: string;
   filename: string;
+  // Set for a video result: there is no file on the web to fetch, so
+  // dropping one into a folder writes a `.youtube.url` link file whose
+  // body is this text instead of downloading bytes. That makes a search
+  // result something you can keep, move, copy and reopen like any other
+  // file -- "owning" the video without downloading it.
+  linkBody?: string;
 }
 
 const DEFAULT_FILTERS: YoutubeSearchFilters = { sortByDate: false, uploadDate: null, duration: null };
@@ -204,7 +210,30 @@ export function InternetView({
     return { url: `https://archive.org/download/${id}/${id}.pdf`, filename: `${sanitizeFilename(b.title)}.pdf` };
   }
 
+  // The `[InternetShortcut]` format Windows/KDE/GNOME all understand, so
+  // these files aren't only meaningful inside this app.
+  function linkFileFor(title: string, url: string): InternetDownloadItem {
+    return {
+      url,
+      filename: `${sanitizeFilename(title)}.youtube.url`,
+      linkBody: `[InternetShortcut]\nURL=${url}\n`,
+    };
+  }
+
   function downloadItemsFor(keys: string[]): InternetDownloadItem[] {
+    if (mode === "videos") {
+      return keys
+        .map((k) => {
+          const url = resultUrl(k);
+          if (!url) return null;
+          const title =
+            videos.find((v) => v.id === k)?.title ??
+            providerVideos[Number(k.slice(1))]?.title ??
+            "video";
+          return linkFileFor(title, url);
+        })
+        .filter((x): x is InternetDownloadItem => !!x);
+    }
     if (mode === "images") {
       return keys.map((k) => images[Number(k.slice(1))]).filter((x): x is ImageResult => !!x).map(imageDownloadItem);
     }
