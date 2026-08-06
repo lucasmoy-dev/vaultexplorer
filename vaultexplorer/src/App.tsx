@@ -5571,6 +5571,7 @@ function Explorer({ home }: { home: string }) {
               }
               onActivateOther={(entry) => activate(curDir, entry)}
               onMenu={(e, entry) => entryMenu(e, entry)}
+              onFilesChanged={refresh}
             />
           ) : view === "library" ? (
             <LibraryShelf
