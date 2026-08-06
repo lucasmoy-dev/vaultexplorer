@@ -170,6 +170,7 @@ export const api = {
     invoke<AnimeflvEpisode[]>("list_animeflv_episodes", { pageUrl }),
   downloadWebResult: (url: string, destDir: string, filename: string, channel: Channel<ProgressEvent>) =>
     invoke<void>("download_web_result", { url, destDir, filename, channel }),
+  youtubeEmbedUrl: (videoId: string) => invoke<string>("youtube_embed_url", { videoId }),
   openPlayerWindow: (kind: string, items: PlayerItem[], index: number) =>
     invoke<void>("open_player_window", { kind, items: JSON.stringify(items), index }),
   openTerminal: (path: string, terminal: string) =>

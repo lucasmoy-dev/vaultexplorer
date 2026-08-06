@@ -42,6 +42,8 @@ mod syncthing;
 mod verify;
 mod terminal;
 mod webfind;
+#[cfg(desktop)]
+mod ytembed;
 mod thumbnail;
 #[cfg(desktop)]
 mod transcribe;
@@ -1695,6 +1697,8 @@ pub fn run() {
             webfind::download_web_result,
             #[cfg(desktop)]
             open_player_window,
+            #[cfg(desktop)]
+            ytembed::youtube_embed_url,
             #[cfg(desktop)]
             terminal::open_terminal,
             #[cfg(desktop)]

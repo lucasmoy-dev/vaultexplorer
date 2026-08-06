@@ -43,15 +43,15 @@ export function PlayerWindow({ kind, items, startIndex }: PlayerWindowProps): Re
           kind === "youtube"
             ? {
                 kind: "iframe",
-                // YouTube's embed player rejects an unrecognized/missing
-                // `origin` with error 153 ("video player configuration
-                // error") -- a Tauri window's real origin is neither
-                // http nor https (a custom asset:// / tauri:// scheme),
-                // which is exactly the case that trips it. Passing the
-                // *actual* runtime origin (whatever it really is here,
-                // not a guessed one) plus enablejsapi is the documented
-                // fix for embedding YouTube from a non-standard origin.
-                url: `https://www.youtube.com/embed/${current.key}?autoplay=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`,
+                // Not the embed URL directly: this window's origin is
+                // `tauri://localhost`, and handing YouTube a non-http
+                // origin is what error 153 ("video player configuration
+                // error") *is* -- the previous fix passed the real
+                // runtime origin, which on desktop is exactly the value
+                // YouTube refuses. youtube_embed_url instead returns a
+                // loopback page (see ytembed.rs) that embeds YouTube
+                // from a real `http://127.0.0.1:<port>` origin.
+                url: await api.youtubeEmbedUrl(current.key),
               }
             : await api.resolveProviderPlayable(kind, current.key);
         if (!cancelled) setSource(src);
@@ -108,7 +108,6 @@ export function PlayerWindow({ kind, items, startIndex }: PlayerWindowProps): Re
             src={source.url}
             allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
             allowFullScreen
-            referrerPolicy="no-referrer"
           />
         )}
         {!loading && !error && source?.kind === "video" && (
