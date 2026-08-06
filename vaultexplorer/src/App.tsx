@@ -5714,7 +5714,11 @@ function Explorer({ home }: { home: string }) {
                 })()
               : `${entries.length} ${entries.length === 1 ? "item" : "items"}`}
           </span>
-          <ProgressPanel ops={progressOps} onCancel={cancelProgress} />
+          <ProgressPanel
+            ops={progressOps}
+            onCancel={cancelProgress}
+            liftForSearch={mobile && (searchExpanded || !!searchQuery)}
+          />
           {inVault && <span className="status-loc">🔒 Encrypted Vault</span>}
         </div>
       </div>

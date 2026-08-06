@@ -3617,6 +3617,60 @@ input[type="range"]::-webkit-slider-thumb {
   border: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.25));
   z-index: 495;
 }
+/* The desktop "Actions" chip lives inline in the 26px statusbar, which on
+   mobile is squeezed between the file list and the relocated toolbar --
+   easy to never notice copy/delete/sync running at all (reported: users
+   never saw it). Same fix as the search field above: float it as its own
+   pill flush against the tab bar's top edge instead of leaving it docked
+   in the statusbar flow. Both pills are 44px tall, so a plain fixed
+   `bottom` here would sit almost fully behind the search field's own
+   pill (only offset by the search field's +10px gap) whenever both are
+   showing at once -- `.lifted` (from App.tsx's `liftForSearch`, set
+   while the search field is expanded/has a query) pushes this one a
+   full pill-height above the tab bar so the two stack cleanly instead. */
+.is-mobile .actions-indicator {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(56px + max(env(safe-area-inset-bottom, 0px), 16px));
+  margin: 0;
+  z-index: 483;
+  transition: bottom 0.18s ease;
+}
+.is-mobile .actions-indicator.lifted {
+  bottom: calc(56px + max(env(safe-area-inset-bottom, 0px), 16px) + 44px + 10px);
+}
+.is-mobile .actions-chip {
+  width: 100%;
+  height: 44px;
+  padding: 0 16px;
+  gap: 10px;
+  border-radius: 22px;
+  max-width: none;
+  font-size: 13.5px;
+  background: var(--win-bg);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  border: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.25));
+}
+.is-mobile .actions-spinner {
+  width: 14px;
+  height: 14px;
+}
+.is-mobile .actions-popover {
+  left: 0;
+  right: 0;
+  bottom: calc(44px + 10px);
+  width: auto;
+  max-height: 50vh;
+}
+.is-mobile .actions-row-label {
+  font-size: 14px;
+}
+.is-mobile .actions-cancel {
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+}
 /* Context menus open via long-press on mobile (the browser already
    fires a native `contextmenu` event on touch-and-hold) -- just make
    the rows themselves big enough to hit reliably once it's open. */

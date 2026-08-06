@@ -7,9 +7,11 @@ import { ProgressOp } from "../types";
 export function ProgressPanel({
   ops,
   onCancel,
+  liftForSearch,
 }: {
   ops: ProgressOp[];
   onCancel: (op: ProgressOp) => void;
+  liftForSearch?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   if (ops.length === 0) return null;
@@ -17,7 +19,7 @@ export function ProgressPanel({
   const chipLabel = ops.length === 1 ? ops[0].label : `${ops.length} tasks`;
 
   return (
-    <div className="actions-indicator">
+    <div className={`actions-indicator ${liftForSearch ? "lifted" : ""}`}>
       {open && (
         <div className="actions-popover" onMouseDown={(e) => e.stopPropagation()}>
           <div className="actions-popover-head">
