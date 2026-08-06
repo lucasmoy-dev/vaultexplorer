@@ -59,6 +59,7 @@ export function InternetView({
   mobile,
   onDragResults,
   onSaveToFolder,
+  onDownloadVideos,
 }: {
   initial: SavedInternetSearch | null;
   onSave: (filename: string, content: string) => Promise<string>;
@@ -72,6 +73,9 @@ export function InternetView({
   // drag (App.tsx's own vault-entry drag path) is all this needs.
   onDragResults: (items: InternetDownloadItem[]) => void;
   onSaveToFolder: (items: InternetDownloadItem[]) => void;
+  // Right-click "Download MP4"/"Download MP3" -- App owns this because the
+  // Actions row (and its cancel button) lives there, not in this view.
+  onDownloadVideos: (pageUrls: string[], audioOnly: boolean) => void;
 }) {
   const [mode, setMode] = useState<Mode>("root");
   const [query, setQuery] = useState("");
@@ -214,6 +218,13 @@ export function InternetView({
     return [];
   }
 
+  // A video tile's key maps back to a real watch page (YouTube ids need
+  // rebuilding into a URL; provider results already carry theirs).
+  function downloadKeys(keys: string[], audioOnly: boolean) {
+    const urls = keys.map(resultUrl).filter((u): u is string => !!u);
+    if (urls.length) onDownloadVideos(urls, audioOnly);
+  }
+
   function handleTileDragStart(key: string, e: React.DragEvent) {
     if (!selected.has(key)) selectOnly(key);
     const keys = selected.has(key) && selected.size > 1 ? [...selected] : [key];
@@ -263,6 +274,22 @@ export function InternetView({
         },
         ...(downloadItems.length > 0
           ? [{ label: "Save to Folder…", onClick: () => onSaveToFolder(downloadItems) }]
+          : []),
+        // Videos only: an image or a book result has nothing for yt-dlp to
+        // do. No destination prompt on purpose -- "download" here means
+        // the same thing it means in a browser: it lands in Downloads and
+        // the Actions list shows it happening.
+        ...(mode === "videos"
+          ? [
+              {
+                label: keys.length > 1 ? `Download ${keys.length} as MP4` : "Download MP4",
+                onClick: () => downloadKeys(keys, false),
+              },
+              {
+                label: keys.length > 1 ? `Download ${keys.length} as MP3` : "Download MP3",
+                onClick: () => downloadKeys(keys, true),
+              },
+            ]
           : []),
       ],
     });

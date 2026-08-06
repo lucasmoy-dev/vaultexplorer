@@ -32,8 +32,22 @@ briefly, one line at a time. When you're done, give a short summary of what chan
 }
 
 #[cfg(desktop)]
+/// Async + `spawn_blocking`, not a plain sync command: a synchronous
+/// `#[tauri::command]` runs on the main thread, and this one waits on a
+/// `claude` run that takes minutes -- so starting a reorganize froze the
+/// entire window until it finished, which is exactly the reported "I hit
+/// Start and everything locked up". The work itself is unchanged; it just
+/// happens off the UI thread now, streaming its output over the channel
+/// as it goes.
 #[tauri::command]
-pub(crate) fn claude_reorganize_folder(path: String, channel: Channel<String>) -> Result<(), String> {
+pub(crate) async fn claude_reorganize_folder(path: String, channel: Channel<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || reorganize_blocking(path, channel))
+        .await
+        .str_err()?
+}
+
+#[cfg(desktop)]
+fn reorganize_blocking(path: String, channel: Channel<String>) -> Result<(), String> {
     let claude = which_claude().ok_or("Claude Code CLI (`claude`) not found on PATH")?;
     // Prompt goes over stdin, not as a trailing positional arg: `--allowedTools`
     // takes a variadic list, so a positional prompt string right after it gets

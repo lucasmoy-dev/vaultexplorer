@@ -13,10 +13,15 @@ export function ReorganizeSheet({
   path,
   onClose,
   onDone,
+  onBackground,
 }: {
   path: string;
   onClose: () => void;
   onDone: () => void;
+  // Registers the run in the footer's Actions list, so closing this sheet
+  // leaves a visible "still working" row rather than a run that appears
+  // to have vanished. Returns a callback to fire when the run ends.
+  onBackground?: (label: string) => () => void;
 }) {
   const [started, setStarted] = useState(false);
   const [running, setRunning] = useState(false);
@@ -35,11 +40,15 @@ export function ReorganizeSheet({
         logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
       });
     };
+    const endBackgroundRow = onBackground?.(`Reorganizing "${baseName(path)}"`);
     api
       .claudeReorganizeFolder(path, channel)
       .then(() => onDone())
       .catch((e) => setError(String(e)))
-      .finally(() => setRunning(false));
+      .finally(() => {
+        setRunning(false);
+        endBackgroundRow?.();
+      });
   }
 
   return (

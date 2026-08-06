@@ -441,6 +441,14 @@ function Explorer({ home }: { home: string }) {
     };
     return channel;
   }
+  // An Actions row for work that reports no percentage -- a long external
+  // run (Reorganize & Clean) that used to be invisible once its sheet was
+  // closed. Returns the "it finished" callback.
+  function beginIndeterminate(label: string): () => void {
+    const id = ++progressIdRef.current;
+    setProgressOps((prev) => [...prev, { id, label, done: 0, total: 0, status: "running" }]);
+    return () => setProgressOps((prev) => prev.filter((p) => p.id !== id));
+  }
   // Cancel a running operation from the footer X: tell the backend to abort
   // (kills child processes / trips the loop cancel flag) and drop the row.
   const cancelProgress = useCallback((op: ProgressOp) => {
@@ -3472,6 +3480,18 @@ function Explorer({ home }: { home: string }) {
       setError(String(e));
     }
   }
+  // Straight to Downloads, no destination prompt (see ytdl.rs) -- each URL
+  // gets its own Actions row, so several downloads read as several jobs
+  // and each can be cancelled on its own.
+  function downloadInternetVideos(pageUrls: string[], audioOnly: boolean) {
+    for (const url of pageUrls) {
+      api
+        .downloadVideo(url, audioOnly, beginProgress(`Downloading ${audioOnly ? "MP3" : "MP4"}`))
+        .then(() => refresh())
+        .catch((e) => setError(String(e)));
+    }
+  }
+
   async function saveInternetResultsToFolder(items: InternetDownloadItem[]) {
     const dir = await pickPath({ directory: true, multiple: false, title: "Save to folder" });
     if (!dir || Array.isArray(dir)) return;
@@ -5611,6 +5631,7 @@ function Explorer({ home }: { home: string }) {
                 dragInternetItems.current = items;
               }}
               onSaveToFolder={saveInternetResultsToFolder}
+              onDownloadVideos={downloadInternetVideos}
             />
           ) : searchResults !== null && view === "contacts" ? (
             <ContactsGrid
@@ -6206,6 +6227,7 @@ function Explorer({ home }: { home: string }) {
         <ReorganizeSheet
           path={reorganizeTarget}
           onDone={() => refresh()}
+          onBackground={beginIndeterminate}
           onClose={() => setReorganizeTarget(null)}
         />
       )}

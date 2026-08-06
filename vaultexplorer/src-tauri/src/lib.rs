@@ -44,6 +44,8 @@ mod terminal;
 mod mediaserver;
 mod webfind;
 #[cfg(desktop)]
+mod ytdl;
+#[cfg(desktop)]
 mod ytembed;
 mod thumbnail;
 #[cfg(desktop)]
@@ -1722,6 +1724,8 @@ pub fn run() {
             webfind::list_animeflv_episodes,
             webfind::download_web_result,
             mediaserver::media_url,
+            #[cfg(desktop)]
+            ytdl::download_video,
             #[cfg(desktop)]
             open_player_window,
             #[cfg(desktop)]
