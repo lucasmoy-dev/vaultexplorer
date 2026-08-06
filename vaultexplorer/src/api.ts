@@ -166,6 +166,8 @@ export const api = {
     invoke<ProviderVideoResult[]>("search_provider_videos", { provider, query }),
   resolveProviderPlayable: (provider: string, pageUrl: string) =>
     invoke<PlayableSource>("resolve_provider_playable", { provider, pageUrl }),
+  downloadWebResult: (url: string, destDir: string, filename: string, channel: Channel<ProgressEvent>) =>
+    invoke<void>("download_web_result", { url, destDir, filename, channel }),
   openPlayerWindow: (kind: string, items: PlayerItem[], index: number) =>
     invoke<void>("open_player_window", { kind, items: JSON.stringify(items), index }),
   openTerminal: (path: string, terminal: string) =>
