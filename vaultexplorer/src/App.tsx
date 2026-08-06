@@ -36,6 +36,7 @@ import {
   PlaceGlyph,
   DiskGlyph,
   ComputerGlyph,
+  SmartphoneGlyph,
   CopyGlyph,
   CheckGlyph,
   TrashGlyph,
@@ -106,6 +107,7 @@ import {
 } from "./components/sheets/system-sheets";
 import { GetInfoSheet, MultiInfoSheet } from "./components/sheets/info-sheets";
 import { OpenWithSheet } from "./components/sheets/open-with-sheet";
+import { readText as clipboardReadText } from "@tauri-apps/plugin-clipboard-manager";
 import "./App.css";
 
 // Expands {date}/{time}/{datetime} tokens in a user-configured default
@@ -2083,6 +2085,7 @@ function Explorer({ home }: { home: string }) {
   // every value it touches -- so this now subscribes exactly once, when
   // `mobile` first turns true, and never again for the component's life.
   const backStateRef = useRef({
+    mediaViewer,
     mobileEditorTarget,
     menu,
     settingsOpen,
@@ -2093,6 +2096,7 @@ function Explorer({ home }: { home: string }) {
     refresh,
   });
   backStateRef.current = {
+    mediaViewer,
     mobileEditorTarget,
     menu,
     settingsOpen,
@@ -2107,6 +2111,17 @@ function Explorer({ home }: { home: string }) {
     let listener: { unregister: () => Promise<void> } | undefined;
     onBackButtonPress(() => {
       const s = backStateRef.current;
+      // Fullscreen photo/video/audio viewer sits on top of everything else
+      // (media-viewer-overlay z-index 2100) -- it has to be the very first
+      // thing back closes, or the press falls through to this chain's
+      // folder-navigation branches and silently moves the *background*
+      // folder view up a level while the still-open viewer hides that from
+      // the user entirely (confirmed live: pressing back while playing
+      // audio just kept playing with nothing visibly changing).
+      if (s.mediaViewer) {
+        setMediaViewer(null);
+        return;
+      }
       if (s.mobileEditorTarget) {
         setMobileEditorTarget(null);
         s.refresh();
@@ -3206,7 +3221,13 @@ function Explorer({ home }: { home: string }) {
   async function importConfigFromClipboard() {
     let text: string;
     try {
-      text = await navigator.clipboard.readText();
+      // Not `navigator.clipboard.readText()` -- Android's WebView denies
+      // the Web Clipboard API's read permission outright (confirmed live:
+      // "NotAllowedError: Read permission denied"), with no prompt to
+      // grant it either. The clipboard-manager plugin reads through the
+      // real native Android clipboard API instead, which has no such
+      // restriction.
+      text = (await clipboardReadText()) ?? "";
     } catch (e) {
       setError(String(e));
       return;
@@ -4329,7 +4350,18 @@ function Explorer({ home }: { home: string }) {
         onClick: () => setPinnedViewPrefs({}),
       });
     }
-    setMenu({ x: r.left, y: r.bottom + 4, items });
+    // On mobile this button lives in the bottom toolbar, right above the
+    // tab bar -- anchoring the menu below it (like on desktop) means it
+    // opens hard against the bottom edge, gets clamped back upward by
+    // ContextMenu's own viewport check, and lands roughly where the button
+    // already was: low and off to the right. Anchoring near the top-left
+    // instead (reported directly: "más arriba y a la izquierda") puts it
+    // somewhere it's actually comfortable to reach and read on a phone.
+    if (mobile) {
+      setMenu({ x: 12, y: 12, items });
+    } else {
+      setMenu({ x: r.left, y: r.bottom + 4, items });
+    }
   }
 
   function driveMenu(e: React.MouseEvent, d: import("./api").Drive): void {
@@ -4931,8 +4963,22 @@ function Explorer({ home }: { home: string }) {
         </div>
         {/* Drive enumeration (df/lsblk) is meaningless inside an Android
             app sandbox -- there's no second disk to show, and nothing here
-            resolves to a real block device the app could see anyway. */}
-        {!mobile && (
+            resolves to a real block device the app could see anyway. So
+            mobile gets a one-tap jump straight to the phone's real shared
+            storage root instead -- "My Computer"'s actual equivalent there
+            isn't a drive list, it's just the one storage volume a phone
+            has. */}
+        {mobile ? (
+          <div
+            className={`sidebar-item ${!showMyComputer && !showInternet && loc.kind === "fs" && loc.path === PHONE_STORAGE_PATH ? "active" : ""}`}
+            onClick={() => go({ kind: "fs", path: PHONE_STORAGE_PATH })}
+          >
+            <span className="sidebar-ico place">
+              <SmartphoneGlyph size={22} />
+            </span>
+            My Device
+          </div>
+        ) : (
           <div
             className={`sidebar-item ${showMyComputer ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
             title={favCollapsed ? "My Computer" : undefined}
@@ -5406,7 +5452,7 @@ function Explorer({ home }: { home: string }) {
               onMenu={driveMenu}
             />
           ) : showInternet ? (
-            <InternetView initial={internetInitial} onSave={saveInternetSearch} />
+            <InternetView initial={internetInitial} onSave={saveInternetSearch} mobile={mobile} />
           ) : searchResults !== null ? (
             <SearchResults
               query={searchQuery}
@@ -5997,6 +6043,7 @@ function Explorer({ home }: { home: string }) {
           startIndex={mediaViewer.startIndex}
           onClose={() => setMediaViewer(null)}
           onDeleted={() => refresh()}
+          mobile={mobile}
         />
       )}
       {shareStatus && (

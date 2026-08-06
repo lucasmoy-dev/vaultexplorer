@@ -32,6 +32,7 @@ import {
   VolumeGlyph,
   VolumeMuteGlyph,
 } from "../../icons";
+import { useMediaBlobSrc } from "../../hooks/useMediaBlobSrc";
 import "./VideoStage.css";
 
 export interface VideoStageProps {
@@ -42,6 +43,10 @@ export interface VideoStageProps {
 // Sensible spread around 1x -- covers the user-facing "0.5x, 1.5x, 2x etc."
 // ask plus a couple of common in-between steps.
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+// HTMLMediaElement.volume is spec-clamped to [0, 1] -- reaching the
+// requested "up to 200%" needs a Web Audio GainNode downstream of the
+// element instead, same as AudioStage's own volume boost.
+const MAX_VOLUME = 2;
 
 // How long the pointer has to sit idle while playing before the control
 // bar fades away, same UX as YouTube/most video players.
@@ -56,6 +61,7 @@ function fmtTime(totalSeconds: number): string {
 
 export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const resolvedSrc = useMediaBlobSrc(src);
   const stageRef = useRef<HTMLDivElement>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -69,6 +75,32 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [scrubbing, setScrubbing] = useState(false);
+
+  // Web Audio graph: element -> GainNode -> speakers, built once and
+  // reused across every video in the gallery (the same <video> element is
+  // reused, only its `src` changes) -- createMediaElementSource throws if
+  // called twice on the same element.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const ctx = new AudioContextCtor();
+    const source = ctx.createMediaElementSource(el);
+    const gain = ctx.createGain();
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    audioCtxRef.current = ctx;
+    gainNodeRef.current = gain;
+    return () => {
+      ctx.close().catch(() => {});
+    };
+  }, []);
+  useEffect(() => {
+    if (gainNodeRef.current) gainNodeRef.current.gain.value = muted ? 0 : volume;
+  }, [volume, muted]);
 
   // A new src means a new video: snap state back to paused/0:00 rather
   // than showing the *previous* clip's progress for a frame while
@@ -88,7 +120,7 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
       el.playbackRate = rate;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src]);
+  }, [resolvedSrc]);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -104,17 +136,12 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
       setPlaying(false);
       setEnded(true);
     };
-    const onVolumeChange = () => {
-      setVolume(el.volume);
-      setMuted(el.muted);
-    };
     el.addEventListener("timeupdate", onTime);
     el.addEventListener("loadedmetadata", onLoaded);
     el.addEventListener("durationchange", onLoaded);
     el.addEventListener("play", onPlay);
     el.addEventListener("pause", onPause);
     el.addEventListener("ended", onEnded);
-    el.addEventListener("volumechange", onVolumeChange);
     return () => {
       el.removeEventListener("timeupdate", onTime);
       el.removeEventListener("loadedmetadata", onLoaded);
@@ -122,9 +149,8 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
       el.removeEventListener("play", onPlay);
       el.removeEventListener("pause", onPause);
       el.removeEventListener("ended", onEnded);
-      el.removeEventListener("volumechange", onVolumeChange);
     };
-  }, [src]);
+  }, [resolvedSrc]);
 
   // Fullscreen can be exited by the browser's own affordance (Escape, a
   // native "exit fullscreen" bar) as well as our own button -- listen for
@@ -177,6 +203,7 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
     if (!el) return;
     if (el.paused || el.ended) {
       if (el.ended) el.currentTime = 0;
+      audioCtxRef.current?.resume().catch(() => {});
       void el.play().catch(() => {});
     } else {
       el.pause();
@@ -191,16 +218,13 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
   }
 
   function toggleMute() {
-    const el = videoRef.current;
-    if (!el) return;
-    el.muted = !el.muted;
+    setMuted((m) => !m);
   }
 
   function handleVolume(value: number) {
-    const el = videoRef.current;
-    if (!el) return;
-    el.volume = value;
-    el.muted = value === 0;
+    setVolume(value);
+    if (value === 0) setMuted(true);
+    else if (muted) setMuted(false);
   }
 
   function setSpeed(v: number) {
@@ -228,7 +252,7 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
   const seekMax = duration || 0;
   const seekValue = Math.min(currentTime, seekMax);
   const progressPct = seekMax > 0 ? (seekValue / seekMax) * 100 : 0;
-  const volumePct = muted ? 0 : Math.round(volume * 100);
+  const volumePct = muted ? 0 : Math.round((volume / MAX_VOLUME) * 100);
 
   return (
     <div
@@ -239,7 +263,7 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
     >
       <video
         ref={videoRef}
-        src={src}
+        src={resolvedSrc}
         aria-label={name}
         className="video-stage-el"
         onClick={togglePlay}
@@ -296,13 +320,14 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
               type="range"
               className="video-volume-slider"
               min={0}
-              max={1}
+              max={MAX_VOLUME}
               step={0.01}
               value={muted ? 0 : volume}
               onChange={(e) => handleVolume(Number(e.target.value))}
               style={{ "--progress": `${volumePct}%` } as CSSProperties}
               aria-label="Volume"
             />
+            <span className="video-volume-pct">{Math.round((muted ? 0 : volume) * 100)}%</span>
           </div>
 
           <div className="video-time">

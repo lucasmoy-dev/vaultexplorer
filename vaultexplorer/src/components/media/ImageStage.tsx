@@ -43,6 +43,14 @@ import "./ImageStage.css";
 //                 save (e.g. permission denied, disk full). ImageStage
 //                 only stops its own spinner on failure; surfacing the
 //                 error (toast, etc) is left to the parent.
+//   onZoomChange  Optional -- fired whenever this image crosses the
+//                 zoomed-in/fit-to-view boundary (zoom > 1). The parent's
+//                 own swipe-to-navigate gesture has no visibility into
+//                 this component's internal zoom/pan state otherwise, so a
+//                 one-finger pan around a zoomed-in photo was getting
+//                 misread as a horizontal swipe and flipping to the next
+//                 item mid-pan (confirmed live). The parent is expected to
+//                 suppress its own swipe handling while this reports true.
 // ---------------------------------------------------------------------
 export interface ImageStageProps {
   src: string;
@@ -51,6 +59,7 @@ export interface ImageStageProps {
   rotateSignal?: number;
   onRotated?: () => void;
   onError?: (message: string) => void;
+  onZoomChange?: (zoomedIn: boolean) => void;
 }
 
 const MIN_ZOOM = 1;
@@ -94,6 +103,7 @@ export function ImageStage({
   rotateSignal,
   onRotated,
   onError,
+  onZoomChange,
 }: ImageStageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -118,6 +128,11 @@ export function ImageStage({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    onZoomChange?.(zoom > 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom > 1]);
 
   // CSS-only spin applied to a wrapper around <img>, independent of the
   // zoom/pan transform on <img> itself -- see the rotate section below for
@@ -371,17 +386,28 @@ export function ImageStage({
   }, []);
 
   // ---- rotate: CSS spin now, real pixels once the save lands -----------
+  //
+  // Draws from a freshly `fetch()`-ed ImageBitmap, not the on-screen
+  // `<img>` element (`imgRef.current`) the way this first worked: that
+  // element's `src` is a Tauri asset-protocol URL, a different origin
+  // from the page itself, and drawing a cross-origin `<img>` onto a
+  // canvas taints it (canvas.toBlob then either throws or silently
+  // produces nothing) regardless of what CORS headers the asset
+  // protocol does or doesn't send -- `crossOrigin` is what a browser
+  // needs set on the *element* to even check those headers, and this
+  // one never set it. Confirmed live: this exact pattern is why rotating
+  // corrupted the view instead of just failing cleanly (the CSS spin and
+  // zoom/pan reset above already ran by the time the tainted-canvas
+  // failure hit, and it was thrown synchronously inside this effect, not
+  // caught anywhere, so none of the `finally`-style cleanup below ever
+  // ran either -- the spinner stayed up and the image never came back).
+  // A blob: object has no origin to taint anything with, so fetching the
+  // same `src` directly sidesteps the whole question.
   useEffect(() => {
     const prev = prevRotateSignal.current;
     prevRotateSignal.current = rotateSignal;
     if (rotateSignal === undefined || prev === undefined || rotateSignal === prev) return; // initial mount, or no real change
     if (isRotating) return; // drop -- a rotate is already in flight
-
-    const img = imgRef.current;
-    if (!img || !img.complete || !img.naturalWidth) {
-      onError?.("Image isn't loaded yet");
-      return;
-    }
 
     const gen = genRef.current;
     setIsRotating(true);
@@ -390,58 +416,55 @@ export function ImageStage({
     setPan({ x: 0, y: 0 });
     setSpinDeg((d) => d + 90);
 
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-    const canvas = document.createElement("canvas");
-    canvas.width = h;
-    canvas.height = w;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      setIsRotating(false);
-      setSpinDeg((d) => d - 90);
-      onError?.("Canvas unavailable");
-      return;
+    function fail(message: string) {
+      if (genRef.current === gen) {
+        setIsRotating(false);
+        setSpinDeg((d) => d - 90);
+      }
+      onError?.(message);
     }
-    ctx.translate(canvas.width, 0);
-    ctx.rotate(Math.PI / 2);
-    ctx.drawImage(img, 0, 0, w, h);
 
-    const mime = mimeFromPath(fullPath);
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          if (genRef.current === gen) {
-            setIsRotating(false);
-            setSpinDeg((d) => d - 90);
-          }
-          onError?.("Could not encode rotated image");
+    (async () => {
+      try {
+        const res = await fetch(src);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const srcBlob = await res.blob();
+        const bitmap = await createImageBitmap(srcBlob);
+        const w = bitmap.width;
+        const h = bitmap.height;
+        const canvas = document.createElement("canvas");
+        canvas.width = h;
+        canvas.height = w;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          bitmap.close();
+          fail("Canvas unavailable");
           return;
         }
-        blob
-          .arrayBuffer()
-          .then((buf) => {
-            const bytes = new Uint8Array(buf);
-            return inVault ? api.vaultWriteBytes(fullPath, bytes) : api.fsWriteBytes(fullPath, bytes);
-          })
-          .then(() => {
-            if (genRef.current !== gen) return; // navigated away meanwhile
-            pendingRotateLoad.current = true;
-            // Cache-bust so the browser re-fetches the file's new bytes
-            // instead of reusing the pre-rotation image from cache.
-            setDisplaySrc(`${src}${src.includes("?") ? "&" : "?"}v=${Date.now()}`);
-            onRotated?.();
-          })
-          .catch((err) => {
-            if (genRef.current === gen) {
-              setIsRotating(false);
-              setSpinDeg((d) => d - 90);
-            }
-            onError?.(String(err));
-          });
-      },
-      mime,
-      0.92
-    );
+        ctx.translate(canvas.width, 0);
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        bitmap.close();
+
+        const mime = mimeFromPath(fullPath);
+        const rotatedBlob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, mime, 0.92));
+        if (!rotatedBlob) {
+          fail("Could not encode rotated image");
+          return;
+        }
+        const bytes = new Uint8Array(await rotatedBlob.arrayBuffer());
+        await (inVault ? api.vaultWriteBytes(fullPath, bytes) : api.fsWriteBytes(fullPath, bytes));
+
+        if (genRef.current !== gen) return; // navigated away meanwhile
+        pendingRotateLoad.current = true;
+        // Cache-bust so the browser re-fetches the file's new bytes
+        // instead of reusing the pre-rotation image from cache.
+        setDisplaySrc(`${src}${src.includes("?") ? "&" : "?"}v=${Date.now()}`);
+        onRotated?.();
+      } catch (err) {
+        fail(String(err));
+      }
+    })();
     // Only `rotateSignal` should drive this effect -- src/inVault/fullPath
     // changing mid-rotate is handled via `gen`, re-running on them would
     // otherwise fire a second rotate off a stale prior signal value.

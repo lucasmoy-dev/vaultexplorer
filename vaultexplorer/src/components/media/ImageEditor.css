@@ -36,6 +36,13 @@
   align-items: center;
   gap: 14px;
   padding: 10px 16px;
+  /* Without the inset this row sits directly under the status bar on
+     Android -- every button in it (mode tabs, Close, Save) then lands in
+     the strip the OS reserves for the status bar, so taps get eaten
+     before they reach the WebView (confirmed live: none of Crop/Draw/
+     Adjust/Flip responded to a tap). Same fix as MediaViewer.css's own
+     .mv-toolbar. */
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
   background: rgba(30, 30, 32, 0.9);
   border-bottom: 0.5px solid rgba(255, 255, 255, 0.1);
   flex: 0 0 auto;

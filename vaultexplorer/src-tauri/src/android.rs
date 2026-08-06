@@ -567,13 +567,28 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                 let content_uri = env
                     .get_static_field(&contacts_class, "CONTENT_URI", "Landroid/net/Uri;")?
                     .l()?;
+                // `as_vcard/<segment>` under this URI takes the contact's
+                // LOOKUP_KEY string, not its `_id` -- confirmed live: using
+                // the raw numeric id (which happened to work for some
+                // contacts, by coincidence of the id also being a valid
+                // lookup-key segment) threw "Invalid lookup id: 2" from
+                // ContactsProvider2 for others. `Uri.withAppendedPath`
+                // below also handles percent-encoding any special
+                // characters an aggregated contact's lookup key can contain
+                // (it's not always a plain short token), which raw string
+                // formatting + `Uri.parse` did not.
+                let vcard_content_uri = env
+                    .get_static_field(&contacts_class, "CONTENT_VCARD_URI", "Landroid/net/Uri;")?
+                    .l()?;
                 let id_col = env.new_string("_id")?;
                 let name_col = env.new_string("display_name")?;
+                let lookup_col = env.new_string("lookup")?;
                 let projection = {
                     let string_class = env.find_class("java/lang/String")?;
-                    let arr = env.new_object_array(2, &string_class, jni::objects::JObject::null())?;
+                    let arr = env.new_object_array(3, &string_class, jni::objects::JObject::null())?;
                     env.set_object_array_element(&arr, 0, &id_col)?;
                     env.set_object_array_element(&arr, 1, &name_col)?;
+                    env.set_object_array_element(&arr, 2, &lookup_col)?;
                     arr
                 };
                 let none = jni::objects::JObject::null();
@@ -599,6 +614,9 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                     .i()?;
                 let name_idx = env
                     .call_method(&cursor, "getColumnIndex", "(Ljava/lang/String;)I", &[JValue::Object(&name_col)])?
+                    .i()?;
+                let lookup_idx = env
+                    .call_method(&cursor, "getColumnIndex", "(Ljava/lang/String;)I", &[JValue::Object(&lookup_col)])?
                     .i()?;
                 if let Err(e) = std::fs::create_dir_all(&dest_dir) {
                     // Surfaced immediately rather than silently proceeding to
@@ -648,12 +666,26 @@ pub(crate) fn android_export_contacts(app: tauri::AppHandle, dest_dir: String) -
                         }
                         used_names.insert(file_name.clone());
 
-                        let vcard_path = format!("content://com.android.contacts/contacts/as_vcard/{id}");
-                        let vcard_str = env.new_string(&vcard_path)?;
-                        let uri_class = env.find_class("android/net/Uri")?;
-                        let vcard_uri = env
-                            .call_static_method(uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&vcard_str)])?
+                        let lookup_obj = env
+                            .call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[JValue::Int(lookup_idx)])?
                             .l()?;
+                        let uri_class = env.find_class("android/net/Uri")?;
+                        let vcard_uri = if lookup_obj.is_null() {
+                            // No lookup key on record (shouldn't normally
+                            // happen) -- fall back to the old numeric-id
+                            // path rather than skipping the contact outright.
+                            let vcard_str = env.new_string(format!("content://com.android.contacts/contacts/as_vcard/{id}"))?;
+                            env.call_static_method(&uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&vcard_str)])?
+                                .l()?
+                        } else {
+                            env.call_static_method(
+                                &uri_class,
+                                "withAppendedPath",
+                                "(Landroid/net/Uri;Ljava/lang/String;)Landroid/net/Uri;",
+                                &[JValue::Object(&vcard_content_uri), JValue::Object(&lookup_obj)],
+                            )?
+                            .l()?
+                        };
                         let stream = env
                             .call_method(
                                 &resolver,
@@ -907,7 +939,89 @@ pub(crate) fn android_open_path(app: tauri::AppHandle, path: String) -> Result<(
                 // FLAG_GRANT_READ_URI_PERMISSION(1) | FLAG_ACTIVITY_NEW_TASK(0x10000000)
                 env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(1 | 0x1000_0000)])?;
                 env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
-                eprintln!("android_open_path: step 13 done");
+                Ok(())
+            };
+            let result = run().map_err(|e| describe_jni_error(env, e));
+            let _ = tx.send(result);
+        });
+    });
+    if sent.is_err() {
+        return Err("failed to reach the webview".into());
+    }
+    rx.recv_timeout(std::time::Duration::from_secs(10)).map_err(|_| "timed out".to_string())?
+}
+
+/// The media viewer's "Share" button (send a photo/video/audio file to
+/// WhatsApp/etc) -- distinct from the existing desktop-oriented
+/// `fs_share_file`/`vault_share_file` (which upload to an anonymous public
+/// file host and copy back a link; not what "share" means for a phone).
+/// Same FileProvider URI-granting pattern as `android_open_path`, just
+/// wrapped in `ACTION_SEND` + `Intent.createChooser` instead of
+/// `ACTION_VIEW`, so it opens the OS share sheet instead of a single fixed
+/// viewer app.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn android_share_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let window = app.get_webview_window("main").ok_or("no main window")?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sent = window.with_webview(move |pw| {
+        let jni = pw.jni_handle();
+        jni.exec(move |env, activity, _webview| {
+            let mut run = || -> Result<(), jni::errors::Error> {
+                use jni::objects::JValue;
+
+                let pkg_name = env.call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?.l()?;
+                let authority_suffix = env.new_string(".fileprovider")?;
+                let authority = env
+                    .call_method(
+                        &pkg_name,
+                        "concat",
+                        "(Ljava/lang/String;)Ljava/lang/String;",
+                        &[JValue::Object(&authority_suffix)],
+                    )?
+                    .l()?;
+                let file_provider_class = find_app_class(env, activity, "androidx.core.content.FileProvider")?;
+                let file_class = env.find_class("java/io/File")?;
+                let path_str = env.new_string(&path)?;
+                let file = env.new_object(file_class, "(Ljava/lang/String;)V", &[JValue::Object(&path_str)])?;
+                let uri = env
+                    .call_static_method(
+                        &file_provider_class,
+                        "getUriForFile",
+                        "(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;)Landroid/net/Uri;",
+                        &[JValue::Object(activity), JValue::Object(&authority), JValue::Object(&file)],
+                    )?
+                    .l()?;
+
+                let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+                let mime = env.new_string(mime_for_ext(&ext))?;
+
+                let action = env.new_string("android.intent.action.SEND")?;
+                let intent_class = env.find_class("android/content/Intent")?;
+                let intent = env.new_object(&intent_class, "(Ljava/lang/String;)V", &[JValue::Object(&action)])?;
+                env.call_method(&intent, "setType", "(Ljava/lang/String;)Landroid/content/Intent;", &[JValue::Object(&mime)])?;
+                let extra_stream = env.new_string("android.intent.extra.STREAM")?;
+                env.call_method(
+                    &intent,
+                    "putExtra",
+                    "(Ljava/lang/String;Landroid/os/Parcelable;)Landroid/content/Intent;",
+                    &[JValue::Object(&extra_stream), JValue::Object(&uri)],
+                )?;
+                // FLAG_GRANT_READ_URI_PERMISSION -- the receiving app (WhatsApp,
+                // Gmail, ...) needs this to actually read the fileprovider URI,
+                // same as the VIEW intents elsewhere in this file.
+                env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(1)])?;
+
+                let chooser_title = env.new_string("Share")?;
+                let chooser = env
+                    .call_static_method(
+                        &intent_class,
+                        "createChooser",
+                        "(Landroid/content/Intent;Ljava/lang/CharSequence;)Landroid/content/Intent;",
+                        &[JValue::Object(&intent), JValue::Object(&chooser_title)],
+                    )?
+                    .l()?;
+                env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&chooser)])?;
                 Ok(())
             };
             let result = run().map_err(|e| describe_jni_error(env, e));
@@ -932,12 +1046,24 @@ pub(crate) fn android_open_path(app: tauri::AppHandle, path: String) -> Result<(
 #[cfg(target_os = "android")]
 #[tauri::command]
 pub(crate) fn android_download_and_install_apk(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    let bytes = reqwest::blocking::get(&url)
-        .str_err()?
-        .error_for_status()
-        .str_err()?
-        .bytes()
+    // A plain `reqwest::blocking::get` here reproducibly failed partway
+    // through this ~25MB download with "error decoding response body" --
+    // confirmed live, not hypothetical: `curl` against the exact same
+    // release-asset URL (served over HTTP/2, redirected through
+    // release-assets.githubusercontent.com) completed fine, so the bytes
+    // themselves aren't the problem. HTTP/2 stream handling has a history
+    // of being flakier than HTTP/1.1 on Android's network stack
+    // specifically (this is a mobile-only code path; desktop's own
+    // update flow just opens the releases page in a browser instead, see
+    // `installUpdate` on the JS side) -- forcing HTTP/1.1 avoids that
+    // class of issue, and a generous explicit timeout accounts for a
+    // slow mobile connection rather than an implicit shorter default.
+    let client = reqwest::blocking::Client::builder()
+        .http1_only()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
         .str_err()?;
+    let bytes = client.get(&url).send().str_err()?.error_for_status().str_err()?.bytes().str_err()?;
     let cache_dir = app.path().app_cache_dir().str_err()?;
     std::fs::create_dir_all(&cache_dir).str_err()?;
     let apk_path = cache_dir.join("vault-explorer-update.apk");

@@ -288,9 +288,19 @@ export function ContextMenu({ state, onClose }: { state: MenuState; onClose: () 
     // replaced an earlier rAF-deferred `mousedown` listener that only fixed
     // the *opening* tap, not later ones -- tapping "More" to open its own
     // submenu was closing the whole menu instead, on every tap).
+    // Capture phase + stopPropagation, not the plain bubble listener this
+    // used to be: a bubble-phase listener on `window` only runs *after*
+    // whatever's directly under the tap has already handled its own click
+    // (React dispatches from the target outward), so dismissing the menu
+    // this way still let the same tap select/open the file underneath it
+    // (confirmed live: tapping outside the View Options menu to close it
+    // also activated whatever grid entry happened to be there). Capturing
+    // on `window` fires before the event ever reaches that entry, and
+    // stopping it there means the entry's own handler never runs at all.
     const closeIfOutside = (e: Event) => {
       const target = e.target as Element | null;
       if (target?.closest(".context-menu")) return;
+      e.stopPropagation();
       onClose();
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -299,13 +309,13 @@ export function ContextMenu({ state, onClose }: { state: MenuState; onClose: () 
     // by definition, so the target-check alone can't save it from a same-
     // tick phantom click.
     const attach = requestAnimationFrame(() => {
-      window.addEventListener("click", closeIfOutside);
+      window.addEventListener("click", closeIfOutside, true);
       window.addEventListener("resize", onClose);
     });
     window.addEventListener("keydown", onKey);
     return () => {
       cancelAnimationFrame(attach);
-      window.removeEventListener("click", closeIfOutside);
+      window.removeEventListener("click", closeIfOutside, true);
       window.removeEventListener("resize", onClose);
       window.removeEventListener("keydown", onKey);
     };

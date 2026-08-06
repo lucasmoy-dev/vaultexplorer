@@ -247,6 +247,21 @@ button:disabled {
   cursor: default;
 }
 
+/* Form controls don't inherit `color`/`font-family` from an ancestor the
+   way ordinary elements do -- the UA stylesheet gives them their own
+   platform-default text color (effectively black) regardless of `body`'s
+   `--text`. Every specific input/textarea rule elsewhere in this file
+   already sets its own color, but that leaves any plain, unstyled
+   <input>/<textarea>/<select> rendering black text on this app's dark
+   theme -- confirmed live as exactly that in Settings. This is a low-
+   specificity safety net, not a replacement for those more specific rules. */
+input,
+textarea,
+select {
+  color: var(--text);
+  font-family: var(--font);
+}
+
 /* ---- resize handles ----
    A `decorations: false` window has no OS-drawn border for the window
    manager to hit-test drags against, and the webview content underneath
@@ -4524,11 +4539,18 @@ input[type="range"]::-webkit-slider-thumb {
 }
 /* Same look as .settings-select (the app's one established select style)
    but sized for an inline filter row instead of a full-width settings
-   field. Newest-first's checkbox+label instead reuses .checkbox-row
-   directly -- no equivalent override needed there. */
+   field -- `width: auto` alone still let this size itself off its
+   *widest option* on some engines (a select showing "Any time" ballooned
+   to fit "This month" sitting unselected in its own list), not just
+   what's currently showing, so a real width cap it clear of instead.
+   Newest-first's checkbox+label instead reuses .checkbox-row directly --
+   no equivalent override needed there. */
 .internet-filters .settings-select {
   width: auto;
+  max-width: 128px;
   margin-bottom: 0;
+  padding: 5px 7px;
+  font-size: 12.5px;
 }
 /* .sheet-card input's look (the app's one established text-field style),
    without needing a .sheet-card wrapper around this bar. */

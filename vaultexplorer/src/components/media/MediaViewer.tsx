@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api } from "../../api";
-import { ChevronLeft, ChevronRight, CloseGlyph, PencilGlyph, RotateGlyph, TrashGlyph } from "../../icons";
+import { ChevronLeft, ChevronRight, CloseGlyph, PencilGlyph, RotateGlyph, ShareGlyph, TrashGlyph } from "../../icons";
 import { ImageStage } from "./ImageStage";
 import { VideoStage } from "./VideoStage";
 import { AudioStage } from "./AudioStage";
@@ -87,6 +87,7 @@ export interface MediaViewerProps {
   startIndex: number;
   onClose: () => void;
   onDeleted: (fullPath: string) => void;
+  mobile: boolean;
 }
 
 function clampIndex(i: number, len: number): number {
@@ -107,6 +108,7 @@ export function MediaViewer({
   startIndex,
   onClose,
   onDeleted,
+  mobile,
 }: MediaViewerProps): React.JSX.Element {
   const [gallery, setGallery] = useState<GalleryEntry[]>(initialGallery);
   const [index, setIndex] = useState(() => clampIndex(startIndex, initialGallery.length));
@@ -115,6 +117,13 @@ export function MediaViewer({
   // null = initial mount, plain fade.
   const [direction, setDirection] = useState<"left" | "right" | null>(null);
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+  // The real filesystem path behind `resolvedSrc` -- same value, before
+  // `convertFileSrc` turns it into an asset:// URL. Kept separately because
+  // Share needs a real path (Android's FileProvider hands a `content://`
+  // URI to the OS share sheet from an actual file, not from a URL an app
+  // outside this one's sandbox has no way to fetch).
+  const [resolvedAbsPath, setResolvedAbsPath] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
   const [resolveError, setResolveError] = useState("");
   // Separate from resolveError: a rotate/save failure surfaced by
   // ImageStage's onError shouldn't hide the already-loaded stage the way a
@@ -124,8 +133,25 @@ export function MediaViewer({
   const [rotateSignal, setRotateSignal] = useState(0);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // While the current image is zoomed in, a one-finger pan is ImageStage's
+  // gesture to interpret, not this shell's swipe-to-navigate -- see
+  // ImageStage's `onZoomChange` doc comment for the bug this fixes.
+  const [imageZoomed, setImageZoomed] = useState(false);
+  // Audio-only playback modes -- `gallery` is already scoped to just the
+  // audio siblings in the same folder when a track was opened (see
+  // `openMediaViewer` in App.tsx), so that array doubles as the playlist
+  // with no separate fetch needed. Shuffle history is real state (not a
+  // ref) so `hasPrev` below reacts to it the same way it reacts to `index`.
+  const [shuffle, setShuffle] = useState(false);
+  const [repeatMode, setRepeatMode] = useState<"off" | "all" | "one">("off");
+  const [shuffleHistory, setShuffleHistory] = useState<number[]>([]);
+  // Bumped to tell AudioStage "replay the current track from 0", distinct
+  // from a `src` change (which AudioStage treats as "this is a different
+  // track" and would otherwise be indistinguishable from repeat-one).
+  const [repeatOneSignal, setRepeatOneSignal] = useState(0);
 
   const srcCache = useRef(new Map<string, string>());
+  const absPathCache = useRef(new Map<string, string>());
   const galleryLenRef = useRef(gallery.length);
   const disarmTimer = useRef<number | null>(null);
   const touchStartX = useRef<number | null>(null);
@@ -148,19 +174,26 @@ export function MediaViewer({
     }
     setResolveError("");
     setStageError("");
+    setImageZoomed(false);
     const cached = srcCache.current.get(current.fullPath);
     if (cached) {
       setResolvedSrc(cached);
+      setResolvedAbsPath(absPathCache.current.get(current.fullPath) ?? null);
       return;
     }
     let cancelled = false;
     setResolvedSrc(null);
+    setResolvedAbsPath(null);
     (async () => {
       try {
         const abs = current.inVault ? await api.openPath(current.fullPath) : current.fullPath;
         const url = convertFileSrc(abs);
         srcCache.current.set(current.fullPath, url);
-        if (!cancelled) setResolvedSrc(url);
+        absPathCache.current.set(current.fullPath, abs);
+        if (!cancelled) {
+          setResolvedSrc(url);
+          setResolvedAbsPath(abs);
+        }
       } catch (e) {
         if (!cancelled) setResolveError(String(e));
       }
@@ -174,7 +207,24 @@ export function MediaViewer({
   // (rather than closing over `index`/`gallery.length` directly) so the
   // keydown listener below can be attached once, without resubscribing on
   // every index change.
+  function randomIndexExcluding(exclude: number, len: number): number {
+    if (len <= 1) return exclude;
+    let r = Math.floor(Math.random() * len);
+    if (r === exclude) r = (r + 1) % len;
+    return r;
+  }
   function goPrev() {
+    if (current?.kind === "audio" && shuffle) {
+      setShuffleHistory((h) => {
+        if (h.length === 0) return h;
+        const prevIdx = h[h.length - 1];
+        setDirection("right");
+        setIndex(prevIdx);
+        return h.slice(0, -1);
+      });
+      setDeleteArmed(false);
+      return;
+    }
     setIndex((i) => {
       if (i <= 0) return i;
       setDirection("right");
@@ -183,12 +233,41 @@ export function MediaViewer({
     setDeleteArmed(false);
   }
   function goNext() {
+    if (current?.kind === "audio" && shuffle) {
+      setIndex((i) => {
+        if (galleryLenRef.current <= 1) return i;
+        setShuffleHistory((h) => [...h, i]);
+        setDirection("left");
+        return randomIndexExcluding(i, galleryLenRef.current);
+      });
+      setDeleteArmed(false);
+      return;
+    }
     setIndex((i) => {
-      if (i >= galleryLenRef.current - 1) return i;
+      if (i >= galleryLenRef.current - 1) {
+        if (current?.kind === "audio" && repeatMode === "all" && galleryLenRef.current > 1) {
+          setDirection("left");
+          return 0;
+        }
+        return i;
+      }
       setDirection("left");
       return i + 1;
     });
     setDeleteArmed(false);
+  }
+  // Repeat-one restarts the same track instead of advancing -- exposed
+  // separately from goNext so AudioStage's onEnded can special-case it
+  // without goNext itself needing to know "did this fire because the
+  // track ended" vs "the user tapped skip".
+  function handleAudioEnded() {
+    if (repeatMode === "one") {
+      setRepeatOneSignal((n) => n + 1);
+      return;
+    }
+    if (hasNext) {
+      goNext();
+    }
   }
 
   useEffect(() => {
@@ -226,12 +305,25 @@ export function MediaViewer({
     touchStartX.current = null;
     touchStartY.current = null;
     if (startX === null || startY === null) return;
+    if (imageZoomed) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - startX;
     const dy = t.clientY - startY;
     if (Math.abs(dx) < SWIPE_THRESHOLD_PX || Math.abs(dx) < Math.abs(dy)) return;
     if (dx < 0) goNext();
     else goPrev();
+  }
+
+  async function handleShare() {
+    if (!resolvedAbsPath || sharing) return;
+    setSharing(true);
+    try {
+      await api.androidSharePath(resolvedAbsPath);
+    } catch (e) {
+      setStageError(String(e));
+    } finally {
+      setSharing(false);
+    }
   }
 
   function armOrConfirmDelete() {
@@ -312,8 +404,12 @@ export function MediaViewer({
     setEditingOpen(false);
   }
 
-  const hasPrev = index > 0;
-  const hasNext = index < gallery.length - 1;
+  const isAudio = current?.kind === "audio";
+  const hasPrev = isAudio && shuffle ? shuffleHistory.length > 0 : index > 0;
+  const hasNext =
+    isAudio && shuffle
+      ? gallery.length > 1
+      : index < gallery.length - 1 || (isAudio && repeatMode === "all" && gallery.length > 1);
   const isImage = current?.kind === "image";
 
   return (
@@ -325,7 +421,7 @@ export function MediaViewer({
       onTouchEnd={onTouchEnd}
     >
       <div className="media-viewer-card" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="mv-toolbar">
+        <div className={`mv-toolbar ${isImage ? "mv-toolbar-bottom" : ""}`}>
           <button className="mv-icon-btn" onClick={onClose} aria-label="Close" title="Close (Esc)">
             <CloseGlyph size={18} />
           </button>
@@ -347,6 +443,17 @@ export function MediaViewer({
                   <PencilGlyph size={17} />
                 </button>
               </>
+            )}
+            {mobile && (
+              <button
+                className="mv-icon-btn"
+                onClick={handleShare}
+                disabled={!resolvedAbsPath || sharing}
+                aria-label="Share"
+                title="Share"
+              >
+                <ShareGlyph size={17} />
+              </button>
             )}
             <button
               className={`mv-icon-btn mv-delete-btn ${deleteArmed ? "armed" : ""}`}
@@ -393,6 +500,7 @@ export function MediaViewer({
                   rotateSignal={rotateSignal}
                   onRotated={handleRotated}
                   onError={setStageError}
+                  onZoomChange={setImageZoomed}
                 />
               )}
               {current.kind === "video" && <VideoStage src={resolvedSrc} name={current.name} />}
@@ -404,6 +512,23 @@ export function MediaViewer({
                   hasPrev={hasPrev}
                   onNext={goNext}
                   onPrev={goPrev}
+                  onEnded={handleAudioEnded}
+                  repeatOneSignal={repeatOneSignal}
+                  playlist={gallery.map((g) => g.name)}
+                  currentIndex={index}
+                  onSelectTrack={(i) => {
+                    setDirection(i > index ? "left" : "right");
+                    setIndex(i);
+                  }}
+                  shuffle={shuffle}
+                  onToggleShuffle={() => {
+                    setShuffle((s) => !s);
+                    setShuffleHistory([]);
+                  }}
+                  repeatMode={repeatMode}
+                  onCycleRepeat={() =>
+                    setRepeatMode((m) => (m === "off" ? "all" : m === "all" ? "one" : "off"))
+                  }
                 />
               )}
             </div>

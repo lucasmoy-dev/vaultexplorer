@@ -21,6 +21,7 @@
     "core:window:allow-center",
     "opener:default",
     "dialog:default",
+    "clipboard-manager:default",
     {
       "identifier": "opener:allow-open-path",
       "allow": [{ "path": "**" }]

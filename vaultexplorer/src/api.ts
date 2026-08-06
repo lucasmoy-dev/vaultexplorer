@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { openPath as pluginOpenPath } from "@tauri-apps/plugin-opener";
+import { openPath as pluginOpenPath, openUrl as pluginOpenUrl } from "@tauri-apps/plugin-opener";
 
 // Resolved once and cached -- every caller awaits the same promise instead
 // of re-invoking the command per call. A *failed* attempt is not cached:
@@ -8,7 +8,7 @@ import { openPath as pluginOpenPath } from "@tauri-apps/plugin-opener";
 // caching that would permanently misroute every osOpen call for the rest
 // of the session instead of just retrying next time.
 let mobilePlatform: Promise<boolean> | null = null;
-function isMobilePlatformCached(): Promise<boolean> {
+export function isMobilePlatformCached(): Promise<boolean> {
   if (!mobilePlatform) {
     mobilePlatform = invoke<boolean>("is_mobile_platform").catch(() => {
       mobilePlatform = null;
@@ -28,12 +28,22 @@ function isMobilePlatformCached(): Promise<boolean> {
 // object its own Kotlin `OpenArgs` requires, throwing
 // "no String-argument constructor... to deserialize from String value" on
 // every single file open there (see `android_open_path` in
-// `src-tauri/src/android.rs`, which this routes to instead). URLs go
-// through the plugin as before -- only real filesystem paths hit the
-// local replacement.
+// `src-tauri/src/android.rs`, which this routes to instead).
+//
+// URLs use the plugin's separate `openUrl` command, not `openPath` -- an
+// earlier version of this ran every URL through `openPath` too (reasoning
+// that only *paths* were affected), but that's the exact same broken
+// Android command under a different name, so YouTube/provider links from
+// InternetView failed to open on mobile the same way local files used to.
+// `openUrl` is a distinct plugin command with its own (working) Android
+// implementation.
 export async function osOpen(target: string): Promise<void> {
   const isUrl = /^[a-z][a-z0-9+.-]*:/i.test(target);
-  if (!isUrl && (await isMobilePlatformCached())) {
+  if (isUrl) {
+    await pluginOpenUrl(target);
+    return;
+  }
+  if (await isMobilePlatformCached()) {
     await invoke<void>("android_open_path", { path: target });
     return;
   }
@@ -169,6 +179,10 @@ export const api = {
     invoke<void>("vault_write_bytes", { relPath, bytes }),
   fsShareFile: (path: string) => invoke<string>("fs_share_file", { path }),
   vaultShareFile: (relPath: string) => invoke<string>("vault_share_file", { relPath }),
+  // OS share sheet (WhatsApp/etc) for a real file already on disk --
+  // Android only, distinct from fsShareFile/vaultShareFile above (those
+  // upload to a public host and return a link instead).
+  androidSharePath: (path: string) => invoke<void>("android_share_path", { path }),
   fsDelete: (path: string) => invoke<void>("fs_delete", { path }),
   fsSecureDelete: (paths: string[], channel: Channel<ProgressEvent>) =>
     invoke<void>("fs_secure_delete", { paths, channel }),

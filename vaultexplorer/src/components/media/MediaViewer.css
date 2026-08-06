@@ -47,9 +47,28 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 54px;
+  /* Without the inset, this bar (and its Close button) sits directly under
+     the status bar on Android -- taps there get eaten by the system status
+     bar instead of reaching the WebView, so Close silently does nothing.
+     Same convention as App.css's own mobile toolbars. */
+  height: calc(54px + env(safe-area-inset-top, 0px));
   padding: 0 14px;
+  padding-top: env(safe-area-inset-top, 0px);
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0));
+}
+
+/* Photos only ("los botones de arriba de la foto ponelos abajo" -- reported
+   directly): anchored at the bottom instead, same reasoning as most mobile
+   gallery apps keeping actions in thumb reach. Audio/video keep the top bar
+   as-is -- video already owns the bottom edge for its own transport
+   controls, and stacking two bars there would just crowd them. */
+.mv-toolbar.mv-toolbar-bottom {
+  top: auto;
+  bottom: 0;
+  height: calc(54px + env(safe-area-inset-bottom, 0px));
+  padding-top: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0));
 }
 
 .mv-title {

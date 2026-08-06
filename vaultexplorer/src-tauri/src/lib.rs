@@ -538,13 +538,26 @@ fn fs_dir_size(path: String) -> u64 {
 
 /// Move a file or folder to the OS trash/recycle bin (reversible), rather
 /// than deleting it outright -- the default "Delete" action. Permanent
-/// removal (Ctrl+Delete in the UI) still goes through `fs_delete`. No
-/// mobile equivalent: the `trash` crate has no Android/iOS backend at all
-/// (there's no universal "OS trash can" concept to hook into there).
+/// removal (Ctrl+Delete in the UI) still goes through `fs_delete`.
 #[cfg(desktop)]
 #[tauri::command]
 fn fs_trash(path: String) -> Result<(), String> {
     trash::delete(&path).str_err()
+}
+
+/// No mobile equivalent of the desktop version above: the `trash` crate has
+/// no Android/iOS backend, and there's no universal "OS trash can" concept
+/// for an arbitrary file path there -- MediaStore's own IS_TRASHED purgatory
+/// only covers items already indexed *through* MediaStore, not the direct
+/// filesystem paths this app deletes by. Falling through to a real
+/// permanent delete is the honest behavior: every call site here already
+/// treats this as "the default Delete action", and silently having that
+/// action fail outright on mobile (this command simply not existing) is
+/// worse than it not being reversible.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+async fn fs_trash(path: String) -> Result<(), String> {
+    fs_delete(path).await
 }
 
 /// The real filesystem path of the OS trash's contents, so it can be
@@ -1670,6 +1683,8 @@ pub fn run() {
             #[cfg(target_os = "android")]
             android::android_open_path,
             #[cfg(target_os = "android")]
+            android::android_share_path,
+            #[cfg(target_os = "android")]
             android::android_download_and_install_apk,
             #[cfg(target_os = "android")]
             android::android_can_install_packages,
@@ -1693,7 +1708,6 @@ pub fn run() {
             share::vault_share_file,
             fs_delete,
             shred::fs_secure_delete,
-            #[cfg(desktop)]
             fs_trash,
             #[cfg(desktop)]
             trash_dir,

@@ -39,9 +39,11 @@ export type SavedInternetSearch =
 export function InternetView({
   initial,
   onSave,
+  mobile,
 }: {
   initial: SavedInternetSearch | null;
   onSave: (filename: string, content: string) => Promise<string>;
+  mobile: boolean;
 }) {
   const [mode, setMode] = useState<Mode>("root");
   const [query, setQuery] = useState("");
@@ -271,7 +273,14 @@ export function InternetView({
               key={v.id}
               className={`entry icon ${selectedKey === v.id ? "selected" : ""}`}
               title={v.title}
-              onClick={() => setSelectedKey(v.id)}
+              onClick={() => {
+                setSelectedKey(v.id);
+                // Touch has no double-click -- a single tap both selects
+                // and opens, same convention as the regular file browser
+                // (confirmed live: these results were unopenable on mobile
+                // before this, since dblclick never fires from a touch tap).
+                if (mobile) osOpen(`https://www.youtube.com/watch?v=${v.id}`).catch(() => {});
+              }}
               onDoubleClick={() => osOpen(`https://www.youtube.com/watch?v=${v.id}`).catch(() => {})}
             >
               <span className="entry-icon">
@@ -293,7 +302,10 @@ export function InternetView({
               key={i}
               className={`entry icon ${selectedKey === `p${i}` ? "selected" : ""}`}
               title={v.title}
-              onClick={() => setSelectedKey(`p${i}`)}
+              onClick={() => {
+                setSelectedKey(`p${i}`);
+                if (mobile) osOpen(v.page_url).catch(() => {});
+              }}
               onDoubleClick={() => osOpen(v.page_url).catch(() => {})}
             >
               <span className="entry-icon">
@@ -316,7 +328,10 @@ export function InternetView({
               key={i}
               className={`entry icon ${selectedKey === `i${i}` ? "selected" : ""}`}
               title={img.title}
-              onClick={() => setSelectedKey(`i${i}`)}
+              onClick={() => {
+                setSelectedKey(`i${i}`);
+                if (mobile) osOpen(img.image).catch(() => {});
+              }}
               onDoubleClick={() => osOpen(img.image).catch(() => {})}
             >
               <img className="internet-thumb" src={img.thumbnail} draggable={false} />
@@ -332,7 +347,10 @@ export function InternetView({
               key={i}
               className={`entry icon ${selectedKey === `b${i}` ? "selected" : ""}`}
               title={b.snippet ? `${b.title}\n${b.snippet}` : b.title}
-              onClick={() => setSelectedKey(`b${i}`)}
+              onClick={() => {
+                setSelectedKey(`b${i}`);
+                if (mobile) osOpen(b.url).catch(() => {});
+              }}
               onDoubleClick={() => osOpen(b.url).catch(() => {})}
             >
               <span className="entry-icon">

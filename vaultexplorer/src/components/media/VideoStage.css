@@ -171,6 +171,13 @@
 .video-volume-slider {
   width: 70px;
 }
+.video-volume-pct {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(242, 242, 244, 0.6);
+  width: 30px;
+  flex: none;
+}
 
 .video-time {
   font-size: 12px;

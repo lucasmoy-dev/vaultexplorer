@@ -102,25 +102,48 @@ export function ImageEditor(props: ImageEditorProps): React.JSX.Element {
   // Load the source image once and paint it onto the working canvas at its
   // natural (full) resolution -- everything downstream operates in that
   // pixel space, independent of however big the on-screen element is.
+  //
+  // Loading via `new Image(); img.src = src` and drawing *that* element
+  // directly (the original approach here) taints the canvas: `src` is a
+  // Tauri asset-protocol URL, a different origin from the page itself,
+  // and an `<img>` fetched without `crossOrigin` set stays "tainted" for
+  // canvas purposes regardless of what CORS headers the asset protocol
+  // does or doesn't send -- `crossOrigin` is what opts the *browser*
+  // into checking those headers at all. A tainted canvas's `toBlob`
+  // either throws or silently yields nothing, and per-pixel reads
+  // (needed for nothing here directly, but the taint also blocks
+  // anything downstream in the same canvas) fail too -- confirmed live:
+  // this exact pattern is why the pen tool's strokes never actually
+  // saved and saturation/brightness intermittently failed with "could
+  // not load the image" (a *different* symptom of the same root cause --
+  // re-deriving the working canvas after a bake-in re-fetches `src`, and
+  // a stale/cache-raced fetch of the asset URL surfaces as a load
+  // failure). Fetching the bytes directly instead sidesteps the whole
+  // cross-origin question -- a blob: object has no origin to taint
+  // anything with.
   useEffect(() => {
     let cancelled = false;
-    const img = new Image();
-    img.onload = () => {
-      if (cancelled) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.drawImage(img, 0, 0);
-      setReady(true);
-      setRev((r) => r + 1);
-    };
-    img.onerror = () => {
-      if (!cancelled) setError("Could not load the image for editing.");
-    };
-    img.src = src;
+    (async () => {
+      try {
+        const res = await fetch(src);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const bitmap = await createImageBitmap(blob);
+        if (cancelled) return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        setReady(true);
+        setRev((r) => r + 1);
+      } catch {
+        if (!cancelled) setError("Could not load the image for editing.");
+      }
+    })();
     return () => {
       cancelled = true;
     };

@@ -566,6 +566,32 @@ export function ComputerGlyph({ size = 15 }: GlyphProps) {
   );
 }
 
+// Lucide `smartphone` -- mobile sidebar's "My Device" entry (My Computer's
+// drive-list makes no sense on a phone with exactly one storage volume; a
+// one-tap jump back to the phone's real root is the equivalent).
+export function SmartphoneGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={2}>
+      <rect width="14" height="20" x="5" y="2" rx="2" ry="2" />
+      <path d="M12 18h.01" />
+    </L>
+  );
+}
+
+// Lucide `share-2` -- media viewer's mobile-only Share button (OS share
+// sheet, distinct from the desktop context menu's link-upload "Share…").
+export function ShareGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={2}>
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <line x1="8.59" x2="15.42" y1="13.51" y2="17.49" />
+      <line x1="15.41" x2="8.59" y1="6.51" y2="10.49" />
+    </L>
+  );
+}
+
 // Lucide `usb`.
 export function UsbDriveGlyph({ size = 15 }: GlyphProps) {
   return (
@@ -768,6 +794,54 @@ export function MusicNoteGlyph({ size = 15 }: GlyphProps) {
       <path d="M9 18V5l12-2v13" />
       <circle cx="6" cy="18" r="3" />
       <circle cx="18" cy="16" r="3" />
+    </L>
+  );
+}
+
+// Lucide `shuffle` -- AudioStage's shuffle toggle.
+export function ShuffleGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={2}>
+      <path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22" />
+      <path d="m18 2 4 4-4 4" />
+      <path d="M2 6h1.4c1.3 0 2.5.6 3.3 1.7l.7 1" />
+      <path d="M20 18h-5.3c-1.3 0-2.5-.6-3.3-1.7l-.7-1" />
+      <path d="m18 22 4-4-4-4" />
+    </L>
+  );
+}
+
+// Lucide `repeat` -- AudioStage's repeat-all mode.
+export function RepeatGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={2}>
+      <path d="m17 2 4 4-4 4" />
+      <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+      <path d="m7 22-4-4 4-4" />
+      <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+    </L>
+  );
+}
+
+// Lucide `repeat-1` -- AudioStage's repeat-one mode.
+export function Repeat1Glyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={2}>
+      <path d="m17 2 4 4-4 4" />
+      <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+      <path d="m7 22-4-4 4-4" />
+      <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+      <path d="M11 10h1v4" />
+    </L>
+  );
+}
+
+// No direct Lucide equivalent -- a play triangle pointing left, for
+// AudioStage's "listen in reverse" toggle.
+export function ReverseGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <L size={size} sw={2}>
+      <polygon points="18 3 4 12 18 21 18 3" />
     </L>
   );
 }
