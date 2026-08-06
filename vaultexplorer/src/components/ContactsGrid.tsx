@@ -177,6 +177,7 @@ export function ContactsGrid({
   entries,
   curDir,
   inVault,
+  revealSelected,
   onEditContact,
   onActivateOther,
   onMenu,
@@ -185,6 +186,12 @@ export function ContactsGrid({
   entries: Entry[];
   curDir: string;
   inVault: boolean;
+  // App's own selection, used only when it has just created a file and
+  // wants that row highlighted and scrolled into view (selectAndReveal in
+  // App.tsx). Selection *inside* this grid -- click, ctrl/shift, marquee,
+  // drag-to-folder -- is local state (useSelection below); this prop just
+  // seeds it so a reveal lights up the right row.
+  revealSelected: Set<string>;
   onEditContact: (entry: Entry, fullPath: string) => void;
   onActivateOther: (entry: Entry) => void;
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
@@ -205,6 +212,9 @@ export function ContactsGrid({
   const contactNames = contacts.map((c) => c.name);
 
   const { selected, setSelected, selectOnly, toggle, selectRange } = useSelection();
+  useEffect(() => {
+    if (revealSelected.size) setSelected(new Set(revealSelected));
+  }, [revealSelected]);
   const [dragNames, setDragNames] = useState<string[]>([]);
   const [dropTargetName, setDropTargetName] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -324,7 +334,8 @@ export function ContactsGrid({
           {others.map((entry) => (
             <button
               key={entry.name}
-              className="notes-other-tile"
+              className={`notes-other-tile ${selected.has(entry.name) ? "selected" : ""}`}
+              data-name={entry.name}
               onClick={() => onActivateOther(entry)}
               onContextMenu={(e) => onMenu(e, entry)}
             >

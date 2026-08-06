@@ -1123,7 +1123,14 @@ function Explorer({ home }: { home: string }) {
     const name = uniqueName(filename);
     const path = joinPath(curDir, name);
     await api.fsWriteText(path, content);
-    refresh();
+    await refresh();
+    // Drop the Internet overlay back to the folder underneath -- curDir
+    // never moved while it was open (see the Back/Forward comment further
+    // down) -- so the saved file is immediately visible, selected and
+    // scrolled into view, instead of the user having to back out and go
+    // find it themselves.
+    setShowInternet(false);
+    selectAndReveal(name);
     return path;
   }
   // A folder holding nothing but .ytsearch (or nothing but .imgsearch, or
@@ -1217,7 +1224,7 @@ function Explorer({ home }: { home: string }) {
       const name = uniqueName(t.label);
       await api.fsCopy(joinPath(dir, t.storedName), joinPath(curDir, name), beginProgress(`Creating "${name}"`));
       await refresh();
-      selectOnly(name);
+      selectAndReveal(name);
       setRenaming({ name, value: name });
     } catch (e) {
       setError(String(e));
@@ -1402,10 +1409,12 @@ function Explorer({ home }: { home: string }) {
     const name = pendingRevealScrollRef.current;
     if (!name || !entries.some((e) => e.name === name)) return;
     pendingRevealScrollRef.current = null;
-    // Only icon/list views tag their rows with data-name (column view rows
-    // don't), so a reveal into column view selects without scrolling.
+    // Scoped to contentRef (not just ".entries") so this also finds
+    // ContactsGrid's rows/"others" tiles, tagged with data-name the same
+    // way -- column view rows aren't tagged at all, so a reveal there
+    // selects without scrolling.
     const find = () =>
-      document.querySelector(`.entries [data-name="${CSS.escape(name)}"]`) as HTMLElement | null;
+      contentRef.current?.querySelector(`[data-name="${CSS.escape(name)}"]`) as HTMLElement | null;
     const inView = (el: HTMLElement) => {
       const box = el.getBoundingClientRect();
       const scroller = contentRef.current?.getBoundingClientRect();
@@ -1430,6 +1439,14 @@ function Explorer({ home }: { home: string }) {
       timers.forEach(clearTimeout);
     };
   }, [entries, curDir, selectOnly]);
+  // Selects + schedules the scroll-into-view above for something just
+  // created in curDir (new folder/file/vault/etc.) -- entries has to
+  // already include `name` by the time this runs (i.e. call after
+  // `await refresh()`), same precondition as the reveal path.
+  function selectAndReveal(name: string) {
+    selectOnly(name);
+    pendingRevealScrollRef.current = name;
+  }
 
   // Column view: a single click on a file selects it (and shows the info
   // preview column on the right) instead of opening it -- opening still
@@ -3147,7 +3164,7 @@ function Explorer({ home }: { home: string }) {
     try {
       await api.fsCreateShortcut(target, joinPath(curDir, name));
       await refresh();
-      selectOnly(name);
+      selectAndReveal(name);
       setRenaming({ name, value: name });
     } catch (e) {
       setError(String(e));
@@ -3417,7 +3434,7 @@ function Explorer({ home }: { home: string }) {
     try {
       inVault ? await api.makeDir(joinPath(curDir, name)) : await api.fsMkdir(joinPath(curDir, name));
       await refresh();
-      selectOnly(name);
+      selectAndReveal(name);
       setRenaming({ name, value: name });
     } catch (e) {
       setError(String(e));
@@ -3440,7 +3457,7 @@ function Explorer({ home }: { home: string }) {
         inVault ? await api.newFile(path) : await api.fsNewFile(path);
       }
       await refresh();
-      selectOnly(name);
+      selectAndReveal(name);
       if (isContacts) {
         setMobileEditorTarget({
           entry: { name, is_dir: false, size: 0, mtime: Date.now() / 1000 },
@@ -3737,7 +3754,8 @@ function Explorer({ home }: { home: string }) {
       }
       setPending(null);
       setSheetError("");
-      refresh();
+      await refresh();
+      selectAndReveal(name);
     } catch (e) {
       setSheetError(String(e));
     }
@@ -5583,6 +5601,7 @@ function Explorer({ home }: { home: string }) {
               entries={entries}
               curDir={curDir}
               inVault={inVault}
+              revealSelected={selected}
               onEditContact={(entry, fullPath) =>
                 withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
               }
