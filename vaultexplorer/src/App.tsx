@@ -72,6 +72,7 @@ import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
 import { PlayerWindow } from "./components/PlayerWindow";
 import { ReorganizeSheet } from "./components/sheets/reorganize-sheet";
+import { FreeUpSpaceSheet } from "./components/sheets/free-up-space-sheet";
 import { buildSyncSubmenu } from "./menus";
 import { useSelection } from "./hooks/useSelection";
 import { useFavorites } from "./hooks/useFavorites";
@@ -762,6 +763,7 @@ function Explorer({ home }: { home: string }) {
   const [frozenPaths, setFrozenPaths] = useState<Set<string>>(new Set());
   const [unfreezeTarget, setUnfreezeTarget] = useState<string | null>(null);
   const [reorganizeTarget, setReorganizeTarget] = useState<string | null>(null);
+  const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
   const refreshFrozen = useCallback(() => {
     api
       .listFrozenFolders()
@@ -5280,6 +5282,15 @@ function Explorer({ home }: { home: string }) {
           </div>
         )}
 
+        <div
+          className={`sidebar-item ${favCollapsed ? "icon-only" : ""}`}
+          title={favCollapsed ? "Free Up Space" : undefined}
+          onClick={() => setFreeUpSpaceOpen(true)}
+        >
+          <span className="sidebar-ico place">🧹</span>
+          {!favCollapsed && "Free Up Space"}
+        </div>
+
         {/* Every currently-unlocked vault stays listed here -- including one
             left with "Keep Unlocked" after navigating out of it, so it's
             never silently unlocked-and-forgotten. Click to jump back in,
@@ -6154,6 +6165,14 @@ function Explorer({ home }: { home: string }) {
           path={reorganizeTarget}
           onDone={() => refresh()}
           onClose={() => setReorganizeTarget(null)}
+        />
+      )}
+      {freeUpSpaceOpen && (
+        <FreeUpSpaceSheet
+          favPaths={favPaths}
+          home={home}
+          onDeleted={() => refresh()}
+          onClose={() => setFreeUpSpaceOpen(false)}
         />
       )}
       {infoTarget && (

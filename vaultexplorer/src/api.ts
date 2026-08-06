@@ -202,6 +202,8 @@ export const api = {
   fsSecureDelete: (paths: string[], channel: Channel<ProgressEvent>) =>
     invoke<void>("fs_secure_delete", { paths, channel }),
   fsTrash: (path: string) => invoke<void>("fs_trash", { path }),
+  scanLargeFiles: (roots: string[], channel: Channel<LargeFilesEvent>) =>
+    invoke<void>("scan_large_files", { roots, channel }),
   claudeReorganizeFolder: (path: string, channel: Channel<string>) =>
     invoke<void>("claude_reorganize_folder", { path, channel }),
   trashDir: () => invoke<string>("trash_dir"),
@@ -498,6 +500,22 @@ export interface ClearResult {
   name: string;
   cleared: boolean;
   reason: string | null;
+}
+
+export interface LargeFile {
+  path: string;
+  name: string;
+  size: number;
+}
+
+// A running top-N snapshot streamed from `scan_large_files` while it's
+// still walking -- `files` is already sorted largest-first, `scanned` is
+// a live "how far in" counter, and `done` marks the final message (the
+// walk has finished, `files` is its last word).
+export interface LargeFilesEvent {
+  files: LargeFile[];
+  scanned: number;
+  done: boolean;
 }
 
 export interface GitFileStatus {
