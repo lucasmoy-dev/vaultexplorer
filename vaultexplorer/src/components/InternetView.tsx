@@ -9,11 +9,13 @@ import {
   YoutubeSearchFilters,
   VideoProvider,
   ProviderVideoResult,
+  AnimeflvEpisode,
   PlayerItem,
 } from "../api";
 import { ChevronLeft, SearchGlyph, SaveGlyph, FileIcon } from "../icons";
 import { ContextMenu, Dropdown, MenuState } from "../ContextMenu";
 import { useSelection } from "../hooks/useSelection";
+import { AnimeflvEpisodeSheet } from "./sheets/animeflv-episode-sheet";
 import folderVideosIcon from "../assets/foldericons/folder-videos.svg";
 import folderImagesIcon from "../assets/foldericons/folder-images.svg";
 import folderBookIcon from "../assets/foldericons/folder-book.svg";
@@ -84,6 +86,9 @@ export function InternetView({
   // the real filesystem one.
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<MenuState>(null);
+  // Opening an AnimeFLV result goes through this picker instead of
+  // straight to the external browser -- see AnimeflvEpisodeSheet.
+  const [episodePicker, setEpisodePicker] = useState<{ title: string; pageUrl: string } | null>(null);
 
   // The ordered key list for whatever's currently rendered -- same key
   // format each tile below already uses (v.id / `p${i}` / `i${i}` /
@@ -121,6 +126,9 @@ export function InternetView({
       api.openPlayerWindow(provider, playerItems, keys.indexOf(key)).catch(() => {});
     } else if (mode === "videos" && provider === "youtube") {
       osOpen(`https://www.youtube.com/watch?v=${key}`).catch(() => {});
+    } else if (mode === "videos" && provider === "animeflv") {
+      const v = providerVideos[Number(key.slice(1))];
+      if (v) setEpisodePicker({ title: v.title, pageUrl: v.page_url });
     } else if (mode === "videos") {
       const v = providerVideos[Number(key.slice(1))];
       if (v) osOpen(v.page_url).catch(() => {});
@@ -606,7 +614,9 @@ export function InternetView({
                 title={v.title}
                 onClick={(e) => {
                   handleTileClick(`p${i}`, e);
-                  if (mobile) osOpen(v.page_url).catch(() => {});
+                  if (!mobile) return;
+                  if (provider === "animeflv") setEpisodePicker({ title: v.title, pageUrl: v.page_url });
+                  else osOpen(v.page_url).catch(() => {});
                 }}
                 onDoubleClick={() => openResult(`p${i}`)}
                 onContextMenu={(e) => onTileContextMenu(`p${i}`, e)}
@@ -681,6 +691,17 @@ export function InternetView({
         />
       )}
       <ContextMenu state={contextMenu} onClose={() => setContextMenu(null)} />
+      {episodePicker && (
+        <AnimeflvEpisodeSheet
+          title={episodePicker.title}
+          pageUrl={episodePicker.pageUrl}
+          onClose={() => setEpisodePicker(null)}
+          onPick={(ep: AnimeflvEpisode) => {
+            osOpen(ep.page_url).catch(() => {});
+            setEpisodePicker(null);
+          }}
+        />
+      )}
     </div>
   );
 }
