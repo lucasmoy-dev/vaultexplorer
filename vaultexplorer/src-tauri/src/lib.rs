@@ -24,6 +24,7 @@ mod fs_watch;
 #[cfg(desktop)]
 mod local_sync;
 mod info;
+mod largefiles;
 mod machine;
 mod metadata;
 mod montage;
@@ -1743,6 +1744,7 @@ pub fn run() {
             fs_delete,
             shred::fs_secure_delete,
             fs_trash,
+            largefiles::scan_large_files,
             #[cfg(desktop)]
             trash_dir,
             #[cfg(desktop)]
