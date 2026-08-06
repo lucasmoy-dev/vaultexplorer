@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { api } from "../../api";
+import { Entry, api } from "../../api";
 import { ChevronLeft, ChevronRight, CloseGlyph, PencilGlyph, RotateGlyph, TrashGlyph } from "../../icons";
 import { ContextMenu, MenuState } from "../../ContextMenu";
 import { ImageStage } from "./ImageStage";
 import { VideoStage } from "./VideoStage";
 import { AudioStage } from "./AudioStage";
 import { ImageEditor } from "./ImageEditor";
+import { useThumbnail } from "../../hooks/useThumbnail";
 import "./MediaViewer.css";
 
 // MediaViewer -- fullscreen photo/video/audio gallery shell ("swipe left or
@@ -96,6 +97,71 @@ export interface MediaViewerProps {
   // the background grid's thumbnail never updated until a manual refresh.
   onFileChanged: (fullPath: string) => void;
   mobile: boolean;
+  // Set when this viewer is hosted in its own window (MediaWindow), whose
+  // titlebar already carries close/fullscreen -- the viewer then drops its
+  // own Close button rather than showing two ways to do the same thing.
+  chromeless?: boolean;
+  // A strip of thumbnails along the bottom for jumping around a gallery,
+  // the way every desktop photo viewer has one. Off for the in-app overlay
+  // (which has the file grid right behind it) and on mobile (no room).
+  filmstrip?: boolean;
+  // Lets the host window retitle itself as the gallery cursor moves.
+  onIndexChange?: (index: number) => void;
+}
+
+// One filmstrip cell. Its own component so each thumbnail request is
+// gated on that cell scrolling into view (useThumbnail's elRef) -- a
+// folder of a few hundred photos would otherwise decode every one of them
+// the moment the window opens.
+function FilmstripCell({
+  item,
+  active,
+  onPick,
+}: {
+  item: GalleryEntry;
+  active: boolean;
+  onPick: () => void;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const entry: Entry = { name: item.name, is_dir: false, size: 0, mtime: 0 };
+  const thumb = useThumbnail(entry, item.fullPath, item.inVault, 160, ref);
+  // Keep the current cell in view as the gallery cursor moves, including
+  // when it moves by arrow key or by a video ending -- otherwise the strip
+  // silently drifts out of sync with what's on screen.
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [active]);
+  return (
+    <button
+      ref={ref}
+      type="button"
+      className={`mv-film-cell${active ? " active" : ""}`}
+      onClick={onPick}
+      title={item.name}
+      aria-label={item.name}
+      aria-current={active}
+    >
+      {thumb ? <img src={thumb} alt="" draggable={false} /> : <span className="mv-film-fallback">{item.name.slice(0, 1)}</span>}
+    </button>
+  );
+}
+
+function Filmstrip({
+  gallery,
+  index,
+  onPick,
+}: {
+  gallery: GalleryEntry[];
+  index: number;
+  onPick: (i: number) => void;
+}) {
+  return (
+    <div className="mv-filmstrip">
+      {gallery.map((item, i) => (
+        <FilmstripCell key={item.fullPath} item={item} active={i === index} onPick={() => onPick(i)} />
+      ))}
+    </div>
+  );
 }
 
 function clampIndex(i: number, len: number): number {
@@ -118,9 +184,16 @@ export function MediaViewer({
   onDeleted,
   onFileChanged,
   mobile,
+  chromeless,
+  filmstrip,
+  onIndexChange,
 }: MediaViewerProps): React.JSX.Element {
   const [gallery, setGallery] = useState<GalleryEntry[]>(initialGallery);
   const [index, setIndex] = useState(() => clampIndex(startIndex, initialGallery.length));
+  useEffect(() => {
+    onIndexChange?.(index);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index]);
   // "left" = just moved to next (incoming pane slides in from the right),
   // "right" = just moved to prev (incoming pane slides in from the left),
   // null = initial mount, plain fade.
@@ -508,9 +581,11 @@ export function MediaViewer({
             >
               ⋯
             </button>
-            <button className="mv-icon-btn" onClick={onClose} aria-label="Close" title="Close (Esc)">
-              <CloseGlyph size={18} />
-            </button>
+            {!chromeless && (
+              <button className="mv-icon-btn" onClick={onClose} aria-label="Close" title="Close (Esc)">
+                <CloseGlyph size={18} />
+              </button>
+            )}
           </div>
         </div>
         <ContextMenu state={overflowMenu} onClose={() => setOverflowMenu(null)} />
@@ -581,6 +656,10 @@ export function MediaViewer({
             </div>
           )}
         </div>
+
+        {filmstrip && gallery.length > 1 && (
+          <Filmstrip gallery={gallery} index={index} onPick={(i) => setIndex(i)} />
+        )}
       </div>
 
       {editingOpen && current && resolvedSrc && (

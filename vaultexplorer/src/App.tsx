@@ -72,6 +72,7 @@ import { serializeVCard, emptyVCard } from "./vcard";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
 import { PlayerWindow } from "./components/PlayerWindow";
+import { MediaWindow } from "./components/MediaWindow";
 import { ReorganizeSheet } from "./components/sheets/reorganize-sheet";
 import { FreeUpSpaceSheet } from "./components/sheets/free-up-space-sheet";
 import { buildSyncSubmenu } from "./menus";
@@ -2623,7 +2624,19 @@ function Explorer({ home }: { home: string }) {
       }
     }
     if (startIndex < 0) startIndex = 0;
-    setMediaViewer({ gallery, startIndex });
+    // Desktop opens media in its own window (traffic lights, fullscreen,
+    // its own entry in the window switcher, the grid still usable behind
+    // it); mobile has no window manager to put one in, so it keeps the
+    // in-app overlay.
+    if (mobile) {
+      setMediaViewer({ gallery, startIndex });
+      return;
+    }
+    api.openMediaWindow(gallery, startIndex).catch(() => {
+      // No window (an unusual WM, or the command missing on this
+      // platform) is not a reason to leave a double-click doing nothing.
+      setMediaViewer({ gallery, startIndex });
+    });
   }
 
   async function activate(dir: string, entry: Entry) {
@@ -6339,6 +6352,16 @@ export default function App() {
         directory={params.get("directory") === "true"}
       />
     );
+  }
+
+  if (params.get("media") === "1") {
+    let gallery: GalleryEntry[] = [];
+    try {
+      gallery = JSON.parse(params.get("items") ?? "[]");
+    } catch {
+      /* malformed items -- MediaWindow renders an empty gallery */
+    }
+    return <MediaWindow gallery={gallery} startIndex={Number(params.get("index") ?? "0")} />;
   }
 
   if (params.get("player") === "1") {

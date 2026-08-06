@@ -2,7 +2,12 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "picker-*", "player-*"],
+  "windows": [
+    "main",
+    "picker-*",
+    "player-*",
+    "media-*"
+  ],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -26,11 +31,19 @@
     "clipboard-manager:default",
     {
       "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
     },
     {
       "identifier": "opener:allow-reveal-item-in-dir",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
     }
   ]
 }
