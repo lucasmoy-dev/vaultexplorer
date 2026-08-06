@@ -41,11 +41,25 @@ pub struct GitSyncPair {
     pub repo_name: String,
 }
 
+/// Pairs whose local folder is gone are pruned on read, not just skipped
+/// -- deleting a synced folder through the normal file-manager delete
+/// otherwise leaves the pair in git_sync_pairs.json forever, restarting a
+/// doomed loop on every app start with no UI left to stop it (the sync
+/// sheet is reached by right-clicking the folder, which no longer
+/// exists). Same self-heal local_sync does for its own pairs.
 pub fn list_pairs() -> Vec<GitSyncPair> {
-    fs::read_to_string(pairs_path())
+    let all: Vec<GitSyncPair> = fs::read_to_string(pairs_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let (kept, dropped): (Vec<_>, Vec<_>) = all.into_iter().partition(|p| Path::new(&p.local_path).is_dir());
+    if !dropped.is_empty() {
+        let _ = save_pairs(&kept);
+        for p in dropped {
+            last_error_map().lock_safe().remove(&p.local_path);
+        }
+    }
+    kept
 }
 
 pub fn save_pairs(pairs: &[GitSyncPair]) -> Result<(), String> {
@@ -155,7 +169,12 @@ fn sync_tick(root: &str) {
 
 #[derive(Default)]
 pub struct GitSyncState {
-    active: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// An `Arc` for the same reason `syncing` is one: a loop that
+    /// self-terminates (its folder was deleted) has to drop its own entry
+    /// here, or `is_active` keeps reporting a watcher that no longer runs
+    /// and `start_loop` refuses to start a fresh one if the same folder
+    /// is ever re-paired.
+    active: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     /// Which roots are mid-`sync_tick` *right now* -- separate from
     /// `active` (which just means "being watched at all") so the
     /// frontend can show a real "syncing…" indicator instead of a
@@ -177,10 +196,23 @@ pub fn start_loop(state: &GitSyncState, root: String) {
     active.insert(root.clone(), stop.clone());
     drop(active);
     let syncing = state.syncing.clone();
+    let active_map = state.active.clone();
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
             if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            // The folder was deleted out from under us -- forget the
+            // pairing and stop, rather than retrying a doomed sync every
+            // 25s and surfacing "This folder no longer exists." forever
+            // with no reachable UI to clear it.
+            if !Path::new(&root).is_dir() {
+                let mut pairs = list_pairs();
+                pairs.retain(|p| p.local_path != root);
+                let _ = save_pairs(&pairs);
+                last_error_map().lock_safe().remove(&root);
+                active_map.lock_safe().remove(&root);
                 break;
             }
             let root_clone = root.clone();

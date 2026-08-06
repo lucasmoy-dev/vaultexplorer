@@ -4687,30 +4687,81 @@ input[type="range"]::-webkit-slider-thumb {
 .internet-results-wrap {
   outline: none;
 }
-.internet-results {
-  padding: 20px 18px;
-  /* Reported twice as still too crammed even after a first widening
-     pass -- this time the gap grows along with the thumbnail (see
-     .internet-thumb) instead of just the thumbnail alone, so more
-     columns don't get squeezed to fit; auto-fill + a wide minmax floor
-     means fewer, more spaced-out columns rather than many tight ones. */
-  grid-template-columns: repeat(auto-fill, minmax(calc(210px * var(--icon-scale)), calc(240px * var(--icon-scale))));
-  gap: 36px 28px;
+/* `.entries.icon.internet-results`, not `.internet-results` alone: the
+   base grid's own `.entries.icon` rule is (0,2,0) and wins over a single
+   class no matter the source order, so every earlier attempt to widen
+   these columns silently did nothing and the grid kept rendering at the
+   92px file-icon track size -- the actual cause of the "still too
+   crammed" complaints. */
+.entries.icon.internet-results {
+  padding: 18px 16px 28px;
+  /* Tracks flex to fill the row (1fr) instead of being capped at a fixed
+     max: these tiles are thumbnail-led, so leftover width is better spent
+     on bigger thumbnails than on a growing gutter. */
+  grid-template-columns: repeat(auto-fill, minmax(calc(240px * var(--icon-scale, 1)), 1fr));
+  gap: 26px 18px;
+}
+/* The base file grid sizes .entry-icon as a fixed 64x64 glyph slot, which
+   a 16:9 video thumbnail can only overflow -- it spilled over the title
+   below it and into the next row, which is what made this grid look
+   broken. Here the slot is the thumbnail: full column width, natural
+   height, and the anchor the duration badge positions against. */
+.internet-results .entry.icon .entry-icon {
+  width: 100%;
+  height: auto;
+  position: relative;
+  display: block;
+  filter: none;
 }
 .internet-thumb {
-  /* Back up to the original full-2x ask (192x128) now that the gap
-     above is big enough to keep it from reading as cluttered. */
-  width: calc(192px * var(--icon-scale, 1));
-  height: calc(128px * var(--icon-scale, 1));
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
   object-fit: cover;
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--field-bg);
 }
+/* Left-aligned, full-width text under the thumbnail rather than the file
+   grid's centered, 92px-capped filename -- video titles are sentences,
+   not filenames, and centering them ragged under a wide thumbnail is
+   what read as "ugly". */
 .internet-results .entry.icon {
-  /* More breathing room between the thumbnail and the title/badge below
-     it than the base file grid's tiles need at their smaller icon size. */
+  align-items: stretch;
   gap: 8px;
-  padding: 10px 8px 12px;
+  padding: 8px;
+}
+/* A plain block, not the file grid's clamped -webkit-box: the clamp has
+   to live on the title alone (see .internet-title), or it swallows the
+   published-date line that sits inside this same span. */
+.internet-results .entry.icon .entry-name {
+  display: block;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.35;
+  padding: 0 1px;
+  background: none;
+}
+.internet-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.internet-results .entry.icon.selected {
+  background: var(--selection-bg);
+}
+/* The tile itself carries the selection now, so the title doesn't need
+   its own highlight pill on top of it. */
+.internet-results .entry.icon.selected .entry-name {
+  background: none;
+  color: #fff;
+}
+.internet-results .entry.icon:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
 }
 .internet-filters {
   display: flex;
@@ -4754,8 +4805,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .internet-badge {
   position: absolute;
-  right: 3px;
-  bottom: 3px;
+  right: 6px;
+  bottom: 6px;
   background: rgba(0, 0, 0, 0.75);
   color: #fff;
   font-size: 10px;
@@ -4765,9 +4816,10 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .internet-published {
   display: block;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-2);
   font-weight: 400;
+  margin-top: 3px;
 }
 
 /* ============================================================

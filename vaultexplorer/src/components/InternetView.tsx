@@ -679,7 +679,7 @@ export function InternetView({
                   {v.duration && <span className="internet-badge">{v.duration}</span>}
                 </span>
                 <span className="entry-name">
-                  {v.title}
+                  <span className="internet-title">{v.title}</span>
                   {v.published && <span className="internet-published">{v.published}</span>}
                 </span>
               </div>
@@ -711,7 +711,9 @@ export function InternetView({
                   )}
                   {v.duration && <span className="internet-badge">{v.duration}</span>}
                 </span>
-                <span className="entry-name">{v.title}</span>
+                <span className="entry-name">
+                  <span className="internet-title">{v.title}</span>
+                </span>
               </div>
             ))}
           </div>
