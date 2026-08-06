@@ -66,7 +66,8 @@ import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
 import { NotesGrid } from "./components/NotesGrid";
 import { LibraryShelf } from "./components/LibraryShelf";
-import { ContactsGrid } from "./components/ContactsGrid";
+import { ContactsGrid, ContactEditForm } from "./components/ContactsGrid";
+import { serializeVCard, emptyVCard } from "./vcard";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
 import { PlayerWindow } from "./components/PlayerWindow";
@@ -3424,18 +3425,34 @@ function Explorer({ home }: { home: string }) {
   }
   async function createNewFile() {
     const base = formatNameTemplate(appSettings.newFileNameTemplate || "untitled document");
+    const isContacts = view === "contacts";
     // List-with-preview and Notes both exist specifically to write/read
     // markdown in place, so a new file made from either defaults to .md
-    // instead of the generic .txt.
-    const name = nextUntitledName(base, view === "listPreview" || view === "notes" ? ".md" : ".txt");
+    // instead of the generic .txt. Contacts wants a real (if empty) vCard,
+    // not a blank .txt, since it opens straight into ContactEditForm below.
+    const name = nextUntitledName(base, isContacts ? ".vcf" : view === "listPreview" || view === "notes" ? ".md" : ".txt");
+    const path = joinPath(curDir, name);
     try {
-      inVault ? await api.newFile(joinPath(curDir, name)) : await api.fsNewFile(joinPath(curDir, name));
+      if (isContacts) {
+        const vcf = serializeVCard(emptyVCard());
+        inVault ? await api.vaultWriteText(path, vcf) : await api.fsWriteText(path, vcf);
+      } else {
+        inVault ? await api.newFile(path) : await api.fsNewFile(path);
+      }
       await refresh();
       selectOnly(name);
-      // In listPreview, selecting the new note is enough -- the effect
-      // below picks it up and opens it in the preview pane ready to type
-      // into, so there's no separate inline-rename step to interrupt that.
-      if (view !== "listPreview") setRenaming({ name, value: name });
+      if (isContacts) {
+        setMobileEditorTarget({
+          entry: { name, is_dir: false, size: 0, mtime: Date.now() / 1000 },
+          fullPath: path,
+          inVault,
+        });
+      } else if (view !== "listPreview") {
+        // In listPreview, selecting the new note is enough -- the effect
+        // below picks it up and opens it in the preview pane ready to type
+        // into, so there's no separate inline-rename step to interrupt that.
+        setRenaming({ name, value: name });
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -5830,12 +5847,21 @@ function Explorer({ home }: { home: string }) {
               Back
             </button>
           </div>
-          <TextEditorPane
-            entry={mobileEditorTarget.entry}
-            fullPath={mobileEditorTarget.fullPath}
-            inVault={mobileEditorTarget.inVault}
-            onRename={renameMobileEditorEntry}
-          />
+          {mobileEditorTarget.entry.name.toLowerCase().endsWith(".vcf") ? (
+            <ContactEditForm
+              entry={mobileEditorTarget.entry}
+              fullPath={mobileEditorTarget.fullPath}
+              inVault={mobileEditorTarget.inVault}
+              onRename={renameMobileEditorEntry}
+            />
+          ) : (
+            <TextEditorPane
+              entry={mobileEditorTarget.entry}
+              fullPath={mobileEditorTarget.fullPath}
+              inVault={mobileEditorTarget.inVault}
+              onRename={renameMobileEditorEntry}
+            />
+          )}
         </div>
       )}
       {reauthPrompt && (

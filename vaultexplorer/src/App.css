@@ -4760,6 +4760,97 @@ input[type="range"]::-webkit-slider-thumb {
   background: #25d366;
 }
 
+/* The real field-by-field editor a contact row opens into (ContactEditForm)
+   -- same text-field look as `.sheet-card input` (this app's one
+   established style), just laid out as a plain scrolling form instead of
+   a centered dialog. */
+.contact-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 10px;
+  max-width: 460px;
+}
+.contact-edit-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.contact-edit-avatar {
+  width: 52px;
+  height: 52px;
+  font-size: 20px;
+}
+.contact-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.contact-edit-field input,
+.contact-edit-list-row input,
+.contact-edit-note {
+  width: 100%;
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: var(--win-bg);
+  color: var(--text);
+  outline: none;
+  box-sizing: border-box;
+}
+.contact-edit-field input:focus,
+.contact-edit-list-row input:focus,
+.contact-edit-note:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10, 108, 255, 0.25);
+}
+.contact-edit-note {
+  min-height: 70px;
+  resize: vertical;
+}
+.contact-edit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.contact-edit-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.contact-edit-list-row input {
+  flex: 1;
+}
+.contact-edit-remove-btn {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: var(--field-bg);
+  color: var(--text-2);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.contact-edit-remove-btn:hover {
+  filter: brightness(1.1);
+}
+.contact-edit-add-btn {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 2px 0;
+}
+
 /* ============================================================
    iOS-flavored mobile polish
    Desktop deliberately mirrors macOS Finder throughout (traffic
