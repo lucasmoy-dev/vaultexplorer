@@ -11,7 +11,7 @@ function isVcf(entry: Entry): boolean {
   return !entry.is_dir && entry.name.toLowerCase().endsWith(".vcf");
 }
 
-function ContactRow({
+export function ContactRow({
   entry,
   fullPath,
   inVault,
@@ -182,6 +182,13 @@ export function ContactsGrid({
   onActivateOther,
   onMenu,
   onFilesChanged,
+  // Overrides the curDir-based path derivation -- lets a caller feed in
+  // entries that don't all live in the same directory (e.g. search
+  // results spanning the whole vault/folder tree) while still getting
+  // this exact row rendering.
+  pathFor,
+  emptyMessage,
+  header,
 }: {
   entries: Entry[];
   curDir: string;
@@ -191,7 +198,9 @@ export function ContactsGrid({
   // App.tsx). Selection *inside* this grid -- click, ctrl/shift, marquee,
   // drag-to-folder -- is local state (useSelection below); this prop just
   // seeds it so a reveal lights up the right row.
-  revealSelected: Set<string>;
+  // Omitted by the search-results call-site, which has no create flow of
+  // its own to reveal into.
+  revealSelected?: Set<string>;
   onEditContact: (entry: Entry, fullPath: string) => void;
   onActivateOther: (entry: Entry) => void;
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
@@ -200,6 +209,9 @@ export function ContactsGrid({
   // watcher picks up on its own, a vault move needs this nudge or the
   // moved row just sits there stale until the next navigation.
   onFilesChanged?: () => void;
+  pathFor?: (entry: Entry) => string;
+  emptyMessage?: string;
+  header?: React.ReactNode;
 }) {
   // Sorted by filename, not the parsed display name -- each row parses
   // its own vCard asynchronously (see ContactRow), so the *real* name
@@ -210,10 +222,11 @@ export function ContactsGrid({
   const folders = entries.filter((e) => e.is_dir).sort((a, b) => a.name.localeCompare(b.name));
   const others = entries.filter((e) => !e.is_dir && !isVcf(e));
   const contactNames = contacts.map((c) => c.name);
+  const fullPathOf = (entry: Entry) => (pathFor ? pathFor(entry) : joinPath(curDir, entry.name));
 
   const { selected, setSelected, selectOnly, toggle, selectRange } = useSelection();
   useEffect(() => {
-    if (revealSelected.size) setSelected(new Set(revealSelected));
+    if (revealSelected?.size) setSelected(new Set(revealSelected));
   }, [revealSelected]);
   const [dragNames, setDragNames] = useState<string[]>([]);
   const [dropTargetName, setDropTargetName] = useState<string | null>(null);
@@ -276,10 +289,14 @@ export function ContactsGrid({
     setDragNames([]);
     setDropTargetName(null);
     if (!names.length) return;
-    const destDir = joinPath(curDir, folder.name);
+    const destDir = fullPathOf(folder);
     try {
       for (const name of names) {
-        const src = joinPath(curDir, name);
+        // Selection is keyed by name, but pathFor resolves by entry
+        // identity -- go back through the entry itself so a search-results
+        // list (whose rows don't share curDir) moves the right file.
+        const entry = contacts.find((c) => c.name === name);
+        const src = entry ? fullPathOf(entry) : joinPath(curDir, name);
         const dest = joinPath(destDir, name);
         inVault ? await api.moveEntry(src, dest) : await api.fsRename(src, dest);
       }
@@ -293,6 +310,7 @@ export function ContactsGrid({
 
   return (
     <div className="contacts-view">
+      {header}
       {error && <p className="error">{error}</p>}
       <div className="contacts-list" ref={listRef} onMouseDown={onListMouseDown} onDragEnd={() => setDragNames([])}>
         {folders.map((entry) => (
@@ -316,12 +334,12 @@ export function ContactsGrid({
         ))}
         {contacts.map((entry) => (
           <ContactRow
-            key={entry.name}
+            key={fullPathOf(entry)}
             entry={entry}
-            fullPath={joinPath(curDir, entry.name)}
+            fullPath={fullPathOf(entry)}
             inVault={inVault}
             selected={selected.has(entry.name)}
-            onEdit={() => onEditContact(entry, joinPath(curDir, entry.name))}
+            onEdit={() => onEditContact(entry, fullPathOf(entry))}
             onToggle={() => toggle(entry.name)}
             onRangeSelect={() => selectRange(entry.name, contactNames)}
             onMenu={(e) => onMenu(e, entry)}
@@ -333,7 +351,7 @@ export function ContactsGrid({
         <div className="notes-others">
           {others.map((entry) => (
             <button
-              key={entry.name}
+              key={fullPathOf(entry)}
               className={`notes-other-tile ${selected.has(entry.name) ? "selected" : ""}`}
               data-name={entry.name}
               onClick={() => onActivateOther(entry)}
@@ -345,7 +363,7 @@ export function ContactsGrid({
           ))}
         </div>
       )}
-      {entries.length === 0 && <p className="notes-empty">No contacts here yet.</p>}
+      {entries.length === 0 && <p className="notes-empty">{emptyMessage ?? "No contacts here yet."}</p>}
       {marquee && (
         <div
           className="marquee"

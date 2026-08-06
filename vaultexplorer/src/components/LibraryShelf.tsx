@@ -251,12 +251,22 @@ export function LibraryShelf({
   inVault,
   onOpen,
   onMenu,
+  // Overrides the curDir-based path derivation -- lets a caller feed in
+  // entries that don't all live in the same directory (e.g. search
+  // results spanning the whole vault/folder tree) while still getting
+  // this exact shelf rendering.
+  pathFor,
+  emptyMessage,
+  header,
 }: {
   entries: Entry[];
   curDir: string;
   inVault: boolean;
   onOpen: (entry: Entry) => void;
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
+  pathFor?: (entry: Entry) => string;
+  emptyMessage?: string;
+  header?: React.ReactNode;
 }) {
   const shelfRef = useRef<HTMLDivElement>(null);
   const sorted = useMemo(
@@ -266,7 +276,7 @@ export function LibraryShelf({
   const rowCount = useRowCount(shelfRef, sorted.length);
 
   function itemFor(entry: Entry) {
-    const fullPath = joinPath(curDir, entry.name);
+    const fullPath = pathFor ? pathFor(entry) : joinPath(curDir, entry.name);
     const kind: Kind = entry.is_dir ? "folder" : kindOf(entry);
     const shared = {
       onDoubleClick: () => onOpen(entry),
@@ -287,7 +297,7 @@ export function LibraryShelf({
       inner = <GenericItem entry={entry} />;
     }
     return (
-      <div key={entry.name} onDoubleClick={shared.onDoubleClick} onContextMenu={shared.onContextMenu}>
+      <div key={fullPath} onDoubleClick={shared.onDoubleClick} onContextMenu={shared.onContextMenu}>
         {inner}
       </div>
     );
@@ -295,8 +305,9 @@ export function LibraryShelf({
 
   return (
     <div className="library-view">
+      {header}
       {sorted.length === 0 ? (
-        <p className="notes-empty">This folder is empty.</p>
+        <p className="notes-empty">{emptyMessage ?? "This folder is empty."}</p>
       ) : (
         <div className="library-shelf" ref={shelfRef}>
           <ShelfBoards rowCount={rowCount} />
