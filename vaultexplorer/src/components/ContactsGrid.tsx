@@ -8,7 +8,7 @@ function isVcf(entry: Entry): boolean {
   return !entry.is_dir && entry.name.toLowerCase().endsWith(".vcf");
 }
 
-function ContactRow({
+export function ContactRow({
   entry,
   fullPath,
   inVault,
@@ -98,6 +98,13 @@ export function ContactsGrid({
   onEditContact,
   onActivateOther,
   onMenu,
+  // Overrides the curDir-based path derivation -- lets a caller feed in
+  // entries that don't all live in the same directory (e.g. search
+  // results spanning the whole vault/folder tree) while still getting
+  // this exact row rendering.
+  pathFor,
+  emptyMessage,
+  header,
 }: {
   entries: Entry[];
   curDir: string;
@@ -105,6 +112,9 @@ export function ContactsGrid({
   onEditContact: (entry: Entry, fullPath: string) => void;
   onActivateOther: (entry: Entry) => void;
   onMenu: (e: React.MouseEvent, entry: Entry) => void;
+  pathFor?: (entry: Entry) => string;
+  emptyMessage?: string;
+  header?: React.ReactNode;
 }) {
   // Sorted by filename, not the parsed display name -- each row parses
   // its own vCard asynchronously (see ContactRow), so the *real* name
@@ -113,16 +123,18 @@ export function ContactsGrid({
   // is the same order in practice for the common case.
   const contacts = entries.filter(isVcf).sort((a, b) => a.name.localeCompare(b.name));
   const others = entries.filter((e) => !isVcf(e));
+  const fullPathOf = (entry: Entry) => (pathFor ? pathFor(entry) : joinPath(curDir, entry.name));
   return (
     <div className="contacts-view">
+      {header}
       <div className="contacts-list">
         {contacts.map((entry) => (
           <ContactRow
-            key={entry.name}
+            key={fullPathOf(entry)}
             entry={entry}
-            fullPath={joinPath(curDir, entry.name)}
+            fullPath={fullPathOf(entry)}
             inVault={inVault}
-            onEdit={() => onEditContact(entry, joinPath(curDir, entry.name))}
+            onEdit={() => onEditContact(entry, fullPathOf(entry))}
             onMenu={(e) => onMenu(e, entry)}
           />
         ))}
@@ -131,7 +143,7 @@ export function ContactsGrid({
         <div className="notes-others">
           {others.map((entry) => (
             <button
-              key={entry.name}
+              key={fullPathOf(entry)}
               className="notes-other-tile"
               onClick={() => onActivateOther(entry)}
               onContextMenu={(e) => onMenu(e, entry)}
@@ -142,7 +154,7 @@ export function ContactsGrid({
           ))}
         </div>
       )}
-      {entries.length === 0 && <p className="notes-empty">No contacts here yet.</p>}
+      {entries.length === 0 && <p className="notes-empty">{emptyMessage ?? "No contacts here yet."}</p>}
     </div>
   );
 }

@@ -209,6 +209,19 @@ function isPlainTextEntry(entry: Entry): boolean {
   return ext === "txt" || ext === "md" || ext === "markdown";
 }
 
+// Same "N results for query" line SearchResults.tsx shows for the
+// generic case, reused as the `header` slot of whichever view-specific
+// grid is rendering the results instead.
+function searchResultsHeader(query: string, count: number) {
+  return (
+    <div className="search-header">
+      <span>
+        {count} {count === 1 ? "result" : "results"} for “{query}”
+      </span>
+    </div>
+  );
+}
+
 // A translucent drag-image for the native OS-level drag (see beginDrag) --
 // previously a blank 1x1 pixel, so dragging a real file/folder out to
 // another app showed nothing at all following the cursor. Built purely
@@ -1781,6 +1794,21 @@ function Explorer({ home }: { home: string }) {
       cancelled = true;
     };
   }, [searchResults, loc.kind, listDir]);
+
+  // For view-specific search rendering (Contacts/Library rows instead of
+  // the generic file-tile row): the active view's own grid component
+  // takes `entries: Entry[]` + a single `curDir`, but search hits span
+  // many directories, so each resolved Entry is looked up by object
+  // identity to recover its real full path instead.
+  const searchPathByEntry = useMemo(() => {
+    const m = new Map<Entry, string>();
+    if (!searchResults) return m;
+    for (const p of searchResults) {
+      m.set(searchEntries[p] ?? { name: baseName(p), is_dir: false, size: 0, mtime: 0 }, p);
+    }
+    return m;
+  }, [searchResults, searchEntries]);
+  const searchEntryList = useMemo(() => [...searchPathByEntry.keys()], [searchPathByEntry]);
 
   const refresh = useCallback(async () => {
     if (loc.kind === "vault") {
@@ -5496,6 +5524,31 @@ function Explorer({ home }: { home: string }) {
             />
           ) : showInternet ? (
             <InternetView initial={internetInitial} onSave={saveInternetSearch} mobile={mobile} />
+          ) : searchResults !== null && view === "contacts" ? (
+            <ContactsGrid
+              entries={searchEntryList}
+              curDir={curDir}
+              inVault={inVault}
+              pathFor={(entry) => searchPathByEntry.get(entry) ?? ""}
+              header={searchResultsHeader(searchQuery, searchResults.length)}
+              emptyMessage={`No contacts found for “${searchQuery}”.`}
+              onEditContact={(entry, fullPath) =>
+                withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
+              }
+              onActivateOther={(entry) => activate(parentPath(searchPathByEntry.get(entry) ?? ""), entry)}
+              onMenu={(e, entry) => pathMenu(e, searchPathByEntry.get(entry) ?? "", () => runSearch(searchQuery))}
+            />
+          ) : searchResults !== null && view === "library" ? (
+            <LibraryShelf
+              entries={searchEntryList}
+              curDir={curDir}
+              inVault={inVault}
+              pathFor={(entry) => searchPathByEntry.get(entry) ?? ""}
+              header={searchResultsHeader(searchQuery, searchResults.length)}
+              emptyMessage={`No results for “${searchQuery}”.`}
+              onOpen={(entry) => activate(parentPath(searchPathByEntry.get(entry) ?? ""), entry)}
+              onMenu={(e, entry) => pathMenu(e, searchPathByEntry.get(entry) ?? "", () => runSearch(searchQuery))}
+            />
           ) : searchResults !== null ? (
             <SearchResults
               query={searchQuery}
