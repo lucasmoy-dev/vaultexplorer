@@ -804,6 +804,7 @@ function Explorer({ home }: { home: string }) {
     // silently forever with nothing ever telling the user. Tracked per
     // path so the same failure doesn't re-show the banner every poll.
     const shownDriveErrors = new Map<string, string>();
+    const shownGitSyncErrors = new Map<string, string>();
     // Background sync/verify activity also shows as rows in the bottom-right
     // progress panel, same as any user-started operation -- synthetic ops
     // (no Channel, no cancel), keyed per path so a row updates in place.
@@ -886,6 +887,20 @@ function Explorer({ home }: { home: string }) {
           })
           .catch(() => {});
       }
+      for (const path of gitSyncedPaths) {
+        api
+          .gitSyncLastError(path)
+          .then((err) => {
+            if (cancelled) return;
+            if (err && shownGitSyncErrors.get(path) !== err) {
+              shownGitSyncErrors.set(path, err);
+              setError(`Git sync failed for "${baseName(path)}": ${err}`);
+            } else if (!err) {
+              shownGitSyncErrors.delete(path);
+            }
+          })
+          .catch(() => {});
+      }
     }
     poll();
     const interval = setInterval(poll, 2500);
@@ -893,7 +908,7 @@ function Explorer({ home }: { home: string }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [driveSyncedPaths]);
+  }, [driveSyncedPaths, gitSyncedPaths]);
   const [sortKey, setSortKey] = useState<"name" | "date" | "size" | "kind" | "created">("name");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const { selected, setSelected, lastClicked, setLastClicked, selectOnly, toggle, selectRange: selectRangeByNames } =

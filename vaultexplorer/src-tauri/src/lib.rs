@@ -1796,6 +1796,7 @@ pub fn run() {
             git_sync::git_sync_list_pairs,
             git_sync::git_sync_is_active,
             git_sync::git_sync_syncing_now,
+            git_sync::git_sync_last_error,
             git_sync::git_sync_add,
             git_sync::git_sync_remove,
             #[cfg(desktop)]

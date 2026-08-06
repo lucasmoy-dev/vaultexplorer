@@ -385,6 +385,7 @@ export const api = {
   gitSyncListPairs: () => invoke<GitSyncPair[]>("git_sync_list_pairs"),
   gitSyncIsActive: (localPath: string) => invoke<boolean>("git_sync_is_active", { localPath }),
   gitSyncSyncingNow: () => invoke<string[]>("git_sync_syncing_now"),
+  gitSyncLastError: (localPath: string) => invoke<string | null>("git_sync_last_error", { localPath }),
   gitSyncAdd: (localPath: string, remoteUrl: string, repoName: string) =>
     invoke<GitSyncPair>("git_sync_add", { localPath, remoteUrl, repoName }),
   gitSyncRemove: (localPath: string) => invoke<void>("git_sync_remove", { localPath }),

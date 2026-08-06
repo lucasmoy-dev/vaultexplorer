@@ -110,17 +110,47 @@ pub fn init_and_link(local_path: &str, remote_url: &str, repo_name: &str) -> Res
     Ok(())
 }
 
+/// The most recent `sync_tick` failure for a given root, if the last
+/// attempt didn't succeed -- cleared on the next successful tick. Same
+/// reasoning as Drive sync's own `last_error_map` (see sync.rs): the loop
+/// below is entirely best-effort (`let _ =`), so a root stuck failing
+/// every tick (moved/deleted folder, auth gone stale, remote deleted...)
+/// used to fail silently forever, with the UI's only visible symptom
+/// being a permanent "syncing…" badge and no explanation why it never
+/// finishes -- confirmed live as exactly that complaint.
+fn last_error_map() -> &'static Mutex<HashMap<String, String>> {
+    static LAST_ERROR: std::sync::OnceLock<Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
+    LAST_ERROR.get_or_init(Default::default)
+}
+
 /// One poll tick: commit+push if there are local changes, then pull.
-/// Every step is best-effort (`let _ =`) -- a transient network hiccup on
-/// one tick shouldn't kill the loop; it just tries again next tick.
+/// Every git step is still best-effort (`let _ =`) -- a transient network
+/// hiccup on one tick shouldn't kill the loop, it just tries again next
+/// tick -- but the *first* one now short-circuits and records a real
+/// error if the root doesn't even exist anymore, rather than repeatedly
+/// shelling out to `git -C <gone> ...` forever with nothing to show for
+/// it beyond a stuck-looking "syncing" indicator.
 fn sync_tick(root: &str) {
+    if !Path::new(root).is_dir() {
+        last_error_map()
+            .lock_safe()
+            .insert(root.to_string(), "This folder no longer exists.".to_string());
+        return;
+    }
     let status = run(root, &["status", "--porcelain"]).unwrap_or_default();
     if !status.trim().is_empty() {
         let _ = run(root, &["add", "-A"]);
         let _ = run(root, &["commit", "-m", "Auto-sync"]);
         let _ = run(root, &["push"]);
     }
-    let _ = run(root, &["pull", "--no-rebase"]);
+    match run(root, &["pull", "--no-rebase"]) {
+        Ok(_) => {
+            last_error_map().lock_safe().remove(root);
+        }
+        Err(e) => {
+            last_error_map().lock_safe().insert(root.to_string(), e);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -190,6 +220,11 @@ pub fn git_sync_is_active(state: tauri::State<GitSyncState>, local_path: String)
 #[tauri::command]
 pub fn git_sync_syncing_now(state: tauri::State<GitSyncState>) -> Vec<String> {
     syncing_now(&state)
+}
+
+#[tauri::command]
+pub fn git_sync_last_error(local_path: String) -> Option<String> {
+    last_error_map().lock_safe().get(&local_path).cloned()
 }
 
 #[tauri::command]
