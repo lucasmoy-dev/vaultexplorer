@@ -61,7 +61,10 @@
 //! or the compiled app.
 
 use crate::errmap::ToStringErr;
+use crate::progress::{ProgressEvent, ProgressReporter};
 use serde::Serialize;
+use std::io::{Read, Write};
+use tauri::ipc::Channel;
 
 #[derive(Serialize, Clone)]
 pub struct YoutubeResult {
@@ -656,4 +659,68 @@ pub(crate) fn resolve_provider_playable(provider: String, _page_url: String) -> 
         "animeflv" => Err("AnimeFLV's player needs JavaScript this app's scraper can't run -- opening in your browser instead.".to_string()),
         other => Err(format!("unknown provider: {other}")),
     }
+}
+
+/// Backs "Save to folder…"/drag-to-a-folder for an Internet result --
+/// generic on purpose (it just streams whatever's at `url` into
+/// `dest_dir/filename`), so it doesn't need to know which result kind it
+/// came from. What's a genuinely downloadable file varies by kind though
+/// (decided on the frontend, see InternetView.tsx's `downloadItemsFor`):
+/// an image result's own `image` field already is one, and a book
+/// result's archive.org details URL gets rewritten to that item's real
+/// `/download/<id>/<id>.pdf` file (confirmed live against several real
+/// archive.org texts items -- a 302 to the actual CDN mirror, which
+/// reqwest's blocking client follows on its own). Video results have no
+/// such thing: a watch/embed page URL is HTML, not media, and actually
+/// extracting the real video stream needs the kind of cipher-solving
+/// yt-dlp exists for -- out of scope here, so the frontend never offers
+/// this for a video tile in the first place, same honesty standard as
+/// `resolve_provider_playable` above.
+#[tauri::command]
+pub(crate) async fn download_web_result(
+    url: String,
+    dest_dir: String,
+    filename: String,
+    channel: Channel<ProgressEvent>,
+    registry: tauri::State<'_, crate::ops::OpRegistry>,
+) -> Result<(), String> {
+    let op_id = channel.id();
+    let cancel = registry.register(op_id).cancel;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let dest = std::path::Path::new(&dest_dir).join(&filename);
+        if dest.exists() {
+            return Err(format!("\"{filename}\" already exists in that folder"));
+        }
+        let mut resp = http_client()?.get(&url).send().str_err()?;
+        if !resp.status().is_success() {
+            return Err(format!("download failed: HTTP {}", resp.status()));
+        }
+        let total = resp.content_length().unwrap_or(0).max(1);
+        let reporter = ProgressReporter::new_cancellable(channel, total, cancel);
+        let tmp = std::path::Path::new(&dest_dir).join(format!("{filename}.part"));
+        let mut file = std::fs::File::create(&tmp).str_err()?;
+        let mut buf = [0u8; 65536];
+        let mut done = 0u64;
+        loop {
+            if reporter.is_cancelled() {
+                drop(file);
+                let _ = std::fs::remove_file(&tmp);
+                return Err("Cancelled".to_string());
+            }
+            let n = resp.read(&mut buf).str_err()?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n]).str_err()?;
+            done += n as u64;
+            reporter.report(done.min(total));
+        }
+        drop(file);
+        std::fs::rename(&tmp, &dest).str_err()?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    registry.finish(op_id);
+    result
 }

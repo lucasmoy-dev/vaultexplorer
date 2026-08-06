@@ -1692,6 +1692,7 @@ pub fn run() {
             webfind::search_provider_videos,
             webfind::resolve_provider_playable,
             webfind::list_animeflv_episodes,
+            webfind::download_web_result,
             #[cfg(desktop)]
             open_player_window,
             #[cfg(desktop)]

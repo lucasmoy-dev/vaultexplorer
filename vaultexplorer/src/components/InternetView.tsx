@@ -22,6 +22,16 @@ import folderBookIcon from "../assets/foldericons/folder-book.svg";
 
 type Mode = "root" | "videos" | "images" | "books";
 
+// A result's real, directly-downloadable file -- filename already
+// sanitized/extensioned, ready to hand to api.downloadWebResult as-is.
+// Only images and books get one (see downloadItemsFor): a video result
+// only ever has a page/watch URL, not an actual media file, so there's
+// nothing honest to download for it (same reasoning as canPlayInApp).
+export interface InternetDownloadItem {
+  url: string;
+  filename: string;
+}
+
 const DEFAULT_FILTERS: YoutubeSearchFilters = { sortByDate: false, uploadDate: null, duration: null };
 const DEFAULT_IMAGE_FILTERS: ImageSearchFilters = { fileType: null, size: null, color: null, layout: null };
 
@@ -47,10 +57,21 @@ export function InternetView({
   initial,
   onSave,
   mobile,
+  onDragResults,
+  onSaveToFolder,
 }: {
   initial: SavedInternetSearch | null;
   onSave: (filename: string, content: string) => Promise<string>;
   mobile: boolean;
+  // Drag-to-a-folder: called with the dragged tile(s)' downloadable items
+  // the moment a drag starts, so whichever folder target it's eventually
+  // dropped on (a sidebar favorite -- see App.tsx's beginDrag/dropInto for
+  // the real-file equivalent) can read them back out and start the real
+  // download. Not a native OS-level drag like real files get: there's no
+  // file on disk yet to hand another process, so a plain in-window HTML5
+  // drag (App.tsx's own vault-entry drag path) is all this needs.
+  onDragResults: (items: InternetDownloadItem[]) => void;
+  onSaveToFolder: (items: InternetDownloadItem[]) => void;
 }) {
   const [mode, setMode] = useState<Mode>("root");
   const [query, setQuery] = useState("");
@@ -153,15 +174,73 @@ export function InternetView({
     return null;
   }
 
+  function sanitizeFilename(name: string): string {
+    return name.trim().replace(/[/\\:*?"<>|]/g, "_").slice(0, 80) || "download";
+  }
+
+  // The image URL itself is the real downloadable file -- just needs an
+  // extension guessed from it (DDG's own thumbnail/image URLs almost
+  // always end in one; "jpg" is the fallback for the rare one that doesn't).
+  function imageDownloadItem(img: ImageResult): InternetDownloadItem {
+    const m = /\.(jpe?g|png|gif|webp|bmp|svg)(?:[?#]|$)/i.exec(img.image);
+    const ext = m ? m[1].toLowerCase() : "jpg";
+    return { url: img.image, filename: `${sanitizeFilename(img.title)}.${ext}` };
+  }
+
+  // A book result's `url` is archive.org's *details* page, not a file --
+  // rewritten to that item's real `/download/<id>/<id>.pdf`, the same
+  // filename convention archive.org's own file server uses for a texts
+  // item's primary derivative (confirmed live: it 302s to the real CDN
+  // mirror hosting the actual PDF). Not guaranteed for every item (some
+  // are djvu/OCR-text only, no pdf) -- a missing one surfaces as a real
+  // download error rather than silently saving the wrong thing.
+  function bookDownloadItem(b: BookResult): InternetDownloadItem | null {
+    const id = b.url.split("/details/")[1];
+    if (!id) return null;
+    return { url: `https://archive.org/download/${id}/${id}.pdf`, filename: `${sanitizeFilename(b.title)}.pdf` };
+  }
+
+  function downloadItemsFor(keys: string[]): InternetDownloadItem[] {
+    if (mode === "images") {
+      return keys.map((k) => images[Number(k.slice(1))]).filter((x): x is ImageResult => !!x).map(imageDownloadItem);
+    }
+    if (mode === "books") {
+      return keys
+        .map((k) => books[Number(k.slice(1))])
+        .filter((x): x is BookResult => !!x)
+        .map(bookDownloadItem)
+        .filter((x): x is InternetDownloadItem => !!x);
+    }
+    return [];
+  }
+
+  function handleTileDragStart(key: string, e: React.DragEvent) {
+    if (!selected.has(key)) selectOnly(key);
+    const keys = selected.has(key) && selected.size > 1 ? [...selected] : [key];
+    const items = downloadItemsFor(keys);
+    if (items.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("text/plain", items.map((i) => i.url).join("\n"));
+    onDragResults(items);
+  }
+
   // Right-click on a result: "Open in Browser" (always the real
   // external URL, regardless of in-app playback) + "Copy Link" -- the
   // same two actions available for every result type. Reported
   // directly as missing on every kind (videos/images/books alike).
+  // "Save to Folder…" is a third, non-drag way to reach the same
+  // download drag-and-drop now offers -- only for images/books, same
+  // gating as handleTileDragStart above (no genuine downloadable file
+  // for a video result).
   function onTileContextMenu(key: string, e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     if (!selected.has(key)) selectOnly(key);
     const keys = selected.has(key) && selected.size > 1 ? [...selected] : [key];
+    const downloadItems = downloadItemsFor(keys);
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
@@ -182,6 +261,9 @@ export function InternetView({
             if (links.length) navigator.clipboard.writeText(links.join("\n")).catch(() => {});
           },
         },
+        ...(downloadItems.length > 0
+          ? [{ label: "Save to Folder…", onClick: () => onSaveToFolder(downloadItems) }]
+          : []),
       ],
     });
   }
@@ -642,6 +724,8 @@ export function InternetView({
                 data-key={`i${i}`}
                 className={`entry icon ${selected.has(`i${i}`) ? "selected" : ""}`}
                 title={img.title}
+                draggable
+                onDragStart={(e) => handleTileDragStart(`i${i}`, e)}
                 onClick={(e) => {
                   handleTileClick(`i${i}`, e);
                   if (mobile) osOpen(img.image).catch(() => {});
@@ -663,6 +747,8 @@ export function InternetView({
                 data-key={`b${i}`}
                 className={`entry icon ${selected.has(`b${i}`) ? "selected" : ""}`}
                 title={b.snippet ? `${b.title}\n${b.snippet}` : b.title}
+                draggable
+                onDragStart={(e) => handleTileDragStart(`b${i}`, e)}
                 onClick={(e) => {
                   handleTileClick(`b${i}`, e);
                   if (mobile) osOpen(b.url).catch(() => {});

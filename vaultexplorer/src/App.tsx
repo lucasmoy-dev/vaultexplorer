@@ -4,6 +4,7 @@ import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { onBackButtonPress } from "@tauri-apps/api/app";
+import { open as pickPath } from "@tauri-apps/plugin-dialog";
 import {
   api,
   Entry,
@@ -60,7 +61,7 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { kindLabel, editorExtOf } from "./entryHelpers";
 import { EntryTile } from "./components/EntryTile";
 import { MyComputerView } from "./components/MyComputerView";
-import { InternetView, SavedInternetSearch } from "./components/InternetView";
+import { InternetView, SavedInternetSearch, InternetDownloadItem } from "./components/InternetView";
 import { SavedSearchDigest } from "./components/SavedSearchDigest";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
@@ -1286,6 +1287,11 @@ function Explorer({ home }: { home: string }) {
   const dragPaths = useRef<string[]>([]);
   const dragFavIndex = useRef<number | null>(null);
   const [draggingFavIdx, setDraggingFavIdx] = useState<number | null>(null);
+  // Pending drag payload from InternetView (see beginDrag/dragPaths above
+  // for the real-file equivalent) -- an Internet result isn't a real file
+  // yet, so there's nothing to hand a native OS-level drag, just this
+  // in-window ref a folder target's onDrop reads back out.
+  const dragInternetItems = useRef<InternetDownloadItem[] | null>(null);
 
   // Ctrl/Cmd + scroll wheel zooms icon-view tile size, like Finder.
   useEffect(() => {
@@ -3450,6 +3456,27 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
+  // ---- Internet result -> real folder (drag or "Save to Folder…") ----
+  // Same per-item sequential-with-progress shape the paste/copy loop above
+  // uses (one beginProgress row per item) -- these are real network
+  // downloads, not instant fs renames, so each genuinely wants its own
+  // progress row.
+  async function downloadInternetItems(items: InternetDownloadItem[], destDir: string) {
+    try {
+      for (const item of items) {
+        await api.downloadWebResult(item.url, destDir, item.filename, beginProgress(`Downloading "${item.filename}"`));
+      }
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  async function saveInternetResultsToFolder(items: InternetDownloadItem[]) {
+    const dir = await pickPath({ directory: true, multiple: false, title: "Save to folder" });
+    if (!dir || Array.isArray(dir)) return;
+    await downloadInternetItems(items, dir);
+  }
+
   // ---- inline create (new folder / new file) ----
   function nextUntitledName(base: string, ext: string): string {
     const used = new Set(entries.map((e) => e.name));
@@ -5137,6 +5164,12 @@ function Explorer({ home }: { home: string }) {
                   moveFavorite(from, i);
                   return;
                 }
+                if (dragInternetItems.current) {
+                  const items = dragInternetItems.current;
+                  dragInternetItems.current = null;
+                  downloadInternetItems(items, f.path);
+                  return;
+                }
                 if (loc.kind === "fs") dropInto(f.path);
               }}
               onContextMenu={(e) => {
@@ -5569,7 +5602,15 @@ function Explorer({ home }: { home: string }) {
               onMenu={driveMenu}
             />
           ) : showInternet ? (
-            <InternetView initial={internetInitial} onSave={saveInternetSearch} mobile={mobile} />
+            <InternetView
+              initial={internetInitial}
+              onSave={saveInternetSearch}
+              mobile={mobile}
+              onDragResults={(items) => {
+                dragInternetItems.current = items;
+              }}
+              onSaveToFolder={saveInternetResultsToFolder}
+            />
           ) : searchResults !== null && view === "contacts" ? (
             <ContactsGrid
               entries={searchEntryList}
