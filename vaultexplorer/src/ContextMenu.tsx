@@ -321,15 +321,30 @@ export function ContextMenu({ state, onClose }: { state: MenuState; onClose: () 
     // that first summoned this menu) lands squarely outside `.context-menu`
     // by definition, so the target-check alone can't save it from a same-
     // tick phantom click.
+    // Anything that isn't "pick one of these" dismisses the menu, not just
+    // a click on empty space: scrolling the list underneath it, focusing
+    // another window, or right-clicking somewhere else all mean the menu
+    // is no longer what the user is doing. A menu left floating over
+    // content that has since scrolled away is the specific complaint.
+    const closeOnScroll = (e: Event) => {
+      if ((e.target as Element | null)?.closest?.(".context-menu")) return;
+      onClose();
+    };
     const attach = requestAnimationFrame(() => {
       window.addEventListener("click", closeIfOutside, true);
+      window.addEventListener("contextmenu", closeIfOutside, true);
       window.addEventListener("resize", onClose);
+      window.addEventListener("blur", onClose);
+      window.addEventListener("scroll", closeOnScroll, true);
     });
     window.addEventListener("keydown", onKey);
     return () => {
       cancelAnimationFrame(attach);
       window.removeEventListener("click", closeIfOutside, true);
+      window.removeEventListener("contextmenu", closeIfOutside, true);
       window.removeEventListener("resize", onClose);
+      window.removeEventListener("blur", onClose);
+      window.removeEventListener("scroll", closeOnScroll, true);
       window.removeEventListener("keydown", onKey);
     };
   }, [state, onClose]);
