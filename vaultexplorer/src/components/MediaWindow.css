@@ -18,7 +18,9 @@
   top: 0;
   left: 0;
   right: 0;
-  z-index: 12;
+  /* Above MediaViewer's own overlay (z-index 2100) -- the traffic
+     lights have to sit over the viewer, not under it. */
+  z-index: 2200;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -26,6 +28,15 @@
   padding: 0 10px;
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
   transition: opacity 0.35s ease;
+  /* The bar spans the full width for its gradient, but the viewer's own
+     toolbar (rotate/edit/more) lives under its right-hand end -- so only
+     the parts that are actually interactive here take clicks, and the
+     rest passes straight through. */
+  pointer-events: none;
+}
+.media-window-titlebar .traffic-lights,
+.media-window-title {
+  pointer-events: auto;
 }
 .media-window-title {
   flex: 1;

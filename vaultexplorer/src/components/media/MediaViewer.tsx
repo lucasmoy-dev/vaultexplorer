@@ -518,8 +518,10 @@ export function MediaViewer({
             reported directly that it read as wrong on desktop, where the
             title belongs at the top like everything else here. */}
         <div className={`mv-toolbar ${isImage && mobile ? "mv-toolbar-bottom" : ""}`}>
+          {/* The host window's own titlebar already names the file --
+              showing it twice, once under the other, just looks broken. */}
           <div className="mv-title" title={current?.name ?? ""}>
-            {current?.name ?? ""}
+            {chromeless ? "" : current?.name ?? ""}
           </div>
           <div className="mv-toolbar-actions">
             {isImage && (
