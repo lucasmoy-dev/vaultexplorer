@@ -41,6 +41,7 @@ mod sync;
 mod syncthing;
 mod verify;
 mod terminal;
+mod cast;
 mod mediaserver;
 mod ytstreams;
 mod webfind;
@@ -1787,6 +1788,10 @@ pub fn run() {
             webfind::download_web_result,
             mediaserver::media_url,
             ytstreams::youtube_streams,
+            cast::cast_discover,
+            cast::cast_play_youtube,
+            #[cfg(target_os = "android")]
+            android::android_mux_video,
             internet_root,
             #[cfg(desktop)]
             ytdl::download_video,

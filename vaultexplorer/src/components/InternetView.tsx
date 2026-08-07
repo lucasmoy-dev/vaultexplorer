@@ -189,6 +189,45 @@ export function InternetView({
     }
   }
 
+  // Hands the video to a TV over DIAL (see cast.rs). Discovery takes a
+  // couple of seconds, so the devices found are offered as a menu rather
+  // than a blocking dialog.
+  const [castBusy, setCastBusy] = useState(false);
+  async function castTo(videoId: string) {
+    if (castBusy) return;
+    setCastBusy(true);
+    setError("");
+    try {
+      const devices = await api.castDiscover();
+      if (devices.length === 0) {
+        setError("No TVs found on this network.");
+        return;
+      }
+      if (devices.length === 1) {
+        await api.castPlayYoutube(devices[0].app_url, videoId);
+        setSaveMsg(`Playing on ${devices[0].name}`);
+        return;
+      }
+      setContextMenu({
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 3,
+        items: devices.map((d) => ({
+          label: d.name,
+          onClick: () => {
+            api
+              .castPlayYoutube(d.app_url, videoId)
+              .then(() => setSaveMsg(`Playing on ${d.name}`))
+              .catch((e) => setError(String(e)));
+          },
+        })),
+      });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCastBusy(false);
+    }
+  }
+
   async function playInApp(videoId: string, title: string) {
     try {
       setInAppPlayer({ url: await api.youtubeEmbedUrl(videoId), title });
@@ -391,6 +430,9 @@ export function InternetView({
         // do. No destination prompt on purpose -- "download" here means
         // the same thing it means in a browser: it lands in Downloads and
         // the Actions list shows it happening.
+        ...(mode === "videos" && provider === "youtube" && keys.length === 1
+          ? [{ label: "Play on TV…", onClick: () => void castTo(keys[0]) }]
+          : []),
         ...(mode === "videos"
           ? [
               {
@@ -398,7 +440,16 @@ export function InternetView({
                 onClick: () => downloadKeys(keys, false),
               },
               {
-                label: keys.length > 1 ? `Download ${keys.length} as MP3` : "Download MP3",
+                // Named for what actually lands on the device: Android
+                // gets the real container (.m4a) because converting needs
+                // ffmpeg, which isn't there.
+                label: mobile
+                  ? keys.length > 1
+                    ? `Download ${keys.length} audio files`
+                    : "Download audio"
+                  : keys.length > 1
+                    ? `Download ${keys.length} as MP3`
+                    : "Download MP3",
                 onClick: () => downloadKeys(keys, true),
               },
             ]

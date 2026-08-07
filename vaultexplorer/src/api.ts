@@ -173,6 +173,12 @@ export const api = {
   youtubeEmbedUrl: (videoId: string) => invoke<string>("youtube_embed_url", { videoId }),
   mediaUrl: (path: string) => invoke<string>("media_url", { path }),
   internetRoot: () => invoke<string>("internet_root"),
+  youtubeStreams: (pageUrl: string) => invoke<YoutubeStreams>("youtube_streams", { pageUrl }),
+  androidMuxVideo: (videoPath: string, audioPath: string, outPath: string) =>
+    invoke<void>("android_mux_video", { videoPath, audioPath, outPath }),
+  castDiscover: () => invoke<CastDevice[]>("cast_discover"),
+  castPlayYoutube: (appUrl: string, videoId: string) =>
+    invoke<void>("cast_play_youtube", { appUrl, videoId }),
   resolveStreamUrl: (pageUrl: string) => invoke<string>("resolve_stream_url", { pageUrl }),
   fsTrashMany: (paths: string[], channel: Channel<ProgressEvent>) =>
     invoke<void>("fs_trash_many", { paths, channel }),
@@ -530,6 +536,23 @@ export interface LargeFilesEvent {
   files: LargeFile[];
   scanned: number;
   done: boolean;
+}
+
+export interface YoutubeStreams {
+  title: string;
+  // Video-only: YouTube no longer serves progressive streams, so a
+  // playable file means muxing this with the audio (see ytstreams.rs).
+  video_url: string | null;
+  video_height: number;
+  audio_url: string | null;
+  // The real container ("m4a"/"webm") -- named honestly rather than
+  // promising an mp3 nobody transcoded.
+  audio_ext: string;
+}
+
+export interface CastDevice {
+  name: string;
+  app_url: string;
 }
 
 export interface GitFileStatus {

@@ -1138,3 +1138,126 @@ pub(crate) fn android_download_and_install_apk(app: tauri::AppHandle, url: Strin
     }
     rx.recv_timeout(std::time::Duration::from_secs(10)).map_err(|_| "timed out".to_string())?
 }
+
+/// Muxes a video-only file and an audio-only file into one playable mp4,
+/// using Android's own `MediaMuxer`.
+///
+/// This exists because YouTube stopped serving progressive streams: a
+/// video download arrives as two files that have to be joined. On desktop
+/// yt-dlp does it with ffmpeg; on Android there is no ffmpeg, but the
+/// platform ships a muxer for exactly this. Both tracks are already
+/// H.264/AAC, so this is a container remux -- no decoding, no re-encoding,
+/// and it runs in seconds rather than minutes.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) async fn android_mux_video(
+    app: tauri::AppHandle,
+    video_path: String,
+    audio_path: String,
+    out_path: String,
+) -> Result<(), String> {
+    use jni::objects::{JObject, JValue};
+    let window = app.get_webview_window("main").ok_or("no main window")?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sent = window.with_webview(move |pw| {
+        let jni = pw.jni_handle();
+        jni.exec(move |env, _activity, _webview| {
+            let mut run = || -> Result<(), jni::errors::Error> {
+                let out = env.new_string(&out_path)?;
+                // 0 == MUXER_OUTPUT_MPEG_4
+                let muxer = env.new_object(
+                    "android/media/MediaMuxer",
+                    "(Ljava/lang/String;I)V",
+                    &[JValue::Object(&out), JValue::Int(0)],
+                )?;
+
+                // One extractor per input; each of these files has exactly
+                // one track (they were downloaded as video-only and
+                // audio-only), so track 0 is the one to carry over.
+                let mut inputs: Vec<(JObject, i32)> = Vec::new();
+                for path in [&video_path, &audio_path] {
+                    if path.is_empty() {
+                        continue;
+                    }
+                    let extractor = env.new_object("android/media/MediaExtractor", "()V", &[])?;
+                    let jpath = env.new_string(path)?;
+                    env.call_method(
+                        &extractor,
+                        "setDataSource",
+                        "(Ljava/lang/String;)V",
+                        &[JValue::Object(&jpath)],
+                    )?;
+                    let format = env
+                        .call_method(&extractor, "getTrackFormat", "(I)Landroid/media/MediaFormat;", &[JValue::Int(0)])?
+                        .l()?;
+                    env.call_method(&extractor, "selectTrack", "(I)V", &[JValue::Int(0)])?;
+                    let track = env
+                        .call_method(
+                            &muxer,
+                            "addTrack",
+                            "(Landroid/media/MediaFormat;)I",
+                            &[JValue::Object(&format)],
+                        )?
+                        .i()?;
+                    inputs.push((extractor, track));
+                }
+
+                env.call_method(&muxer, "start", "()V", &[])?;
+                let buffer = env
+                    .call_static_method(
+                        "java/nio/ByteBuffer",
+                        "allocate",
+                        "(I)Ljava/nio/ByteBuffer;",
+                        &[JValue::Int(1 << 20)],
+                    )?
+                    .l()?;
+                let info = env.new_object("android/media/MediaCodec$BufferInfo", "()V", &[])?;
+
+                for (extractor, track) in &inputs {
+                    loop {
+                        let size = env
+                            .call_method(
+                                extractor,
+                                "readSampleData",
+                                "(Ljava/nio/ByteBuffer;I)I",
+                                &[JValue::Object(&buffer), JValue::Int(0)],
+                            )?
+                            .i()?;
+                        if size < 0 {
+                            break;
+                        }
+                        let time = env.call_method(extractor, "getSampleTime", "()J", &[])?.j()?;
+                        let flags = env.call_method(extractor, "getSampleFlags", "()I", &[])?.i()?;
+                        // BufferInfo's fields are public and there is no
+                        // setter other than `set`, which also takes the
+                        // flags -- so this is the whole call.
+                        env.call_method(
+                            &info,
+                            "set",
+                            "(IIJI)V",
+                            &[JValue::Int(0), JValue::Int(size), JValue::Long(time), JValue::Int(flags)],
+                        )?;
+                        env.call_method(
+                            &muxer,
+                            "writeSampleData",
+                            "(ILjava/nio/ByteBuffer;Landroid/media/MediaCodec$BufferInfo;)V",
+                            &[JValue::Int(*track), JValue::Object(&buffer), JValue::Object(&info)],
+                        )?;
+                        env.call_method(extractor, "advance", "()Z", &[])?;
+                    }
+                    env.call_method(extractor, "release", "()V", &[])?;
+                }
+
+                env.call_method(&muxer, "stop", "()V", &[])?;
+                env.call_method(&muxer, "release", "()V", &[])?;
+                Ok(())
+            };
+            let _ = tx.send(run().map_err(|e| describe_jni_error(env, e)));
+        });
+    });
+    if sent.is_err() {
+        return Err("couldn't reach the Android webview".to_string());
+    }
+    rx.recv_timeout(std::time::Duration::from_secs(300))
+        .map_err(|_| "muxing timed out".to_string())?
+}

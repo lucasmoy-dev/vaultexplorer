@@ -3633,11 +3633,47 @@ function Explorer({ home }: { home: string }) {
   // and each can be cancelled on its own.
   function downloadInternetVideos(pageUrls: string[], audioOnly: boolean) {
     for (const url of pageUrls) {
-      api
-        .downloadVideo(url, audioOnly, beginProgress(`Downloading ${audioOnly ? "MP3" : "MP4"}`))
-        .then(() => refresh())
-        .catch((e) => setError(String(e)));
+      const run = mobile ? downloadOnMobile(url, audioOnly) : desktopDownload(url, audioOnly);
+      run.then(() => refresh()).catch((e) => setError(String(e)));
     }
+  }
+
+  function desktopDownload(url: string, audioOnly: boolean) {
+    return api.downloadVideo(url, audioOnly, beginProgress(`Downloading ${audioOnly ? "MP3" : "MP4"}`));
+  }
+
+  // Android has no yt-dlp (it's Python) and no ffmpeg, so the same job is
+  // done in three steps the phone *can* do: resolve the streams in-process
+  // (see ytstreams.rs), fetch them over plain HTTP with the downloader
+  // that already reports into Actions, and -- for video, since YouTube
+  // stopped serving progressive streams -- join the two tracks with
+  // Android's own MediaMuxer.
+  async function downloadOnMobile(url: string, audioOnly: boolean) {
+    const streams = await api.youtubeStreams(url);
+    const safe = streams.title.replace(/[/\\?%*:|"<>]/g, "-").slice(0, 120) || "video";
+    const dest = joinPath(home ?? "", "Download");
+    if (audioOnly) {
+      if (!streams.audio_url) throw new Error("No audio stream available for this video.");
+      // `.m4a`, not `.mp3`: this is the real container, and converting
+      // would need ffmpeg, which Android doesn't have.
+      await api.downloadWebResult(
+        streams.audio_url,
+        dest,
+        `${safe}.${streams.audio_ext || "m4a"}`,
+        beginProgress(`Downloading audio — ${safe}`)
+      );
+      return;
+    }
+    if (!streams.video_url || !streams.audio_url) throw new Error("No downloadable streams for this video.");
+    const videoPart = `${safe}.video.mp4`;
+    const audioPart = `${safe}.audio.m4a`;
+    await api.downloadWebResult(streams.video_url, dest, videoPart, beginProgress(`Downloading video — ${safe}`));
+    await api.downloadWebResult(streams.audio_url, dest, audioPart, beginProgress(`Downloading audio — ${safe}`));
+    await api.androidMuxVideo(joinPath(dest, videoPart), joinPath(dest, audioPart), joinPath(dest, `${safe}.mp4`));
+    // The halves are an implementation detail; leaving them behind would
+    // just look like three copies of the same video.
+    await api.fsDelete(joinPath(dest, videoPart)).catch(() => {});
+    await api.fsDelete(joinPath(dest, audioPart)).catch(() => {});
   }
 
   async function saveInternetResultsToFolder(items: InternetDownloadItem[]) {
