@@ -5238,3 +5238,10 @@ input[type="range"]::-webkit-slider-thumb {
   border: none;
   background: #000;
 }
+
+/* "New folder here" under the Internet root tiles -- the section keeps
+   real files (saved searches, .url links), so it needs an ordinary way to
+   organise them. */
+.internet-root-actions {
+  padding: 4px 16px 10px;
+}

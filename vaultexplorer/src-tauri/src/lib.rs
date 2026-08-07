@@ -1466,6 +1466,21 @@ fn open_player_window(app: tauri::AppHandle, kind: String, items: String, index:
 /// piece of media gets real window chrome (traffic lights, fullscreen,
 /// its own place in the window switcher) -- the way a media file behaves
 /// everywhere else on the desktop.
+/// The real folder behind the Internet section.
+///
+/// Internet's "Videos"/"Images"/"Books" are live searches with no path
+/// behind them, but a saved search or a kept `.youtube.url` link is an
+/// ordinary file and wants an ordinary place to live -- and folders to
+/// organise into. That place is here, created on first use, so the section
+/// behaves like the rest of the file manager instead of being a dead end.
+#[tauri::command]
+fn internet_root() -> Result<String, String> {
+    let home = std::env::var("HOME").str_err()?;
+    let dir = std::path::Path::new(&home).join(".local/share/vaultexplorer/internet");
+    std::fs::create_dir_all(&dir).str_err()?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 fn open_media_window(app: tauri::AppHandle, items: String, index: usize) -> Result<(), String> {
@@ -1767,6 +1782,7 @@ pub fn run() {
             webfind::list_animeflv_episodes,
             webfind::download_web_result,
             mediaserver::media_url,
+            internet_root,
             #[cfg(desktop)]
             ytdl::download_video,
             #[cfg(desktop)]

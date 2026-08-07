@@ -5730,6 +5730,7 @@ function Explorer({ home }: { home: string }) {
               }}
               onSaveToFolder={saveInternetResultsToFolder}
               onDownloadVideos={downloadInternetVideos}
+              onOpenFolder={(path) => go({ kind: "fs", path })}
             />
           ) : searchResults !== null && view === "contacts" ? (
             <ContactsGrid

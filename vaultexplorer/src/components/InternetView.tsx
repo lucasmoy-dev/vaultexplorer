@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Entry,
   api,
   osOpen,
   YoutubeResult,
@@ -66,6 +67,7 @@ export function InternetView({
   onDragResults,
   onSaveToFolder,
   onDownloadVideos,
+  onOpenFolder,
 }: {
   initial: SavedInternetSearch | null;
   onSave: (filename: string, content: string) => Promise<string>;
@@ -82,6 +84,10 @@ export function InternetView({
   // Right-click "Download MP4"/"Download MP3" -- App owns this because the
   // Actions row (and its cancel button) lives there, not in this view.
   onDownloadVideos: (pageUrls: string[], audioOnly: boolean) => void;
+  // Opening one of the real folders that live under the Internet section
+  // hands off to the normal file browser -- past that point it is an
+  // ordinary folder and should behave like one.
+  onOpenFolder: (path: string) => void;
 }) {
   const [mode, setMode] = useState<Mode>("root");
   const [query, setQuery] = useState("");
@@ -124,6 +130,23 @@ export function InternetView({
   // loopback embed page is ready, so the overlay never flashes an empty
   // frame while that resolves.
   const [inAppPlayer, setInAppPlayer] = useState<{ url: string; title: string } | null>(null);
+  // Real files/folders kept under the Internet section (see internet_root
+  // in lib.rs) -- saved searches, `.youtube.url` links, and whatever
+  // folders the user makes to sort them into.
+  const [savedEntries, setSavedEntries] = useState<Entry[]>([]);
+  const [internetDir, setInternetDir] = useState("");
+  const loadSaved = useCallback(async () => {
+    try {
+      const root = await api.internetRoot();
+      setInternetDir(root);
+      setSavedEntries(await api.fsList(root, false));
+    } catch {
+      // A missing/unreadable folder just means nothing has been kept yet.
+    }
+  }, []);
+  useEffect(() => {
+    if (mode === "root") void loadSaved();
+  }, [mode, loadSaved]);
 
   async function playInApp(videoId: string, title: string) {
     try {
@@ -553,6 +576,42 @@ export function InternetView({
             </span>
             <span className="entry-name">Books</span>
           </div>
+          {savedEntries.map((entry) => (
+            <div
+              key={entry.name}
+              className="entry icon"
+              data-name={entry.name}
+              onDoubleClick={() =>
+                entry.is_dir
+                  ? onOpenFolder(`${internetDir}/${entry.name}`)
+                  : osOpen(`${internetDir}/${entry.name}`).catch(() => {})
+              }
+            >
+              <span className="entry-icon">
+                <FileIcon entry={entry} />
+              </span>
+              <span className="entry-name">{entry.name}</span>
+            </div>
+          ))}
+        </div>
+        <div className="internet-root-actions">
+          <button
+            className="btn-plain small"
+            onClick={async () => {
+              try {
+                const root = internetDir || (await api.internetRoot());
+                const used = new Set(savedEntries.map((e) => e.name));
+                let name = "untitled folder";
+                for (let i = 2; used.has(name); i++) name = `untitled folder ${i}`;
+                await api.fsMkdir(`${root}/${name}`);
+                await loadSaved();
+              } catch (e) {
+                setError(String(e));
+              }
+            }}
+          >
+            + New folder here
+          </button>
         </div>
         <p className="hint" style={{ padding: "0 14px" }}>
           Experimental: "files" in here are YouTube/web-image/PDF search results, fetched live --
