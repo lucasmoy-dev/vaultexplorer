@@ -93,39 +93,117 @@
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.85);
 }
 
+/* Type breakdown as cards, not a dot legend: each one carries the same
+   icon the file grid uses for that kind, what it costs, and how much of
+   the total it is -- and doubles as the filter for the list below. */
 .freespace-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  padding: 10px 22px 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  padding: 12px 22px;
 }
-.freespace-legend-item,
-.freespace-legend-clear {
-  display: inline-flex;
+.freespace-kind {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  border: none;
-  background: none;
-  padding: 2px 4px;
-  border-radius: 6px;
-  font-size: 12px;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+  border-left: 3px solid var(--kind);
+  border-radius: 10px;
+  background: var(--field-bg);
   color: var(--text);
   cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-.freespace-legend-item.active {
-  background: var(--hover-bg, rgba(127, 127, 127, 0.14));
+.freespace-kind:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
 }
-.freespace-legend-size {
+.freespace-kind.active {
+  border-color: var(--kind);
+  background: color-mix(in srgb, var(--kind) 14%, transparent);
+}
+.freespace-kind-icon {
+  flex-shrink: 0;
+  display: flex;
+}
+.freespace-kind-icon .fileicon-img,
+.freespace-kind-icon svg {
+  width: 26px;
+  height: 26px;
+}
+.freespace-kind-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.freespace-kind-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.freespace-kind-sub {
+  font-size: 11px;
   color: var(--text-2);
-  font-variant-numeric: tabular-nums;
 }
-.freespace-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
+.freespace-kind-size {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 .freespace-legend-clear {
+  align-self: center;
+  border: none;
+  background: none;
   color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* "Where it's going" -- the same found files grouped by folder, which is
+   the question the type chart can't answer. */
+.freespace-folders {
+  padding: 2px 22px 12px;
+}
+.freespace-folders h3 {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+.freespace-folder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.freespace-folder-name {
+  flex: 0 0 34%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+}
+.freespace-folder-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  overflow: hidden;
+}
+.freespace-folder-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.35s ease;
+}
+.freespace-folder-size {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .freespace-list {

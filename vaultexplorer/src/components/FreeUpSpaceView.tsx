@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { api, LargeFile, LargeFilesEvent, ProgressEvent, baseName, formatSize } from "../api";
 import { Dropdown } from "../ContextMenu";
-import { kindOf } from "../icons";
+import { FileIcon, kindOf } from "../icons";
 import "./FreeUpSpaceView.css";
 
 // "Free Up Space" -- a full view, not a sheet. Reviewing what to delete is
@@ -25,12 +25,15 @@ type Phase = "config" | "scanning" | "results";
 // classifies by extension for the file grid, so the same names show up
 // here as in the rest of the app rather than a second vocabulary.
 const BUCKETS = [
-  { key: "video", label: "Video", hue: 265 },
-  { key: "audio", label: "Audio", hue: 200 },
-  { key: "image", label: "Images", hue: 145 },
-  { key: "archive", label: "Archives", hue: 35 },
-  { key: "pdf", label: "Documents", hue: 5 },
-  { key: "other", label: "Other", hue: 220 },
+  // `sample` drives the icon: FileIcon classifies by extension, so a
+  // throwaway name gives each bucket the very same icon the file grid
+  // uses for that kind -- one iconography, not a second private set.
+  { key: "video", label: "Video", hue: 265, sample: "a.mp4" },
+  { key: "audio", label: "Audio", hue: 200, sample: "a.mp3" },
+  { key: "image", label: "Images", hue: 145, sample: "a.jpg" },
+  { key: "archive", label: "Archives", hue: 35, sample: "a.zip" },
+  { key: "pdf", label: "Documents", hue: 5, sample: "a.pdf" },
+  { key: "other", label: "Other", hue: 220, sample: "a.bin" },
 ] as const;
 type BucketKey = (typeof BUCKETS)[number]["key"];
 
@@ -120,6 +123,24 @@ export function FreeUpSpaceView({
       bytes += f.size;
     }
     return { byBucket, bytes };
+  }, [files]);
+
+  // "Which folder is eating the disk" is the other half of the question
+  // the chart answers by type -- same found-files pool, grouped by parent
+  // directory, biggest first.
+  const topFolders = useMemo(() => {
+    const byDir = new Map<string, { bytes: number; count: number }>();
+    for (const f of files) {
+      const dir = f.path.slice(0, f.path.lastIndexOf("/")) || "/";
+      const cur = byDir.get(dir) ?? { bytes: 0, count: 0 };
+      cur.bytes += f.size;
+      cur.count += 1;
+      byDir.set(dir, cur);
+    }
+    return [...byDir.entries()]
+      .map(([dir, stat]) => ({ dir, ...stat }))
+      .sort((a, b) => b.bytes - a.bytes)
+      .slice(0, 5);
   }, [files]);
 
   const shown = bucketFilter ? files.filter((f) => bucketOf(f) === bucketFilter) : files;
@@ -239,15 +260,24 @@ export function FreeUpSpaceView({
             {BUCKETS.map((b) => {
               const stat = totals.byBucket.get(b.key);
               if (!stat || stat.bytes === 0) return null;
+              const share = Math.round((stat.bytes / totals.bytes) * 100);
               return (
                 <button
                   key={b.key}
-                  className={`freespace-legend-item${bucketFilter === b.key ? " active" : ""}`}
+                  className={`freespace-kind${bucketFilter === b.key ? " active" : ""}`}
                   onClick={() => setBucketFilter((f) => (f === b.key ? null : b.key))}
+                  style={{ "--kind": `hsl(${b.hue} 62% 55%)` } as React.CSSProperties}
                 >
-                  <span className="freespace-dot" style={{ background: `hsl(${b.hue} 62% 55%)` }} />
-                  {b.label}
-                  <span className="freespace-legend-size">{formatSize(stat.bytes)}</span>
+                  <span className="freespace-kind-icon">
+                    <FileIcon entry={{ name: b.sample, is_dir: false, size: 0, mtime: 0 }} />
+                  </span>
+                  <span className="freespace-kind-text">
+                    <span className="freespace-kind-label">{b.label}</span>
+                    <span className="freespace-kind-sub">
+                      {stat.count} file{stat.count === 1 ? "" : "s"} · {share}%
+                    </span>
+                  </span>
+                  <span className="freespace-kind-size">{formatSize(stat.bytes)}</span>
                 </button>
               );
             })}
@@ -257,6 +287,23 @@ export function FreeUpSpaceView({
               </button>
             )}
           </div>
+
+          {topFolders.length > 1 && (
+            <div className="freespace-folders">
+              <h3>Where it's going</h3>
+              {topFolders.map((f) => (
+                <div className="freespace-folder" key={f.dir}>
+                  <span className="freespace-folder-name" title={f.dir}>
+                    {f.dir.split("/").slice(-2).join("/")}
+                  </span>
+                  <span className="freespace-folder-bar">
+                    <span style={{ width: `${(f.bytes / (topFolders[0]?.bytes || 1)) * 100}%` }} />
+                  </span>
+                  <span className="freespace-folder-size">{formatSize(f.bytes)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </>
       )}
 
