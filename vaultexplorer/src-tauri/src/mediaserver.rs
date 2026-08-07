@@ -189,14 +189,25 @@ fn serve_file(request: tiny_http::Request, path: &std::path::Path, range: Option
             request.respond(response).str_err()
         }
         None => {
-            let response = tiny_http::Response::new(
-                tiny_http::StatusCode(200),
-                vec![header("Content-Type", &mime), header("Accept-Ranges", "bytes")],
-                file,
-                Some(len as usize),
-                None,
+            // Hand-written for the same reason as HEAD: tiny_http answers a
+            // whole-file GET with `Transfer-Encoding: chunked` and no
+            // Content-Length. A length-less response makes GStreamer's HTTP
+            // source report the stream as NOT seekable, so qtdemux can't
+            // jump to the `moov` atom -- and screen recordings (OBS and
+            // friends) put `moov` at the *end* of the file. It then gave up
+            // with "no 'moov' atom within the first 10 MB" and the element
+            // reported error 4. Confirmed against a 2.1 GB recording that
+            // plays fine from disk but not over the chunked response.
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
             );
-            request.respond(response).str_err()
+            let mut writer = request.into_writer();
+            writer.write_all(head.as_bytes()).str_err()?;
+            // A client that seeks away mid-stream just drops the
+            // connection; that write error is expected, not a failure.
+            let _ = std::io::copy(&mut file, &mut writer);
+            let _ = writer.flush();
+            Ok(())
         }
     }
 }
@@ -331,6 +342,20 @@ mod tests {
         let tail = client.get(&url).header("Range", format!("bytes={tail_start}-")).send().expect("tail");
         assert_eq!(tail.status().as_u16(), 206);
         assert_eq!(tail.bytes().expect("bytes").len(), 65536);
+    }
+
+    /// The whole-file response has to carry Content-Length: without it
+    /// GStreamer treats the stream as non-seekable and any mp4 whose moov
+    /// atom sits at the end (every screen recording) fails to demux.
+    #[test]
+    fn whole_file_response_is_length_delimited_not_chunked() {
+        let path = temp_file("length.mp4", &vec![b'y'; 1024 * 1024]);
+        let url = media_url(path.to_string_lossy().to_string()).expect("url");
+        let res = reqwest::blocking::get(&url).expect("get");
+        assert_eq!(res.headers().get("content-length").map(|v| v.to_str().unwrap().to_string()), Some((1024 * 1024).to_string()));
+        assert!(res.headers().get("transfer-encoding").is_none(), "{:?}", res.headers());
+        assert_eq!(res.bytes().expect("bytes").len(), 1024 * 1024);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
