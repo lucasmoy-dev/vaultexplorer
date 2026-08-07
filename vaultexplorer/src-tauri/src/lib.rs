@@ -43,6 +43,7 @@ mod verify;
 mod terminal;
 mod cast;
 mod mediaserver;
+mod musicorg;
 mod ytstreams;
 mod webfind;
 #[cfg(desktop)]
@@ -1787,6 +1788,7 @@ pub fn run() {
             webfind::list_animeflv_episodes,
             webfind::download_web_result,
             mediaserver::media_url,
+            musicorg::organize_music,
             ytstreams::youtube_streams,
             ytstreams::download_stream,
             cast::cast_discover,

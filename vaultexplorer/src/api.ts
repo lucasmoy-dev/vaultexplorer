@@ -173,6 +173,8 @@ export const api = {
   youtubeEmbedUrl: (videoId: string) => invoke<string>("youtube_embed_url", { videoId }),
   mediaUrl: (path: string) => invoke<string>("media_url", { path }),
   internetRoot: () => invoke<string>("internet_root"),
+  organizeMusic: (root: string, channel: Channel<ProgressEvent>) =>
+    invoke<OrganizedTrack[]>("organize_music", { root, channel }),
   youtubeStreams: (pageUrl: string) => invoke<YoutubeStreams>("youtube_streams", { pageUrl }),
   downloadStream: (url: string, destDir: string, filename: string, channel: Channel<ProgressEvent>) =>
     invoke<void>("download_stream", { url, destDir, filename, channel }),
@@ -538,6 +540,17 @@ export interface LargeFilesEvent {
   files: LargeFile[];
   scanned: number;
   done: boolean;
+}
+
+export interface OrganizedTrack {
+  from: string;
+  to: string;
+  artist: string;
+  album: string;
+  title: string;
+  year: number | null;
+  track_no: number | null;
+  from_online: boolean;
 }
 
 export interface YoutubeStreams {

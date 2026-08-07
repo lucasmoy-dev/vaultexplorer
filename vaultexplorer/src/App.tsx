@@ -3549,6 +3549,23 @@ function Explorer({ home }: { home: string }) {
   // (and the touch drag added for it only reaches folders visible in the
   // current one), so picking a destination is the only way to move a
   // selection somewhere else -- reported as exactly that gap.
+  // Files each track under Artist/Year - Album/NN - Title, filling in
+  // whatever the tags don't know from MusicBrainz. Anything it can't
+  // identify stays exactly where it is.
+  async function organizeMusicIn(path: string) {
+    try {
+      const moved = await api.organizeMusic(path, beginProgress(`Organizing music in "${baseName(path)}"`));
+      refresh();
+      setError(
+        moved.length === 0
+          ? "Nothing to reorganize -- no tracks could be identified."
+          : `Filed ${moved.length} track${moved.length === 1 ? "" : "s"}.`
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function moveSelectionTo() {
     const names = [...selected];
     if (names.length === 0) return;
@@ -5444,6 +5461,10 @@ function Explorer({ home }: { home: string }) {
                 e.preventDefault();
                 const items: MenuItem[] = [
                   { label: "Change Icon…", onClick: () => setIconTarget(f.path) },
+                  {
+                    label: "Reorganize Music…",
+                    onClick: () => organizeMusicIn(f.path),
+                  },
                 ];
                 if (f.path !== "/" && !inVault && !mobile) {
                   items.push(
