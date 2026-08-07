@@ -120,6 +120,21 @@ export function InternetView({
   // Opening an AnimeFLV result goes through this picker instead of
   // straight to the external browser -- see AnimeflvEpisodeSheet.
   const [episodePicker, setEpisodePicker] = useState<{ title: string; pageUrl: string } | null>(null);
+  // Mobile's in-app YouTube player (see playInApp): {url} once the
+  // loopback embed page is ready, so the overlay never flashes an empty
+  // frame while that resolves.
+  const [inAppPlayer, setInAppPlayer] = useState<{ url: string; title: string } | null>(null);
+
+  async function playInApp(videoId: string, title: string) {
+    try {
+      setInAppPlayer({ url: await api.youtubeEmbedUrl(videoId), title });
+    } catch (e) {
+      // No embed page (an id this app can't build a URL for) -- fall back
+      // to whatever the OS does with the watch link rather than nothing.
+      setError(String(e));
+      osOpen(`https://www.youtube.com/watch?v=${videoId}`).catch(() => {});
+    }
+  }
 
   // The ordered key list for whatever's currently rendered -- same key
   // format each tile below already uses (v.id / `p${i}` / `i${i}` /
@@ -725,7 +740,12 @@ export function InternetView({
                   // and opens, same convention as the regular file browser
                   // (confirmed live: these results were unopenable on mobile
                   // before this, since dblclick never fires from a touch tap).
-                  if (mobile) osOpen(`https://www.youtube.com/watch?v=${v.id}`).catch(() => {});
+                  // Stays inside the app rather than handing the video to
+                  // the YouTube app: the same loopback embed page the
+                  // desktop player window uses (ytembed.rs) works here,
+                  // shown as a full-screen overlay since mobile has no
+                  // second window to open.
+                  if (mobile) playInApp(v.id, v.title);
                 }}
                 onDoubleClick={() => openResult(v.id)}
                 onContextMenu={(e) => onTileContextMenu(v.id, e)}
@@ -845,6 +865,25 @@ export function InternetView({
             setEpisodePicker(null);
           }}
         />
+      )}
+      {inAppPlayer && (
+        // Full-screen over the results, with its own close button: mobile
+        // has no separate window to put a player in, and leaving the app
+        // for the YouTube app loses the search you were in the middle of.
+        <div className="inapp-player">
+          <div className="inapp-player-bar">
+            <button className="inapp-player-close" onClick={() => setInAppPlayer(null)} aria-label="Close player">
+              ✕
+            </button>
+            <span className="inapp-player-title">{inAppPlayer.title}</span>
+          </div>
+          <iframe
+            className="inapp-player-frame"
+            src={inAppPlayer.url}
+            allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+            allowFullScreen
+          />
+        </div>
       )}
     </div>
   );

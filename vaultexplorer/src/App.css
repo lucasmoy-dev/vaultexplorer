@@ -5191,3 +5191,50 @@ input[type="range"]::-webkit-slider-thumb {
   outline: none;
   user-select: text;
 }
+
+/* In-app YouTube player (mobile) -- see InternetView's inAppPlayer. Covers
+   the results rather than replacing the view, so closing it lands back on
+   the same search instead of a reloaded one. */
+.inapp-player {
+  position: fixed;
+  inset: 0;
+  z-index: 2400;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+.inapp-player-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 10px calc(0px + env(safe-area-inset-top, 0px));
+  background: rgba(20, 20, 22, 0.95);
+}
+.inapp-player-close {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+}
+.inapp-player-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inapp-player-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #000;
+}

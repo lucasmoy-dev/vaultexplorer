@@ -1773,7 +1773,6 @@ pub fn run() {
             open_player_window,
             #[cfg(desktop)]
             open_media_window,
-            #[cfg(desktop)]
             ytembed::youtube_embed_url,
             #[cfg(desktop)]
             terminal::open_terminal,
