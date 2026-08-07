@@ -310,13 +310,15 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
         onClick={togglePlay}
         onError={() => {
           const err = videoRef.current?.error;
-          // The src is part of the message on purpose: a media element
-          // reports the same code 4 for "empty src" as for "codec I can't
-          // handle", and telling those apart from a screenshot is
-          // otherwise impossible.
+          // "no source" is called out separately: a media element reports
+          // the same code 4 for an empty src as for a format it can't
+          // decode, and those need different fixes.
           setPlayError(
-            (err ? `Media error ${err.code}: ${err.message || "no detail"}` : "Media error") +
-              ` — src: ${resolvedSrc || "(empty)"}`
+            !resolvedSrc
+              ? "Can't play this file: no source resolved."
+              : err
+                ? `Can't play this file (media error ${err.code}${err.message ? `: ${err.message}` : ""}).`
+                : "Can't play this file."
           );
         }}
         playsInline
