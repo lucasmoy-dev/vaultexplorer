@@ -193,7 +193,36 @@ pub fn remove_registration() {
     let _ = std::fs::remove_file(service_file_path());
 }
 
+/// `replace_existing_names` only works if the current owner *allowed*
+/// replacement, and Nautilus (running as `nautilus --gapplication-service`
+/// from login) does not -- so requesting the name quietly loses and every
+/// "Show in Files" keeps landing in Nautilus, which is exactly the
+/// reported behaviour. Asking that instance to quit frees the name; it is
+/// a plain `nautilus -q` (the documented way to end the service, not a
+/// kill) and it only happens when the current owner really is Nautilus,
+/// so nothing else on the bus is ever touched.
+async fn yield_name_from_nautilus(conn: &zbus::Connection) {
+    let dbus = zbus::fdo::DBusProxy::new(conn).await;
+    let Ok(dbus) = dbus else { return };
+    let name = match zbus::names::BusName::try_from(FM_BUS_NAME) {
+        Ok(n) => n,
+        Err(_) => return,
+    };
+    let Ok(pid) = dbus.get_connection_unix_process_id(name).await else { return };
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    if comm.trim() != "nautilus" {
+        return;
+    }
+    let _ = std::process::Command::new("nautilus").arg("-q").status();
+}
+
 pub async fn start_service(app: AppHandle) -> Result<zbus::Connection, String> {
+    // A first, name-less connection just to see who holds it. Doing this
+    // before the real request keeps the common case (nobody else has it)
+    // to a single round-trip.
+    if let Ok(probe) = zbus::Connection::session().await {
+        yield_name_from_nautilus(&probe).await;
+    }
     let iface = FileManager1Iface { app };
     zbus::connection::Builder::session()
         .str_err()?
