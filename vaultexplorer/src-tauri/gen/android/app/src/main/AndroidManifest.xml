@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Scanning the other device's pairing QR (Sync > Devices). Optional:
+         the camera is only opened when that scanner is deliberately
+         started, and the device id can still be typed by hand. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- "All files access", needed for raw filesystem browsing of shared
          storage (Download/Pictures/DCIM), same as any general-purpose file
          manager on Android 11+. Not requestable via a normal runtime

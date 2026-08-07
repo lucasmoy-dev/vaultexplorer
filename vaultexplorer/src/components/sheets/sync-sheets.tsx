@@ -581,6 +581,76 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
+
+// Reads the other device's pairing QR with the camera. No library and no
+// new dependency: Android's WebView is Chromium, which ships the Barcode
+// Detection API, and the QR this app *shows* is the same
+// `vaultexplorer://add-device?id=…` link this parses back out. Falls back
+// to the "type the id" field it sits next to when the API isn't there
+// (older WebViews, and desktop Chromium builds without it).
+function QrScanner({ onFound, onClose }: { onFound: (id: string, name: string) => void; onClose: () => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const Detector = (window as unknown as { BarcodeDetector?: new (o: { formats: string[] }) => { detect: (s: CanvasImageSource) => Promise<{ rawValue: string }[]> } }).BarcodeDetector;
+    if (!Detector) {
+      setError("This device can't scan QR codes — type the id instead.");
+      return;
+    }
+    let stream: MediaStream | null = null;
+    let raf = 0;
+    let stopped = false;
+    const detector = new Detector({ formats: ["qr_code"] });
+    (async () => {
+      try {
+        // The back camera is the one pointed at the other screen.
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (stopped) return;
+        const video = videoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        await video.play();
+        const tick = async () => {
+          if (stopped) return;
+          try {
+            for (const code of await detector.detect(video)) {
+              const parsed = parseAddDeviceLink(code.rawValue);
+              if (parsed) {
+                onFound(parsed.id, parsed.name);
+                return;
+              }
+            }
+          } catch {
+            // A frame that can't be decoded is the normal case while
+            // aiming; keep looking rather than giving up.
+          }
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+      } catch (e) {
+        setError(String(e));
+      }
+    })();
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      stream?.getTracks().forEach((t) => t.stop());
+    };
+  }, [onFound]);
+
+  return (
+    <div className="qr-scanner">
+      <video ref={videoRef} className="qr-scanner-video" playsInline muted />
+      <div className="qr-scanner-frame" aria-hidden="true" />
+      <p className="qr-scanner-hint">{error || "Point the camera at the other device's QR code"}</p>
+      <button className="btn-plain" onClick={onClose}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 function buildAddDeviceLink(id: string): string {
   const params = new URLSearchParams({ id });
   return `vaultexplorer://add-device?${params.toString()}`;
@@ -615,6 +685,7 @@ export function SyncthingSheet({ folderA, onClose }: { folderA: string; onClose:
   const [pendingDevices, setPendingDevices] = useState<import("../../api").SyncthingPendingDevice[]>([]);
   const [pendingFolders, setPendingFolders] = useState<import("../../api").SyncthingPendingFolder[]>([]);
   const [deviceIdInput, setDeviceIdInput] = useState("");
+  const [scanning, setScanning] = useState(false);
   const [deviceNameInput, setDeviceNameInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -824,6 +895,23 @@ export function SyncthingSheet({ folderA, onClose }: { folderA: string; onClose:
             ))}
 
             <label className="field-label">Add a device</label>
+            {scanning ? (
+              <QrScanner
+                onFound={(id, name) => {
+                  setScanning(false);
+                  setDeviceIdInput(id);
+                  setDeviceNameInput(name);
+                }}
+                onClose={() => setScanning(false)}
+              />
+            ) : (
+              // The other half of the QR that was already being *shown*:
+              // pointing the camera at it beats copying a 63-character
+              // device id across two machines by hand.
+              <button className="btn-plain" onClick={() => setScanning(true)}>
+                Scan the other device's QR
+              </button>
+            )}
             <input
               placeholder="Device ID (from the other side)"
               value={deviceIdInput}
