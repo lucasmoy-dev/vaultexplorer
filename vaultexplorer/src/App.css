@@ -5544,3 +5544,44 @@ input[type="range"]::-webkit-slider-thumb {
   text-align: center;
   color: var(--text-2);
 }
+
+/* Internet on mobile: the search bar was drawn over the bottom tab bar and
+   the filter row sat above the results instead of with the field it
+   belongs to. Search moves to the bottom (where the thumb is), clear of
+   the tab bar, and the filters open directly under it. */
+.is-mobile .internet-view {
+  display: flex;
+  flex-direction: column;
+}
+.is-mobile .internet-search-bar {
+  order: 3;
+  border-bottom: none;
+  border-top: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+  background: var(--toolbar-bg);
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+}
+.is-mobile .internet-filters {
+  order: 4;
+  border-bottom: none;
+  border-top: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
+  padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+}
+.is-mobile .internet-results-wrap {
+  order: 2;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Actions sat in the bottom-right corner, under the thumb's path to the
+   tab bar. It moves above the tabs and to the left, where it is visible
+   without being in the way of anything you tap. */
+.actions-indicator.floating {
+  right: auto;
+  left: 14px;
+  bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+}
+.actions-indicator.floating .actions-popover {
+  right: auto;
+  left: 0;
+}

@@ -349,3 +349,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* On a phone the 360px card floated in the middle of a black screen with
+   its controls crammed inside it -- the window *is* the player there, so
+   the card fills it and the artwork gets the room it was missing. */
+@media (max-width: 700px) {
+  .audio-stage {
+    padding: 0;
+    align-items: stretch;
+  }
+  .audio-stage-card {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    justify-content: center;
+    gap: 4px;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 24px 20px calc(28px + env(safe-area-inset-bottom, 0px));
+  }
+  .audio-art,
+  .audio-art-fallback {
+    width: min(70vw, 300px);
+    height: min(70vw, 300px);
+  }
+}
