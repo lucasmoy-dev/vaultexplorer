@@ -1,10 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Entry, api, joinPath, parentPath } from "../api";
 import { kindOf, FileIcon } from "../icons";
-import { renderMarkdownToHtml, serializePreviewToMarkdown } from "../markdown";
+import { highlightCode, renderMarkdownToHtml, serializePreviewToMarkdown } from "../markdown";
 import { useAutoSaveText } from "../hooks/useAutoSaveText";
 import { useThumbnail } from "../hooks/useThumbnail";
 import { EditableFileName, PreviewColumn } from "./PreviewColumn";
+
+// Extensions worth colouring. Deliberately a list rather than "anything
+// that isn't prose": highlighting a .txt shopping list would be noise, and
+// the highlighter is a small hand-rolled one (see markdown.ts), not a
+// grammar per language -- it earns its keep on source files and nowhere
+// else.
+const CODE_EXT_RE =
+  /\.(rs|ts|tsx|js|jsx|mjs|cjs|py|go|c|h|cpp|hpp|cc|java|kt|rb|php|swift|sh|bash|zsh|sql|json|jsonc|toml|yaml|yml|css|scss|html|xml|ini|conf)$/i;
 
 export function TextEditorPane({
   entry,
@@ -18,21 +26,45 @@ export function TextEditorPane({
   onRename?: (newName: string) => void;
 }) {
   const { content, error, saving, setContent } = useAutoSaveText(fullPath, inVault);
+  const ext = entry.name.slice(entry.name.lastIndexOf(".") + 1).toLowerCase();
+  const isCode = CODE_EXT_RE.test(entry.name);
+  // Source files open coloured (reading is the common case) but stay one
+  // click from the plain textarea, since the highlighted view is rendered
+  // HTML and can't be typed into.
+  const [reading, setReading] = useState(isCode);
+  const highlighted = useMemo(
+    () => (isCode && reading && content !== null ? highlightCode(content, ext) : ""),
+    [isCode, reading, content, ext]
+  );
   return (
     <div className="preview-pane text-editor-pane">
       <div className="preview-name-row">
         <EditableFileName name={entry.name} onRename={onRename} />
         {saving && <span className="saving-hint"> — saving…</span>}
+        {isCode && (
+          <button className="code-mode-btn" onClick={() => setReading((r) => !r)}>
+            {reading ? "Edit" : "Highlight"}
+          </button>
+        )}
       </div>
       {error && <p className="error">{error}</p>}
-      {content !== null && (
-        <textarea
-          className="text-editor-area"
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          spellCheck={false}
-        />
-      )}
+      {content !== null &&
+        (isCode && reading ? (
+          <pre
+            className="md-code text-editor-code"
+            data-md-lang={ext}
+            onDoubleClick={() => setReading(false)}
+            title="Double-click to edit"
+            dangerouslySetInnerHTML={{ __html: `<code>${highlighted}</code>` }}
+          />
+        ) : (
+          <textarea
+            className="text-editor-area"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            spellCheck={false}
+          />
+        ))}
     </div>
   );
 }
@@ -481,6 +513,159 @@ export function MarkdownEditorPane({
     onPreviewInput();
   }
 
+  // ---- find in file (Ctrl/Cmd+F) --------------------------------------
+  // Editing a long note without a way to jump to a word means scrolling
+  // and reading -- the one thing every other text surface on the machine
+  // can do. Works on the raw text (selecting each hit in the textarea) and
+  // on the rendered view (scrolling the match into view), so it is not
+  // tied to which mode happens to be open.
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findIndex, setFindIndex] = useState(0);
+  const findInputRef = useRef<HTMLInputElement>(null);
+
+  const findHits = useMemo(() => {
+    const text = content ?? "";
+    if (!findQuery) return [] as number[];
+    const hits: number[] = [];
+    const needle = findQuery.toLowerCase();
+    const hay = text.toLowerCase();
+    let from = 0;
+    // Overlapping matches are not what "next result" means to anyone, so
+    // this steps past each hit rather than by one character.
+    for (;;) {
+      const at = hay.indexOf(needle, from);
+      if (at === -1) break;
+      hits.push(at);
+      from = at + needle.length;
+    }
+    return hits;
+  }, [content, findQuery]);
+
+  function gotoHit(index: number) {
+    if (findHits.length === 0) return;
+    const wrapped = (index + findHits.length) % findHits.length;
+    setFindIndex(wrapped);
+    const at = findHits[wrapped];
+    const el = textareaRef.current;
+    if (el) {
+      el.focus();
+      el.setSelectionRange(at, at + findQuery.length);
+      // Scroll the selection into view: a textarea won't do it on its own
+      // when the selection is set programmatically. Measuring by line is
+      // close enough and costs nothing.
+      const line = (content ?? "").slice(0, at).split("\n").length - 1;
+      const lineHeight = parseFloat(getComputedStyle(el).lineHeight || "18") || 18;
+      el.scrollTop = Math.max(0, line * lineHeight - el.clientHeight / 2);
+      return;
+    }
+    // Rendered mode: walk the text nodes for the same offset-th match.
+    const root = previewRef.current;
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let seen = 0;
+    while (walker.nextNode()) {
+      const node = walker.currentNode as Text;
+      const idx = node.data.toLowerCase().indexOf(findQuery.toLowerCase());
+      if (idx === -1) continue;
+      if (seen === wrapped) {
+        const range = document.createRange();
+        range.setStart(node, idx);
+        range.setEnd(node, idx + findQuery.length);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        (node.parentElement as HTMLElement | null)?.scrollIntoView({ block: "center", behavior: "smooth" });
+        return;
+      }
+      seen++;
+    }
+  }
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        e.stopPropagation();
+        setFindOpen(true);
+        requestAnimationFrame(() => findInputRef.current?.select());
+      } else if (e.key === "Escape" && findOpen) {
+        setFindOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [findOpen]);
+
+  // ---- raw-text list behaviour ---------------------------------------
+  // The rendered editor has had checklist keyboard handling for a while,
+  // but the plain-text one had none: typing "- [ ] milk" and pressing
+  // Enter dropped you on a bare line, so every item had to be typed with
+  // its marker by hand. Keep (and every notes app since) continues the
+  // list for you, ends it when you press Enter on an empty item, and
+  // indents with Tab -- that is what this brings to the textarea.
+  const LIST_RE = /^(\s*)(?:([-*+])\s+(?:\[( |x|X)\]\s+)?|(\d+)\.\s+)/;
+
+  function replaceRange(start: number, end: number, text: string, caret: number) {
+    const text0 = content ?? "";
+    const next = text0.slice(0, start) + text + text0.slice(end);
+    setContent(next);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) el.setSelectionRange(caret, caret);
+    });
+  }
+
+  function onTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    const el = e.currentTarget;
+    const text = content ?? "";
+    const { selectionStart: start, selectionEnd: end } = el;
+    const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = text.indexOf("\n", start) === -1 ? text.length : text.indexOf("\n", start);
+    const line = text.slice(lineStart, lineEnd);
+    const m = LIST_RE.exec(line);
+
+    if (e.key === "Enter" && !e.shiftKey && m && start === end) {
+      const marker = m[0];
+      // Enter on an item with no text ends the list instead of adding
+      // another empty one -- the universal "I'm done" gesture.
+      if (line.trim() === marker.trim()) {
+        e.preventDefault();
+        replaceRange(lineStart, lineEnd, m[1], lineStart + m[1].length);
+        return;
+      }
+      e.preventDefault();
+      // A continued checkbox always starts unchecked, whatever the line
+      // above was: copying "[x]" onto a brand-new item would mark work
+      // done that nobody has done.
+      const next = m[4]
+        ? `${m[1]}${Number(m[4]) + 1}. `
+        : `${m[1]}${m[2]}${m[3] !== undefined ? " [ ]" : ""} `;
+      replaceRange(start, end, "\n" + next, start + 1 + next.length);
+      return;
+    }
+
+    if (e.key === "Tab" && m) {
+      e.preventDefault();
+      if (e.shiftKey) {
+        const dedented = m[1].slice(0, Math.max(0, m[1].length - 2));
+        replaceRange(lineStart, lineStart + m[1].length, dedented, Math.max(lineStart, start - (m[1].length - dedented.length)));
+      } else {
+        replaceRange(lineStart, lineStart, "  ", start + 2);
+      }
+      return;
+    }
+
+    // Ctrl/Cmd+Enter ticks the current item off without reaching for the
+    // mouse or retyping the marker.
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && m && m[3] !== undefined) {
+      e.preventDefault();
+      const toggled = line.replace(/\[( |x|X)\]/, m[3] === " " ? "[x]" : "[ ]");
+      replaceRange(lineStart, lineEnd, toggled, start);
+      return;
+    }
+  }
+
   function onPreviewKeyDown(e: React.KeyboardEvent) {
     const li = findTaskLi(window.getSelection()?.anchorNode ?? null);
     if (li) {
@@ -527,6 +712,21 @@ export function MarkdownEditorPane({
     const checked = li.getAttribute("data-checked") === "true";
     li.setAttribute("data-checked", String(!checked));
     li.classList.toggle("done", !checked);
+    // Ticked items sink to the bottom of their own list, the way Keep
+    // does it: what's left to do stays together at the top instead of
+    // being interleaved with what's already finished. Unticking pulls the
+    // item back up above the done ones, so undo lands where you expect.
+    const ul = li.parentElement;
+    if (ul) {
+      const siblings = [...ul.children].filter((n): n is HTMLLIElement => n.matches("li.md-task"));
+      if (!checked) {
+        ul.appendChild(li);
+      } else {
+        const firstDone = siblings.find((n) => n !== li && n.getAttribute("data-checked") === "true");
+        if (firstDone) ul.insertBefore(li, firstDone);
+        else ul.appendChild(li);
+      }
+    }
     onPreviewInput();
   }
 
@@ -793,6 +993,39 @@ export function MarkdownEditorPane({
               🖼
             </button>
           </div>
+          {findOpen && (
+            <div className="find-bar">
+              <input
+                ref={findInputRef}
+                className="find-input"
+                value={findQuery}
+                placeholder="Find in file"
+                onChange={(e) => {
+                  setFindQuery(e.target.value);
+                  setFindIndex(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    gotoHit(e.shiftKey ? findIndex - 1 : findIndex + (findHits.length && findQuery ? 1 : 0));
+                  }
+                  if (e.key === "Escape") setFindOpen(false);
+                }}
+              />
+              <span className="find-count">
+                {findQuery ? (findHits.length ? `${findIndex + 1}/${findHits.length}` : "0/0") : ""}
+              </span>
+              <button className="find-btn" onClick={() => gotoHit(findIndex - 1)} disabled={!findHits.length} aria-label="Previous match">
+                ‹
+              </button>
+              <button className="find-btn" onClick={() => gotoHit(findIndex + 1)} disabled={!findHits.length} aria-label="Next match">
+                ›
+              </button>
+              <button className="find-btn" onClick={() => setFindOpen(false)} aria-label="Close find">
+                ✕
+              </button>
+            </div>
+          )}
           {mode === "preview" ? (
             <div
               ref={previewRef}
@@ -814,6 +1047,7 @@ export function MarkdownEditorPane({
               className="text-editor-area"
               value={content}
               onChange={(e) => setContent(e.target.value)}
+              onKeyDown={onTextareaKeyDown}
               spellCheck={false}
             />
           )}

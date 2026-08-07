@@ -281,6 +281,16 @@ async fn run_picker(
             // window operation, which the WM is far more willing to honor.
             let _ = window.set_focus();
             let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+            // Some window managers still leave it behind the requesting
+            // app ("sometimes it doesn't focus"). Briefly pinning it on
+            // top forces the raise, and it is dropped again a moment later
+            // so the picker doesn't sit over everything while in use.
+            let _ = window.set_always_on_top(true);
+            let top_window = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(700));
+                let _ = top_window.set_always_on_top(false);
+            });
         }
         result
     })
@@ -583,6 +593,38 @@ pub fn portal_is_enabled() -> bool {
 /// silently doing nothing until the next logout/login -- confirmed via
 /// `systemctl --user status xdg-desktop-portal.service` showing it can
 /// run for days uninterrupted otherwise.
+/// Registering the backend only decides *which* portal serves a request --
+/// it does not make apps ask a portal in the first place. Outside a
+/// sandbox, GTK and Qt show their own built-in dialogs unless told
+/// otherwise, which is why "Save as" in ordinary apps kept bypassing this
+/// one. These two variables are the documented switches for that, and
+/// `environment.d` is the session-wide place for them.
+///
+/// Written only by the explicit "use VaultExplorer as the system file
+/// picker" toggle, and removed when it is turned off. Takes effect on the
+/// next login, since that is when the session reads environment.d.
+fn env_file_path() -> std::path::PathBuf {
+    std::path::Path::new(&std::env::var("HOME").unwrap_or_default())
+        .join(".config/environment.d/95-vaultexplorer-portal.conf")
+}
+
+fn write_env_file() -> Result<(), String> {
+    let path = env_file_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).str_err()?;
+    }
+    std::fs::write(
+        &path,
+        "# Written by VaultExplorer's \"system file picker\" setting.\n\
+         # Makes GTK and Qt apps ask the desktop portal for file dialogs\n\
+         # instead of drawing their own. Delete this file (or turn the\n\
+         # setting off) to go back to the toolkit dialogs.\n\
+         GTK_USE_PORTAL=1\n\
+         QT_QPA_PLATFORMTHEME=xdgdesktopportal\n",
+    )
+    .str_err()
+}
+
 #[tauri::command]
 pub async fn portal_enable(
     app: tauri::AppHandle,
@@ -609,6 +651,9 @@ pub async fn portal_enable(
         let conn = crate::filemanager1::start_service(app).await?;
         *fm_state.connection.lock_safe() = Some(conn);
     }
+    // Best-effort: a failure here only means GTK/Qt apps keep using their
+    // own dialogs, which is exactly the state this toggle was already in.
+    let _ = write_env_file();
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "restart", "xdg-desktop-portal.service"])
         .status();
@@ -621,6 +666,7 @@ pub async fn portal_enable(
 #[tauri::command]
 pub fn portal_disable() -> Result<(), String> {
     crate::filemanager1::remove_registration();
+    let _ = std::fs::remove_file(env_file_path());
     remove_registration()
 }
 

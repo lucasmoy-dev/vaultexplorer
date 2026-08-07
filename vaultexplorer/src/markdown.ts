@@ -211,7 +211,7 @@ function highlightGeneric(code: string, lang: string): string {
   return out;
 }
 
-function highlightCode(code: string, lang: string): string {
+export function highlightCode(code: string, lang: string): string {
   const l = lang.toLowerCase();
   if (l === "json" || l === "jsonc" || (!l && /^\s*[[{]/.test(code))) return highlightJson(code);
   return highlightGeneric(code, l);
