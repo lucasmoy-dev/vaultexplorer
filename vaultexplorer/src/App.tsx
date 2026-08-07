@@ -3456,6 +3456,56 @@ function Explorer({ home }: { home: string }) {
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", dragPaths.current.join("\n"));
   }
+  // ---- touch drag-to-folder (mobile) --------------------------------
+  // Mobile has no HTML5 drag: `draggable` is off there because it swallows
+  // the long-press that opens the context menu. So moving files into a
+  // folder had no gesture at all -- reported directly. This adds one that
+  // can't collide with the existing gestures: while *selection mode* is
+  // active (which is itself entered by long-press), pressing a selected
+  // tile and sliding onto a folder moves the selection into it. Outside
+  // selection mode nothing here runs.
+  const touchDrag = useRef<{ names: string[]; startX: number; startY: number; active: boolean } | null>(null);
+  function onEntriesTouchStart(e: React.TouchEvent) {
+    if (!mobile || !selectionMode || selected.size === 0) return;
+    const t = e.touches[0];
+    if (!t) return;
+    const tile = (t.target as HTMLElement).closest<HTMLElement>("[data-name]");
+    const name = tile?.dataset.name;
+    // Only a *selected* tile starts a move -- pressing an unselected one
+    // still means "add this to the selection".
+    if (!name || !selected.has(name)) return;
+    touchDrag.current = { names: [...selected], startX: t.clientX, startY: t.clientY, active: false };
+  }
+  function onEntriesTouchMove(e: React.TouchEvent) {
+    const drag = touchDrag.current;
+    const t = e.touches[0];
+    if (!drag || !t) return;
+    if (!drag.active) {
+      // Same threshold idea as the desktop marquee: a tap that drifts a
+      // pixel or two is still a tap.
+      if (Math.abs(t.clientX - drag.startX) < 12 && Math.abs(t.clientY - drag.startY) < 12) return;
+      drag.active = true;
+    }
+    // Scrolling the list while carrying files would fight the gesture.
+    e.preventDefault();
+    const over = document.elementFromPoint(t.clientX, t.clientY) as HTMLElement | null;
+    const folder = over?.closest<HTMLElement>("[data-name]")?.dataset.name;
+    const target = folder && entries.find((en) => en.name === folder && en.is_dir);
+    setDropTarget(target ? "entry:" + joinPath(curDir, target.name) : null);
+  }
+  function onEntriesTouchEnd(e: React.TouchEvent) {
+    const drag = touchDrag.current;
+    touchDrag.current = null;
+    const key = dropTarget;
+    setDropTarget(null);
+    if (!drag?.active || !key?.startsWith("entry:")) return;
+    const destDir = key.slice("entry:".length);
+    if (drag.names.some((n) => joinPath(curDir, n) === destDir)) return;
+    e.preventDefault();
+    dragPaths.current = drag.names.map((n) => joinPath(curDir, n));
+    dropInto(destDir);
+  }
+
   async function dropInto(destDir: string) {
     const srcs = dragPaths.current;
     dragPaths.current = [];
@@ -4956,6 +5006,9 @@ function Explorer({ home }: { home: string }) {
         )}
         <div
           className={`entries ${entryView} ${view === "listPreview" ? "compact" : ""}`}
+          onTouchStart={onEntriesTouchStart}
+          onTouchMove={onEntriesTouchMove}
+          onTouchEnd={onEntriesTouchEnd}
           style={
             view === "icon"
               ? ({

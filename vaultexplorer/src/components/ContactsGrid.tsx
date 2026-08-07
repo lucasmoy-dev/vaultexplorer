@@ -300,18 +300,23 @@ export function ContactsGrid({
   useEffect(() => {
     if (!marquee) return;
     const origin = { x: marquee.x0, y: marquee.y0 };
-    const rects = Array.from(listRef.current?.querySelectorAll<HTMLElement>(".contact-entry") ?? []).map((el) => ({
-      name: el.dataset.name,
-      rect: el.getBoundingClientRect(),
-    }));
+    let dragged = false;
     const move = (e: MouseEvent) => {
+      // Same threshold the Internet results use: without it, the couple of
+      // pixels of travel in an ordinary click rewrote the selection.
+      if (!dragged && Math.abs(e.clientX - origin.x) < 4 && Math.abs(e.clientY - origin.y) < 4) return;
+      dragged = true;
       setMarquee((m) => (m ? { ...m, x1: e.clientX, y1: e.clientY } : m));
       const left = Math.min(origin.x, e.clientX);
       const right = Math.max(origin.x, e.clientX);
       const top = Math.min(origin.y, e.clientY);
       const bottom = Math.max(origin.y, e.clientY);
       const hit = new Set<string>();
-      for (const { name, rect: r } of rects) {
+      // Re-measured per move: this list scrolls, and rectangles captured
+      // when the drag started point at whatever used to be there.
+      for (const el of listRef.current?.querySelectorAll<HTMLElement>(".contact-entry") ?? []) {
+        const r = el.getBoundingClientRect();
+        const name = el.dataset.name;
         if (name && r.left < right && r.right > left && r.top < bottom && r.bottom > top) hit.add(name);
       }
       setSelected(hit);

@@ -117,6 +117,8 @@ export function InternetView({
   const resultsRef = useRef<HTMLDivElement>(null);
   const arrowAnchorRef = useRef<string | null>(null);
   const arrowFocusRef = useRef<string | null>(null);
+  // Whether the in-flight marquee extends the existing selection.
+  const additiveRef = useRef(false);
   // Drag-to-select rectangle -- same technique as the real file grid's
   // own marquee (App.tsx's onContentMouseDown), a self-contained local
   // copy since this grid's items/container are entirely separate from
@@ -420,24 +422,36 @@ export function InternetView({
   function onResultsMouseDown(e: React.MouseEvent) {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest(".entry")) return;
-    if (!(e.metaKey || e.ctrlKey || e.shiftKey)) setSelected(new Set());
+    additiveRef.current = e.metaKey || e.ctrlKey || e.shiftKey;
+    if (!additiveRef.current) setSelected(new Set());
     setMarquee({ x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY });
   }
   useEffect(() => {
     if (!marquee) return;
     const origin = { x: marquee.x0, y: marquee.y0 };
-    const rects = Array.from(resultsRef.current?.querySelectorAll<HTMLElement>(".entry.icon") ?? []).map((el) => ({
-      key: el.dataset.key,
-      rect: el.getBoundingClientRect(),
-    }));
+    // Selection the marquee started from: a ctrl/shift drag extends it
+    // instead of replacing it, same as the file grid.
+    const base = additiveRef.current ? new Set(selected) : new Set<string>();
+    let dragged = false;
     const move = (e: MouseEvent) => {
+      // A click is never pixel-perfect. Without a threshold, the 1-2px of
+      // travel between mousedown and mouseup was enough to run this and
+      // rewrite the selection -- which is the "selection keeps changing on
+      // its own" behaviour.
+      if (!dragged && Math.abs(e.clientX - origin.x) < 4 && Math.abs(e.clientY - origin.y) < 4) return;
+      dragged = true;
       setMarquee((m) => (m ? { ...m, x1: e.clientX, y1: e.clientY } : m));
       const left = Math.min(origin.x, e.clientX);
       const right = Math.max(origin.x, e.clientX);
       const top = Math.min(origin.y, e.clientY);
       const bottom = Math.max(origin.y, e.clientY);
-      const hit = new Set<string>();
-      for (const { key, rect: r } of rects) {
+      const hit = new Set(base);
+      // Measured per move, not captured once when the drag began: these
+      // results scroll, and stale rectangles select whatever *used* to be
+      // under the pointer.
+      for (const el of resultsRef.current?.querySelectorAll<HTMLElement>(".entry.icon") ?? []) {
+        const r = el.getBoundingClientRect();
+        const key = el.dataset.key;
         if (key && r.left < right && r.right > left && r.top < bottom && r.bottom > top) hit.add(key);
       }
       setSelected(hit);
