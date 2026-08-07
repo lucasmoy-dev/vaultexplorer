@@ -182,7 +182,11 @@ export function InternetView({
   // (see resolve_provider_playable's own doc comment). Only YouTube is
   // confirmed to actually play in-app.
   function canPlayInApp(): boolean {
-    return !mobile && mode === "videos" && provider === "youtube";
+    // Every provider now, not just YouTube: the player window falls back
+    // to a yt-dlp-resolved stream URL when a provider has no embed this
+    // app can drive (see resolveProviderSource in PlayerWindow), and it
+    // still surfaces the provider's own explanation if that fails too.
+    return !mobile && mode === "videos";
   }
 
   function openResult(key: string) {

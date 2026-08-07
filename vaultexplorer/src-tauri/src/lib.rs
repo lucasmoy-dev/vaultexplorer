@@ -1786,6 +1786,8 @@ pub fn run() {
             #[cfg(desktop)]
             ytdl::download_video,
             #[cfg(desktop)]
+            ytdl::resolve_stream_url,
+            #[cfg(desktop)]
             open_player_window,
             #[cfg(desktop)]
             open_media_window,

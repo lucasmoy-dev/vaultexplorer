@@ -27,6 +27,27 @@ export interface PlayerWindowProps {
 // timeout so both players feel like the same player.
 const CHROME_HIDE_MS = 2600;
 
+// Providers other than YouTube have no embed this app can drive: their
+// players need JavaScript the scraper can't run, or (xHamster) simply
+// never start under WebKitGTK. Rather than bouncing the user out to a
+// browser, ask yt-dlp for the real stream URL -- a plain media URL is
+// something a <video> element plays directly. The scraper's own
+// resolve_provider_playable is still tried first, since a provider that
+// *does* have a usable embed shouldn't pay for spawning a process.
+async function resolveProviderSource(kind: string, key: string): Promise<PlayableSource> {
+  try {
+    return await api.resolveProviderPlayable(kind, key);
+  } catch (embedError) {
+    try {
+      return { kind: "video", url: await api.resolveStreamUrl(key) };
+    } catch {
+      // Report the provider's own explanation, not yt-dlp's -- it says
+      // what is actually wrong with this site.
+      throw embedError;
+    }
+  }
+}
+
 export function PlayerWindow({ kind, items, startIndex }: PlayerWindowProps): React.JSX.Element {
   const [index, setIndex] = useState(Math.min(Math.max(startIndex, 0), Math.max(items.length - 1, 0)));
   const [source, setSource] = useState<PlayableSource | null>(null);
@@ -59,7 +80,7 @@ export function PlayerWindow({ kind, items, startIndex }: PlayerWindowProps): Re
                 // `http://127.0.0.1:<port>` origin.
                 url: await api.youtubeEmbedUrl(current.key),
               }
-            : await api.resolveProviderPlayable(kind, current.key);
+            : await resolveProviderSource(kind, current.key);
         if (!cancelled) setSource(src);
       } catch (e) {
         if (!cancelled) setError(String(e));

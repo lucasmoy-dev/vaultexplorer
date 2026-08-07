@@ -173,6 +173,7 @@ export const api = {
   youtubeEmbedUrl: (videoId: string) => invoke<string>("youtube_embed_url", { videoId }),
   mediaUrl: (path: string) => invoke<string>("media_url", { path }),
   internetRoot: () => invoke<string>("internet_root"),
+  resolveStreamUrl: (pageUrl: string) => invoke<string>("resolve_stream_url", { pageUrl }),
   fsTrashMany: (paths: string[], channel: Channel<ProgressEvent>) =>
     invoke<void>("fs_trash_many", { paths, channel }),
   downloadVideo: (pageUrl: string, audioOnly: boolean, channel: Channel<ProgressEvent>) =>

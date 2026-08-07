@@ -53,6 +53,46 @@ fn parse_percent(line: &str) -> Option<u64> {
     Some((value.clamp(0.0, 100.0) * 10.0) as u64)
 }
 
+/// Resolves a watch page to a directly-playable stream URL.
+///
+/// This is what makes providers other than YouTube play in-app at all:
+/// their embed players either need JavaScript this app can't run or
+/// simply never start under WebKitGTK, so the honest fallback used to be
+/// "open it in your browser". yt-dlp already knows how to extract the real
+/// stream for those sites, and a plain URL is something a `<video>`
+/// element can play directly.
+///
+/// `-f best[ext=mp4]/best` prefers a single muxed file: a separate
+/// video+audio pair would need a muxer the element doesn't have.
+#[tauri::command]
+pub async fn resolve_stream_url(page_url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ytdlp = which_ytdlp().ok_or(
+            "yt-dlp isn't installed. Install it (e.g. into ~/.local/bin) to play this in the app.",
+        )?;
+        let out = Command::new(&ytdlp)
+            .arg("--no-playlist")
+            .arg("-f")
+            .arg("best[ext=mp4]/best")
+            .arg("-g")
+            .arg(&page_url)
+            .output()
+            .str_err()?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(stderr.lines().last().unwrap_or("yt-dlp couldn't resolve this page").to_string());
+        }
+        let url = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find(|l| l.starts_with("http"))
+            .map(|l| l.to_string())
+            .ok_or("yt-dlp returned no stream URL")?;
+        Ok(url)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn download_video(
     page_url: String,
