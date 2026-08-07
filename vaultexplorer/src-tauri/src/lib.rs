@@ -42,6 +42,7 @@ mod syncthing;
 mod verify;
 mod terminal;
 mod mediaserver;
+mod ytstreams;
 mod webfind;
 #[cfg(desktop)]
 mod ytdl;
@@ -1785,6 +1786,7 @@ pub fn run() {
             webfind::list_animeflv_episodes,
             webfind::download_web_result,
             mediaserver::media_url,
+            ytstreams::youtube_streams,
             internet_root,
             #[cfg(desktop)]
             ytdl::download_video,

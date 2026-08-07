@@ -27,6 +27,10 @@ zip = { version = "2", default-features = false, features = ["deflate", "aes-cry
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "multipart", "rustls-tls"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "net", "macros"] }
 tiny_http = "0.12"
+# YouTube stream resolution that works without yt-dlp (which is Python and
+# cannot run on Android). Used on mobile for Download; desktop still
+# prefers yt-dlp when it is installed.
+rustypipe = { version = "0.11", default-features = false, features = ["rustls-tls-webpki-roots"] }
 keyring = { version = "4" }
 sha2 = "0.10"
 base64 = "0.22"
@@ -77,5 +81,11 @@ x11rb = "0.13"
 # granting/checking it means calling the plain Android SDK (Environment,
 # Settings, Intent) directly over JNI via the webview's jni_handle().
 [target.'cfg(target_os = "android")'.dependencies]
+# rustypipe pulls in QuickJS (rquickjs) to deobfuscate stream URLs, and
+# rquickjs ships no pre-generated bindings for aarch64-linux-android --
+# `bindgen` makes it generate them against the NDK headers at build time.
+# Declared here rather than used directly: features are additive, so this
+# turns the feature on for rustypipe's own copy.
+rquickjs = { version = "0.9", features = ["bindgen"] }
 jni = "0.21"
 
