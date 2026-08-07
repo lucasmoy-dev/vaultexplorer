@@ -1439,37 +1439,67 @@ select {
   font-size: 10px;
   flex-shrink: 0;
 }
-/* Folder preview (listPreview view) */
-.folder-preview-list {
-  margin-top: 8px;
+/* Folder preview (listPreview view) -- a thumbnail grid rather than a
+   list of filenames. A folder of screenshots is thirty names that differ
+   only in a timestamp, and stacked as rows they read as one solid block
+   that says nothing about the contents. */
+.folder-preview-grid {
+  margin-top: 10px;
   overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 12px 10px;
+  align-content: start;
+  padding-bottom: 8px;
+}
+.folder-preview-tile {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  cursor: default;
+  transition: background 0.12s ease;
 }
-.folder-preview-item {
+.folder-preview-tile:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+}
+.folder-preview-thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 3px 4px;
-  border-radius: 5px;
-  font-size: 13px;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--field-bg);
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
-.folder-preview-item:hover {
-  background: var(--hover-bg, rgba(127, 127, 127, 0.1));
+.folder-preview-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
-.folder-preview-item .fileicon-img,
-.folder-preview-item svg {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
+/* Generic glyphs shouldn't fill the tile the way a photo does -- they are
+   symbols, not content. */
+.folder-preview-thumb .fileicon-img,
+.folder-preview-thumb svg {
+  width: 40px;
+  height: 40px;
 }
-.folder-preview-item span {
+.folder-preview-name {
+  width: 100%;
+  font-size: 11.5px;
+  line-height: 1.3;
+  text-align: center;
+  /* Two lines, then ellipsis: timestamps live at the end of a screenshot
+     name, so cutting mid-name is what tells them apart. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 /* list view */

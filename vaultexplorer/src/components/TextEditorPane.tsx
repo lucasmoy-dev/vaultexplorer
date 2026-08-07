@@ -3,6 +3,7 @@ import { Entry, api, joinPath, parentPath } from "../api";
 import { kindOf, FileIcon } from "../icons";
 import { renderMarkdownToHtml, serializePreviewToMarkdown } from "../markdown";
 import { useAutoSaveText } from "../hooks/useAutoSaveText";
+import { useThumbnail } from "../hooks/useThumbnail";
 import { EditableFileName, PreviewColumn } from "./PreviewColumn";
 
 export function TextEditorPane({
@@ -890,22 +891,61 @@ function FolderPreview({
           ? "…"
           : `${items.length} item${items.length === 1 ? "" : "s"}`}
       </p>
-      <div className="folder-preview-list">
+      {/* A thumbnail grid, not a list of names: a folder of screenshots is
+          thirty near-identical filenames, which read as one solid block and
+          tell you nothing about what's in there. Tiles show the actual
+          contents and the names sit under them where length doesn't
+          matter. */}
+      <div className="folder-preview-grid">
         {sorted.map((e) => (
-          <div
-            className="folder-preview-item"
+          <FolderPreviewTile
             key={e.name}
+            entry={e}
+            fullPath={`${fullPath}/${e.name}`}
+            inVault={inVault}
             // Children of a previewed vault live in vault space, not under
             // this fs path -- activating/right-clicking them as fs entries
             // would target paths that don't exist. Enter the vault instead.
-            onDoubleClick={onChildActivate && !isVaultEntry ? () => onChildActivate(e) : undefined}
-            onContextMenu={onChildMenu && !isVaultEntry ? (ev) => onChildMenu(ev, e) : undefined}
-          >
-            <FileIcon entry={e} />
-            <span>{e.name}</span>
-          </div>
+            onActivate={onChildActivate && !isVaultEntry ? () => onChildActivate(e) : undefined}
+            onMenu={onChildMenu && !isVaultEntry ? (ev: React.MouseEvent) => onChildMenu(ev, e) : undefined}
+          />
         ))}
       </div>
+    </div>
+  );
+}
+
+// One tile in the folder preview. Its own component so the thumbnail is
+// only requested once the tile scrolls into view (useThumbnail's ref
+// gate) -- previewing a folder of hundreds of photos shouldn't decode all
+// of them just to show the top row.
+function FolderPreviewTile({
+  entry,
+  fullPath,
+  inVault,
+  onActivate,
+  onMenu,
+}: {
+  entry: Entry;
+  fullPath: string;
+  inVault: boolean;
+  onActivate?: () => void;
+  onMenu?: (e: React.MouseEvent) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const thumb = useThumbnail(entry, fullPath, inVault, 128, ref);
+  return (
+    <div
+      ref={ref}
+      className="folder-preview-tile"
+      title={entry.name}
+      onDoubleClick={onActivate}
+      onContextMenu={onMenu}
+    >
+      <span className="folder-preview-thumb">
+        {thumb ? <img src={thumb} alt="" draggable={false} /> : <FileIcon entry={entry} />}
+      </span>
+      <span className="folder-preview-name">{entry.name}</span>
     </div>
   );
 }
