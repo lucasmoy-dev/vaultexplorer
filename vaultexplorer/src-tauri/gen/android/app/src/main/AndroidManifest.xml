@@ -6,6 +6,8 @@
          the camera is only opened when that scanner is deliberately
          started, and the device id can still be typed by hand. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Keeping playback alive while the app is in the background. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- "All files access", needed for raw filesystem browsing of shared
          storage (Download/Pictures/DCIM), same as any general-purpose file

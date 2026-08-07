@@ -76,6 +76,56 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [scrubbing, setScrubbing] = useState(false);
   const [playError, setPlayError] = useState("");
+  // Zoom, the same gesture a photo has: pinch to scale, double-tap to
+  // toggle 2x, drag to pan once zoomed. Useful for exactly what a phone
+  // is bad at -- reading something small inside a screen recording.
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
+  const panRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+
+  function touchDistance(t: React.TouchList): number {
+    const [a, b] = [t[0], t[1]];
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  }
+  function onStageTouchStart(e: React.TouchEvent) {
+    wake();
+    if (e.touches.length === 2) {
+      pinchRef.current = { dist: touchDistance(e.touches), zoom };
+      panRef.current = null;
+    } else if (e.touches.length === 1 && zoom > 1) {
+      panRef.current = { x: pan.x, y: pan.y, startX: e.touches[0].clientX, startY: e.touches[0].clientY };
+    }
+  }
+  function onStageTouchMove(e: React.TouchEvent) {
+    if (e.touches.length === 2 && pinchRef.current) {
+      const next = (touchDistance(e.touches) / pinchRef.current.dist) * pinchRef.current.zoom;
+      setZoom(Math.min(6, Math.max(1, next)));
+      return;
+    }
+    const p = panRef.current;
+    if (p && e.touches.length === 1) {
+      setPan({ x: p.x + (e.touches[0].clientX - p.startX), y: p.y + (e.touches[0].clientY - p.startY) });
+    }
+  }
+  function onStageTouchEnd() {
+    pinchRef.current = null;
+    panRef.current = null;
+    // Zooming back out re-centres, so the video can't be left parked
+    // off-screen at 1x with no way to find it again.
+    if (zoom <= 1.02) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    }
+  }
+  function toggleZoom() {
+    if (zoom > 1) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    } else {
+      setZoom(2);
+    }
+  }
 
   // Web Audio graph: element -> GainNode -> speakers. Built *lazily*, only
   // once a volume above 100% is actually asked for.
@@ -305,13 +355,21 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
       ref={stageRef}
       className={`video-stage${controlsVisible ? "" : " controls-hidden"}`}
       onMouseMove={wake}
-      onTouchStart={wake}
+      onTouchStart={onStageTouchStart}
+      onTouchMove={onStageTouchMove}
+      onTouchEnd={onStageTouchEnd}
+      onDoubleClick={toggleZoom}
     >
       <video
         ref={videoRef}
         src={resolvedSrc}
         aria-label={name}
         className="video-stage-el"
+        style={
+          zoom > 1
+            ? { transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, cursor: "grab" }
+            : undefined
+        }
         // See the same note in AudioStage: a tainted stream can't be
         // routed through Web Audio for the volume boost.
         crossOrigin="anonymous"

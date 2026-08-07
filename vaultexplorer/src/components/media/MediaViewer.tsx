@@ -237,6 +237,9 @@ export function MediaViewer({
   const absPathCache = useRef(new Map<string, string>());
   const galleryLenRef = useRef(gallery.length);
   const disarmTimer = useRef<number | null>(null);
+  // How far the current drag has travelled, in px -- 0 whenever no drag
+  // is in flight, which is also what makes the pane spring back.
+  const [dragX, setDragX] = useState(0);
   const touchStartX = useRef<number | null>(null);
   const touchStartY = useRef<number | null>(null);
 
@@ -383,12 +386,22 @@ export function MediaViewer({
     touchStartX.current = t.clientX;
     touchStartY.current = t.clientY;
   }
-  function onTouchMove() {
-    // No live drag-follow -- swipe is evaluated as a single gesture on
-    // release, see onTouchEnd. Kept as a no-op handler so the root overlay
-    // still receives touchmove (some browsers want all three handlers
-    // present to treat this as an intentional gesture rather than a
-    // page-level scroll).
+  // The photo follows the finger. Evaluating the swipe only on release
+  // meant the screen sat still and then jumped, which is why the
+  // transition read as "not working" -- there was nothing to watch. Now
+  // the pane tracks the drag and the release just decides whether it
+  // completes or springs back.
+  function onTouchMove(e: React.TouchEvent) {
+    const startX = touchStartX.current;
+    const startY = touchStartY.current;
+    if (startX === null || startY === null || imageZoomed) return;
+    const t = e.touches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    // Vertical wins until the gesture is clearly horizontal, so scrolling
+    // a long photo doesn't start dragging it sideways.
+    if (Math.abs(dx) < Math.abs(dy)) return;
+    setDragX(dx);
   }
   function onTouchEnd(e: React.TouchEvent) {
     const startX = touchStartX.current;
@@ -400,6 +413,7 @@ export function MediaViewer({
     const t = e.changedTouches[0];
     const dx = t.clientX - startX;
     const dy = t.clientY - startY;
+    setDragX(0);
     if (Math.abs(dx) < SWIPE_THRESHOLD_PX || Math.abs(dx) < Math.abs(dy)) return;
     if (dx < 0) goNext();
     else goPrev();
@@ -615,7 +629,18 @@ export function MediaViewer({
           {resolveError && <div className="mv-error">{resolveError}</div>}
           {stageError && <div className="mv-error mv-error-toast">{stageError}</div>}
           {!resolveError && current && resolvedSrc && (
-            <div className="mv-stage" key={current.fullPath} data-dir={direction ?? ""}>
+            <div
+              className="mv-stage"
+              key={current.fullPath}
+              data-dir={direction ?? ""}
+              style={
+                dragX
+                  ? // Dragging owns the transform, so the enter animation
+                    // has to be out of the way while it does.
+                    { transform: `translateX(${dragX}px)`, animation: "none", transition: "none" }
+                  : undefined
+              }
+            >
               {current.kind === "image" && (
                 <ImageStage
                   src={resolvedSrc}
