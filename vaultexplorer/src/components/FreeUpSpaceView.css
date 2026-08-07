@@ -315,3 +315,58 @@
     transition: none;
   }
 }
+
+/* On a phone this was a desktop layout squeezed sideways: four summary
+   cards on one row, a legend grid, and the delete button off past the
+   edge. Reworked for one thumb -- the numbers that matter stay, the rest
+   scrolls, and the action sits where it can be reached. */
+@media (max-width: 700px) {
+  .freespace-head {
+    padding: 14px 14px 8px;
+  }
+  .freespace-head-text p {
+    display: none; /* the title and the Scan button already say it */
+  }
+  .freespace-head-controls {
+    width: 100%;
+  }
+  .freespace-head-controls .dropdown-trigger {
+    flex: 1;
+  }
+  .freespace-summary-cards {
+    padding: 0 14px 10px;
+    gap: 8px;
+  }
+  /* Two up, not four across: at four the numbers wrapped mid-word. */
+  .freespace-card {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+  .freespace-bar,
+  .freespace-legend,
+  .freespace-folders {
+    margin-inline: 14px;
+    padding-inline: 0;
+  }
+  .freespace-legend {
+    grid-template-columns: 1fr 1fr;
+  }
+  .freespace-list {
+    padding: 0 8px 8px;
+  }
+  .freespace-row {
+    padding: 10px 8px; /* a comfortable tap target, not a mouse row */
+  }
+  .freespace-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .freespace-actions-summary {
+    order: -1;
+    flex: 1 0 100%;
+  }
+  .freespace-actions .btn-primary {
+    flex: 1;
+  }
+}
