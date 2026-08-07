@@ -178,33 +178,36 @@
   align-items: center;
   justify-content: center;
 }
+/* Navigation is a slide, not a fade: fading the incoming pane up from
+   opacity 0 meant the black backdrop showed through mid-transition, which
+   read as "it goes dark, then the next photo appears". A pure transform
+   (with a tiny scale settle) keeps something on screen the whole way, and
+   ease-in-out at ~0.2s makes it feel quick rather than dragged. */
 .mv-stage[data-dir="left"] {
-  animation: mv-enter-left 0.22s ease-out;
+  animation: mv-enter-left 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .mv-stage[data-dir="right"] {
-  animation: mv-enter-right 0.22s ease-out;
+  animation: mv-enter-right 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .mv-stage:not([data-dir="left"]):not([data-dir="right"]) {
-  animation: mv-enter-fade 0.18s ease-out;
+  /* Only the very first item still fades -- there is nothing to slide
+     away from on mount. */
+  animation: mv-enter-fade 0.16s ease-out;
 }
 @keyframes mv-enter-left {
   from {
-    opacity: 0;
-    transform: translateX(28px);
+    transform: translateX(3.5%) scale(0.985);
   }
   to {
-    opacity: 1;
-    transform: translateX(0);
+    transform: translateX(0) scale(1);
   }
 }
 @keyframes mv-enter-right {
   from {
-    opacity: 0;
-    transform: translateX(-28px);
+    transform: translateX(-3.5%) scale(0.985);
   }
   to {
-    opacity: 1;
-    transform: translateX(0);
+    transform: translateX(0) scale(1);
   }
 }
 @keyframes mv-enter-fade {
@@ -213,6 +216,14 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mv-stage,
+  .mv-stage[data-dir="left"],
+  .mv-stage[data-dir="right"] {
+    animation: none;
   }
 }
 

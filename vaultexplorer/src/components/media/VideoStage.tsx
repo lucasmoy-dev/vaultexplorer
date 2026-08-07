@@ -307,6 +307,9 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
         src={resolvedSrc}
         aria-label={name}
         className="video-stage-el"
+        // See the same note in AudioStage: a tainted stream can't be
+        // routed through Web Audio for the volume boost.
+        crossOrigin="anonymous"
         onClick={togglePlay}
         onError={() => {
           const err = videoRef.current?.error;
@@ -390,8 +393,9 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
             {fmtTime(currentTime)} / {fmtTime(duration)}
           </div>
 
-          <div className="video-spacer" />
-
+          {/* Sits with the playback controls, not exiled to the far
+              bottom-right corner: speed is something you reach for while
+              watching, and it was the one control nowhere near the others. */}
           <select
             className="video-speed"
             value={rate}
@@ -405,6 +409,8 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
               </option>
             ))}
           </select>
+
+          <div className="video-spacer" />
 
           <button
             className="video-btn"

@@ -159,7 +159,7 @@ fn serve_file(request: tiny_http::Request, path: &std::path::Path, range: Option
         // response is closed rather than kept alive, so writing it by hand
         // can't desynchronize a reused connection.
         let head = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
         );
         let mut writer = request.into_writer();
         writer.write_all(head.as_bytes()).str_err()?;
@@ -181,6 +181,16 @@ fn serve_file(request: tiny_http::Request, path: &std::path::Path, range: Option
                     header("Content-Type", &mime),
                     header("Accept-Ranges", "bytes"),
                     header("Content-Range", &format!("bytes {start}-{end}/{len}")),
+                    // The page's origin is `tauri://localhost`, so anything
+                    // that reads these bytes with fetch() or routes the
+                    // element through Web Audio needs them to be
+                    // CORS-clean: without this, reverse playback (which
+                    // fetches and decodes the whole track) is blocked
+                    // outright, and volume above 100% silently fails
+                    // because createMediaElementSource refuses a tainted
+                    // stream. Safe here -- the server is loopback-only and
+                    // every URL is token-gated.
+                    header("Access-Control-Allow-Origin", "*"),
                 ],
                 file.take(count),
                 Some(count as usize),
@@ -199,7 +209,7 @@ fn serve_file(request: tiny_http::Request, path: &std::path::Path, range: Option
             // reported error 4. Confirmed against a 2.1 GB recording that
             // plays fine from disk but not over the chunked response.
             let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
             );
             let mut writer = request.into_writer();
             writer.write_all(head.as_bytes()).str_err()?;
@@ -355,6 +365,29 @@ mod tests {
         assert_eq!(res.headers().get("content-length").map(|v| v.to_str().unwrap().to_string()), Some((1024 * 1024).to_string()));
         assert!(res.headers().get("transfer-encoding").is_none(), "{:?}", res.headers());
         assert_eq!(res.bytes().expect("bytes").len(), 1024 * 1024);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Reverse playback fetches the whole track and Web Audio needs a
+    /// CORS-clean stream for the >100% volume boost; both come from a
+    /// `tauri://localhost` page, so every response has to allow it.
+    #[test]
+    fn responses_are_cors_readable() {
+        let path = temp_file("cors.mp3", b"0123456789");
+        let url = media_url(path.to_string_lossy().to_string()).expect("url");
+        let client = reqwest::blocking::Client::new();
+        for res in [
+            client.get(&url).send().expect("get"),
+            client.get(&url).header("Range", "bytes=0-3").send().expect("ranged"),
+            client.head(&url).send().expect("head"),
+        ] {
+            assert_eq!(
+                res.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()),
+                Some("*"),
+                "{:?}",
+                res.headers()
+            );
+        }
         let _ = std::fs::remove_file(path);
     }
 

@@ -402,6 +402,11 @@ export function AudioStage({
       <audio
         ref={audioRef}
         src={resolvedSrc}
+        // Without this the element fetches no-cors and the stream stays
+        // tainted, so reverse playback can't decode it and the >100%
+        // volume boost silently does nothing -- the media server sends
+        // the matching Access-Control-Allow-Origin.
+        crossOrigin="anonymous"
         preload="metadata"
         onLoadedMetadata={(e) => {
           if (!reversed) setDuration(e.currentTarget.duration || 0);
