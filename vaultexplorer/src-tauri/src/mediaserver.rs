@@ -175,28 +175,25 @@ fn serve_file(request: tiny_http::Request, path: &std::path::Path, range: Option
         Some((start, end)) => {
             let count = end - start + 1;
             file.seek(SeekFrom::Start(start)).str_err()?;
-            let response = tiny_http::Response::new(
-                tiny_http::StatusCode(206),
-                vec![
-                    header("Content-Type", &mime),
-                    header("Accept-Ranges", "bytes"),
-                    header("Content-Range", &format!("bytes {start}-{end}/{len}")),
-                    // The page's origin is `tauri://localhost`, so anything
-                    // that reads these bytes with fetch() or routes the
-                    // element through Web Audio needs them to be
-                    // CORS-clean: without this, reverse playback (which
-                    // fetches and decodes the whole track) is blocked
-                    // outright, and volume above 100% silently fails
-                    // because createMediaElementSource refuses a tainted
-                    // stream. Safe here -- the server is loopback-only and
-                    // every URL is token-gated.
-                    header("Access-Control-Allow-Origin", "*"),
-                ],
-                file.take(count),
-                Some(count as usize),
-                None,
+            // Hand-written like the other two responses: tiny_http falls
+            // back to `Transfer-Encoding: chunked` for a large body no
+            // matter what data length it is given, and a chunked 206 is a
+            // non-seekable source as far as GStreamer is concerned. A
+            // media element opens with `Range: bytes=0-` over the whole
+            // file, so that is precisely the response that decides whether
+            // an mp4 with a trailing moov atom can be demuxed at all --
+            // get it wrong and the file loads, plays, and sits at --:--
+            // with a black picture forever.
+            let head = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: {mime}\r\nContent-Length: {count}\r\nContent-Range: bytes {start}-{end}/{len}\r\nAccept-Ranges: bytes\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
             );
-            request.respond(response).str_err()
+            let mut writer = request.into_writer();
+            writer.write_all(head.as_bytes()).str_err()?;
+            // A seek mid-response drops the connection; that write error is
+            // expected, not a failure.
+            let _ = std::io::copy(&mut file.take(count), &mut writer);
+            let _ = writer.flush();
+            Ok(())
         }
         None => {
             // Hand-written for the same reason as HEAD: tiny_http answers a
@@ -347,6 +344,19 @@ mod tests {
         let first = client.get(&url).header("Range", "bytes=0-65535").send().expect("first");
         assert_eq!(first.status().as_u16(), 206);
         assert_eq!(first.bytes().expect("bytes").len(), 65536);
+
+        // The request a media element actually opens with: an open-ended
+        // range over the whole file. If *this* one comes back chunked the
+        // source is not seekable and an mp4 with its moov atom at the end
+        // never demuxes -- the file loads and then sits at --:-- forever.
+        let full = client.get(&url).header("Range", "bytes=0-").send().expect("full range");
+        assert_eq!(full.status().as_u16(), 206);
+        assert!(full.headers().get("transfer-encoding").is_none(), "{:?}", full.headers());
+        assert_eq!(
+            full.headers().get("content-length").map(|v| v.to_str().unwrap().to_string()),
+            Some(len.to_string())
+        );
+        drop(full);
 
         let tail_start = len - 65536;
         let tail = client.get(&url).header("Range", format!("bytes={tail_start}-")).send().expect("tail");
