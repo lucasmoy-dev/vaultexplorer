@@ -1116,6 +1116,8 @@ function Explorer({ home }: { home: string }) {
   function openMyComputer() {
     setShowMyComputer(true);
     setShowInternet(false);
+    setShowDevice(false);
+    setFreeUpSpaceOpen(false);
     setSearchResults(null);
     refreshDrives();
   }
@@ -2112,7 +2114,6 @@ function Explorer({ home }: { home: string }) {
       setShowMyComputer(false);
       setFreeUpSpaceOpen(false);
       setShowDevice(false);
-    setShowDevice(false);
       setShowInternet(false);
       setInternetInitial(null);
       return;
@@ -2125,7 +2126,6 @@ function Explorer({ home }: { home: string }) {
       setShowMyComputer(false);
       setFreeUpSpaceOpen(false);
       setShowDevice(false);
-    setShowDevice(false);
       setShowInternet(false);
       setInternetInitial(null);
       return;
@@ -5420,6 +5420,7 @@ function Explorer({ home }: { home: string }) {
           onClick={() => {
             setShowMyComputer(false);
             setShowInternet(false);
+            setShowDevice(false);
             setFreeUpSpaceOpen(true);
           }}
         >
