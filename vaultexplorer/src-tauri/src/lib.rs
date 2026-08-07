@@ -45,7 +45,10 @@ mod mediaserver;
 mod webfind;
 #[cfg(desktop)]
 mod ytdl;
-#[cfg(desktop)]
+// Not desktop-only: the same loopback embed page is what lets mobile play
+// a YouTube result inside the app instead of handing it to the YouTube
+// app, so the module has to exist on Android too (its command is
+// registered unconditionally).
 mod ytembed;
 mod thumbnail;
 #[cfg(desktop)]

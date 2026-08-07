@@ -5840,7 +5840,7 @@ dependencies = [
 
 [[package]]
 name = "vaultexplorer"
-version = "0.2.23"
+version = "0.2.24"
 dependencies = [
  "argon2",
  "base64 0.22.1",
