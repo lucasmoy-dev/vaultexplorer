@@ -13,7 +13,7 @@ import {
   AnimeflvEpisode,
   PlayerItem,
 } from "../api";
-import { ChevronLeft, SearchGlyph, SaveGlyph, FileIcon } from "../icons";
+import { ChevronLeft, SearchGlyph, SaveGlyph, FileIcon, FilterGlyph } from "../icons";
 import { ContextMenu, Dropdown, MenuState } from "../ContextMenu";
 import { useSelection } from "../hooks/useSelection";
 import { AnimeflvEpisodeSheet } from "./sheets/animeflv-episode-sheet";
@@ -68,6 +68,7 @@ export function InternetView({
   onSaveToFolder,
   onDownloadVideos,
   onOpenFolder,
+  onRegisterBack,
 }: {
   initial: SavedInternetSearch | null;
   onSave: (filename: string, content: string) => Promise<string>;
@@ -88,6 +89,9 @@ export function InternetView({
   // hands off to the normal file browser -- past that point it is an
   // ordinary folder and should behave like one.
   onOpenFolder: (path: string) => void;
+  // Lets Android's back button close the in-app player, or step out of a
+  // search, before App's own back chain runs.
+  onRegisterBack?: (fn: (() => boolean) | null) => void;
 }) {
   const [mode, setMode] = useState<Mode>("root");
   const [query, setQuery] = useState("");
@@ -131,7 +135,29 @@ export function InternetView({
   // Mobile's in-app YouTube player (see playInApp): {url} once the
   // loopback embed page is ready, so the overlay never flashes an empty
   // frame while that resolves.
-  const [inAppPlayer, setInAppPlayer] = useState<{ url: string; title: string } | null>(null);
+  const [inAppPlayer, setInAppPlayer] = useState<{ url: string; title: string; direct?: boolean } | null>(null);
+  // On mobile the filter row is three dropdowns wide and pushed the
+  // results off the first screen; it lives behind a button next to Save
+  // instead, and only when asked for.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  useEffect(() => {
+    onRegisterBack?.(() => {
+      if (inAppPlayer) {
+        setInAppPlayer(null);
+        return true;
+      }
+      if (episodePicker) {
+        setEpisodePicker(null);
+        return true;
+      }
+      if (mode !== "root") {
+        setMode("root");
+        return true;
+      }
+      return false;
+    });
+    return () => onRegisterBack?.(null);
+  }, [onRegisterBack, inAppPlayer, episodePicker, mode]);
   // Real files/folders kept under the Internet section (see internet_root
   // in lib.rs) -- saved searches, `.youtube.url` links, and whatever
   // folders the user makes to sort them into.
@@ -149,6 +175,19 @@ export function InternetView({
   useEffect(() => {
     if (mode === "root") void loadSaved();
   }, [mode, loadSaved]);
+
+  // Providers with no usable embed (xHamster and friends): yt-dlp resolves
+  // the real stream and it plays right here, instead of throwing the user
+  // out to a browser tab and losing the search.
+  async function playProviderInApp(title: string, pageUrl: string) {
+    setError("");
+    try {
+      setInAppPlayer({ url: await api.resolveStreamUrl(pageUrl), title, direct: true });
+    } catch (e) {
+      setError(String(e));
+      osOpen(pageUrl).catch(() => {});
+    }
+  }
 
   async function playInApp(videoId: string, title: string) {
     try {
@@ -511,6 +550,9 @@ export function InternetView({
 
   async function runSearch(q: string, f: YoutubeSearchFilters, m: Mode) {
     if (!q.trim()) return;
+    // Android keeps the soft keyboard up until something gives up focus,
+    // and it covers half the results you just asked for.
+    (document.activeElement as HTMLElement | null)?.blur?.();
     setLoading(true);
     setError("");
     setSearched(true);
@@ -576,19 +618,33 @@ export function InternetView({
     return (
       <div className="internet-view">
         <div className="entries icon">
-          <div className="entry icon" onDoubleClick={() => enterFolder("videos")}>
+          <div
+            className="entry icon"
+            // Touch has no double-click: one tap opens, same as the file
+            // browser's own mobile behaviour.
+            onClick={mobile ? () => enterFolder("videos") : undefined}
+            onDoubleClick={() => enterFolder("videos")}
+          >
             <span className="entry-icon">
               <img className="fileicon-img" src={folderVideosIcon} alt="" draggable={false} />
             </span>
             <span className="entry-name">Videos</span>
           </div>
-          <div className="entry icon" onDoubleClick={() => enterFolder("images")}>
+          <div
+            className="entry icon"
+            onClick={mobile ? () => enterFolder("images") : undefined}
+            onDoubleClick={() => enterFolder("images")}
+          >
             <span className="entry-icon">
               <img className="fileicon-img" src={folderImagesIcon} alt="" draggable={false} />
             </span>
             <span className="entry-name">Images</span>
           </div>
-          <div className="entry icon" onDoubleClick={() => enterFolder("books")}>
+          <div
+            className="entry icon"
+            onClick={mobile ? () => enterFolder("books") : undefined}
+            onDoubleClick={() => enterFolder("books")}
+          >
             <span className="entry-icon">
               <img className="fileicon-img" src={folderBookIcon} alt="" draggable={false} />
             </span>
@@ -667,6 +723,16 @@ export function InternetView({
         <button className="tool-btn wide-btn" onClick={() => runSearch(query, filters, mode)} disabled={loading}>
           Search
         </button>
+        {mode === "videos" && mobile && (
+          <button
+            className={`tool-btn${filtersOpen ? " on" : ""}`}
+            onClick={() => setFiltersOpen((o) => !o)}
+            aria-label="Filters"
+            title="Filters"
+          >
+            <FilterGlyph size={16} />
+          </button>
+        )}
         <button
           className="tool-btn"
           onClick={saveSearch}
@@ -677,7 +743,7 @@ export function InternetView({
           <SaveGlyph size={16} />
         </button>
       </div>
-      {mode === "videos" && (
+      {mode === "videos" && (!mobile || filtersOpen) && (
         <div className="internet-filters">
           <Dropdown
             value={provider}
@@ -851,7 +917,7 @@ export function InternetView({
                   handleTileClick(`p${i}`, e);
                   if (!mobile) return;
                   if (provider === "animeflv") setEpisodePicker({ title: v.title, pageUrl: v.page_url });
-                  else osOpen(v.page_url).catch(() => {});
+                  else void playProviderInApp(v.title, v.page_url);
                 }}
                 onDoubleClick={() => openResult(`p${i}`)}
                 onContextMenu={(e) => onTileContextMenu(`p${i}`, e)}
@@ -954,12 +1020,16 @@ export function InternetView({
             </button>
             <span className="inapp-player-title">{inAppPlayer.title}</span>
           </div>
-          <iframe
-            className="inapp-player-frame"
-            src={inAppPlayer.url}
-            allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-            allowFullScreen
-          />
+          {inAppPlayer.direct ? (
+            <video className="inapp-player-frame" src={inAppPlayer.url} controls autoPlay playsInline />
+          ) : (
+            <iframe
+              className="inapp-player-frame"
+              src={inAppPlayer.url}
+              allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+              allowFullScreen
+            />
+          )}
         </div>
       )}
     </div>

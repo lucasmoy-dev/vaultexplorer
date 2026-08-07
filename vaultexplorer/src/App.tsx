@@ -1313,6 +1313,9 @@ function Explorer({ home }: { home: string }) {
   // yet, so there's nothing to hand a native OS-level drag, just this
   // in-window ref a folder target's onDrop reads back out.
   const dragInternetItems = useRef<InternetDownloadItem[] | null>(null);
+  // Set by InternetView while it is mounted (see onRegisterBack): returns
+  // true when it handled the press itself.
+  const internetBackRef = useRef<(() => boolean) | null>(null);
 
   // Ctrl/Cmd + scroll wheel zooms icon-view tile size, like Finder.
   useEffect(() => {
@@ -2221,6 +2224,12 @@ function Explorer({ home }: { home: string }) {
         setMediaViewer(null);
         return;
       }
+      // Internet gets first refusal after the media viewer: a playing
+      // video should close on back, and a search should step back to the
+      // Videos/Images/Books tiles -- pressing back there used to leave the
+      // whole section, losing the search. InternetView registers what it
+      // can consume; anything it doesn't falls through to this chain.
+      if (internetBackRef.current?.()) return;
       if (s.mobileEditorTarget) {
         setMobileEditorTarget(null);
         s.refresh();
@@ -3511,6 +3520,30 @@ function Explorer({ home }: { home: string }) {
     e.preventDefault();
     dragPaths.current = drag.names.map((n) => joinPath(curDir, n));
     dropInto(destDir);
+  }
+
+  // "Move to…" for a multi-selection. Mobile has no drag across folders
+  // (and the touch drag added for it only reaches folders visible in the
+  // current one), so picking a destination is the only way to move a
+  // selection somewhere else -- reported as exactly that gap.
+  async function moveSelectionTo() {
+    const names = [...selected];
+    if (names.length === 0) return;
+    const dest = await pickPath({ directory: true, multiple: false, title: "Move to folder" });
+    if (!dest || Array.isArray(dest)) return;
+    if (dest === curDir) return;
+    try {
+      for (const name of names) {
+        const src = joinPath(curDir, name);
+        const target = joinPath(dest, name);
+        inVault ? await api.moveEntry(src, target) : await api.fsRename(src, target);
+      }
+      setSelected(new Set());
+      setSelectionMode(false);
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   async function dropInto(destDir: string) {
@@ -5558,6 +5591,9 @@ function Explorer({ home }: { home: string }) {
               >
                 {selected.size === entries.length ? "Deselect All" : "Select All"}
               </button>
+              <button className="tool-btn wide-btn" onClick={moveSelectionTo}>
+                Move to…
+              </button>
               <button
                 className="tool-btn wide-btn"
                 onClick={(e) => {
@@ -5791,6 +5827,9 @@ function Explorer({ home }: { home: string }) {
               onSaveToFolder={saveInternetResultsToFolder}
               onDownloadVideos={downloadInternetVideos}
               onOpenFolder={(path) => go({ kind: "fs", path })}
+              onRegisterBack={(fn) => {
+                internetBackRef.current = fn;
+              }}
             />
           ) : searchResults !== null && view === "contacts" ? (
             <ContactsGrid

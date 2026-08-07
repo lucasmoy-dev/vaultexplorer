@@ -5406,3 +5406,29 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--text);
   background: var(--hover-bg, rgba(127, 127, 127, 0.2));
 }
+
+/* A contact row carries two extra buttons; without a column for them the
+   grid pushed them onto a second line. `has-actions` is set by EntryTile
+   only when the contact actually has a number to act on. */
+.entry.list.has-actions {
+  grid-template-columns: 18px 1fr 170px 90px 130px auto;
+}
+.is-mobile .entry.list.has-actions {
+  grid-template-columns: 34px 1fr auto;
+}
+/* The two actions carry their own meaning through colour, the way every
+   phone's contact list does: green is "message on WhatsApp", blue is
+   "call". Grey circles said "some buttons". */
+.entry-action-btn.whatsapp {
+  background: #25d366;
+  color: #fff;
+}
+.entry-action-btn.call {
+  background: #0a84ff;
+  color: #fff;
+}
+.entry-action-btn.whatsapp:hover,
+.entry-action-btn.call:hover {
+  filter: brightness(1.08);
+  color: #fff;
+}

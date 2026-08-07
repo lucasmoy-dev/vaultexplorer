@@ -996,3 +996,25 @@ export function FullscreenExitGlyph({ size = 15 }: GlyphProps) {
     </L>
   );
 }
+
+// Stand-in for a contact with no photo. A silhouette reads as "a person we
+// don't have a picture of"; the "?" it replaces read as "something went
+// wrong".
+export function PersonGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20c0-4 3.6-6 8-6s8 2 8 6v1H4z" />
+    </svg>
+  );
+}
+
+// Filters (the funnel every search UI uses) -- shown next to Save on
+// mobile, where the filter row itself is too wide to keep on screen.
+export function FilterGlyph({ size = 15 }: GlyphProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 5h16l-6 7v6l-4 2v-8z" />
+    </svg>
+  );
+}

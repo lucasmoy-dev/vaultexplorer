@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Entry, api, osOpen } from "../api";
 import { View } from "../types";
 import { formatSize, formatDate } from "../api";
-import { FileIcon, GitBranchGlyph, CloudSyncGlyph, LocalSyncGlyph, CheckGlyph, PinGlyph, RefreshGlyph, LockGlyph, PhoneGlyph, ChatGlyph } from "../icons";
+import { FileIcon, GitBranchGlyph, CloudSyncGlyph, LocalSyncGlyph, CheckGlyph, PinGlyph, RefreshGlyph, LockGlyph, PhoneGlyph, ChatGlyph, PersonGlyph } from "../icons";
 import { displayEntryName, kindLabel } from "../entryHelpers";
 import { useThumbnail } from "../hooks/useThumbnail";
 import { parseVCard, cleanPhoneForLink, ParsedVCard } from "../vcard";
@@ -136,7 +136,9 @@ export function EntryTile({
       ref={tileRef}
       className={`entry ${view} ${compact ? "compact" : ""} ${selected ? "selected" : ""} ${
         isDropTarget ? "drop" : ""
-      } ${entry.is_hidden ? "dimmed" : ""} ${cut ? "cut" : ""}`}
+      } ${entry.is_hidden ? "dimmed" : ""} ${cut ? "cut" : ""} ${
+        isVcf && card?.phones[0] ? "has-actions" : ""
+      }`}
       data-name={entry.name}
       title={editing ? undefined : entry.name}
       // HTML5 drag is dead weight on touch (Android WebView never
@@ -158,7 +160,12 @@ export function EntryTile({
           card?.photoDataUrl ? (
             <img src={card.photoDataUrl} className="entry-avatar-photo" alt="" draggable={false} />
           ) : (
-            <span className="entry-avatar-initial">{(card?.name || entry.name).charAt(0).toUpperCase()}</span>
+            // A silhouette, not the filename's first letter: before the
+            // vCard has been read there is no name to take an initial
+            // from, and the "?" that stood there read as an error.
+            <span className="entry-avatar-initial">
+              {card?.name ? card.name.charAt(0).toUpperCase() : <PersonGlyph size={18} />}
+            </span>
           )
         ) : thumb ? (
           <img src={thumb} className="entry-thumb" alt="" draggable={false} />
@@ -250,7 +257,7 @@ export function EntryTile({
         // stopPropagation so tapping one doesn't also open the contact.
         <span className="entry-actions" onClick={(e) => e.stopPropagation()}>
           <button
-            className="entry-action-btn"
+            className="entry-action-btn call"
             aria-label="Call"
             title="Call"
             onClick={() => osOpen(`tel:${cleanPhoneForLink(contactPhone)}`).catch(() => {})}
@@ -258,7 +265,7 @@ export function EntryTile({
             <PhoneGlyph size={15} />
           </button>
           <button
-            className="entry-action-btn"
+            className="entry-action-btn whatsapp"
             aria-label="WhatsApp"
             title="WhatsApp"
             onClick={() =>
