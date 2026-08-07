@@ -183,8 +183,11 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  direction: rtl; /* keep the filename end of a long path visible */
-  text-align: left;
+  /* Plain ltr: `direction: rtl` kept the tail of a long path visible but
+     reordered its punctuation, so paths rendered with a stray leading
+     ellipsis and a trailing slash. The name is already on the line above,
+     so ellipsizing the end here loses nothing. */
+  direction: ltr;
 }
 .freespace-row-size {
   font-size: 12.5px;
