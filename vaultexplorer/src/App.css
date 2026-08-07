@@ -5492,3 +5492,55 @@ input[type="range"]::-webkit-slider-thumb {
 .is-mobile .video-volume-slider {
   max-width: 120px;
 }
+
+/* In-app folder chooser (see folder-picker-sheet.tsx) -- used wherever the
+   OS directory dialog isn't available, which on Android is everywhere. */
+.folder-picker-sheet {
+  max-width: 460px;
+  width: 92vw;
+}
+.folder-picker-path {
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: ltr;
+}
+.folder-picker-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.folder-picker-row:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.14));
+}
+.folder-picker-row .fileicon-img,
+.folder-picker-row svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.folder-picker-up {
+  width: 20px;
+  text-align: center;
+  color: var(--text-2);
+}

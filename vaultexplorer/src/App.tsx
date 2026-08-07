@@ -74,6 +74,7 @@ import { PickerView } from "./components/PickerView";
 import { PlayerWindow } from "./components/PlayerWindow";
 import { MediaWindow } from "./components/MediaWindow";
 import { FreeUpSpaceView } from "./components/FreeUpSpaceView";
+import { FolderPickerSheet } from "./components/sheets/folder-picker-sheet";
 import { DeviceView } from "./components/DeviceView";
 import { ReorganizeSheet } from "./components/sheets/reorganize-sheet";
 import { buildSyncSubmenu } from "./menus";
@@ -1322,6 +1323,9 @@ function Explorer({ home }: { home: string }) {
   // Set by InternetView while it is mounted (see onRegisterBack): returns
   // true when it handled the press itself.
   const internetBackRef = useRef<(() => boolean) | null>(null);
+  const [folderPickTarget, setFolderPickTarget] = useState<
+    { title: string; onPick: (path: string) => void } | null
+  >(null);
 
   // Ctrl/Cmd + scroll wheel zooms icon-view tile size, like Finder.
   useEffect(() => {
@@ -3548,8 +3552,25 @@ function Explorer({ home }: { home: string }) {
   async function moveSelectionTo() {
     const names = [...selected];
     if (names.length === 0) return;
+    // The OS dialog's directory mode has no Android implementation (it
+    // never returns a path there), so mobile browses with the app's own
+    // folder chooser instead.
+    if (mobile) {
+      setFolderPickTarget({
+        title: `Move ${names.length} item${names.length === 1 ? "" : "s"} to…`,
+        onPick: (dest) => {
+          setFolderPickTarget(null);
+          void performMove(names, dest);
+        },
+      });
+      return;
+    }
     const dest = await pickPath({ directory: true, multiple: false, title: "Move to folder" });
     if (!dest || Array.isArray(dest)) return;
+    await performMove(names, dest);
+  }
+
+  async function performMove(names: string[], dest: string) {
     if (dest === curDir) return;
     try {
       for (const name of names) {
@@ -6166,6 +6187,15 @@ function Explorer({ home }: { home: string }) {
             <span>Settings</span>
           </button>
         </nav>
+      )}
+
+      {folderPickTarget && (
+        <FolderPickerSheet
+          startPath={home ?? "/"}
+          title={folderPickTarget.title}
+          onPick={folderPickTarget.onPick}
+          onClose={() => setFolderPickTarget(null)}
+        />
       )}
 
       {marquee && (
