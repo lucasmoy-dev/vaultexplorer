@@ -18,7 +18,7 @@
 use crate::errmap::{LockExt, ToStringErr};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -139,15 +139,36 @@ fn serve_file(request: tiny_http::Request, path: &std::path::Path, range: Option
     let len = file.metadata().str_err()?.len();
     let mime = mime_for(path);
 
-    // A HEAD is how a player asks "how big is this and can I seek in it"
-    // before it streams anything -- answer the headers with no body, since
-    // writing one would desynchronize the connection.
+    // HEAD is how a media element asks "how big is this, and can I seek in
+    // it" before requesting a single byte -- and the answer has to carry a
+    // real Content-Length. Left to itself tiny_http answers a HEAD with
+    // `Transfer-Encoding: chunked` and no length at all, which the element
+    // reads as an empty/unusable resource: it then fails with
+    // MEDIA_ERR_SRC_NOT_SUPPORTED (error 4) without ever fetching data.
+    // That is the "Media error 4" seen on every real file. An empty reader
+    // with an explicit data length gives the right headers, and tiny_http
+    // sends no body for a HEAD anyway.
     if request.method() == &tiny_http::Method::Head {
-        let response = tiny_http::Response::empty(200)
-            .with_header(header("Content-Type", &mime))
-            .with_header(header("Accept-Ranges", "bytes"))
-            .with_header(header("Content-Length", &len.to_string()));
-        return request.respond(response).str_err();
+        // Written straight onto the socket rather than through
+        // `Response`: tiny_http answers a HEAD with `Transfer-Encoding:
+        // chunked` and no Content-Length no matter what data length it is
+        // given, and a media element reads a length-less HEAD as an
+        // empty/unusable resource -- it then fails with
+        // MEDIA_ERR_SRC_NOT_SUPPORTED (error 4) before fetching a single
+        // byte, which is the "Media error 4" every real file hit. The
+        // response is closed rather than kept alive, so writing it by hand
+        // can't desynchronize a reused connection.
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+        );
+        let mut writer = request.into_writer();
+        writer.write_all(head.as_bytes()).str_err()?;
+        // Flushed and dropped explicitly: the client is waiting on
+        // `Connection: close`, so the socket has to actually close before
+        // it will consider the response finished.
+        writer.flush().str_err()?;
+        drop(writer);
+        return Ok(());
     }
 
     match range.and_then(|r| parse_range(r, len)) {
@@ -275,6 +296,41 @@ mod tests {
         assert_eq!(second.text().expect("text").len(), 100);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Against a real, large file rather than a synthetic small one: the
+    /// failure being chased here only showed up on files big enough that a
+    /// media element issues several ranged requests, so a test that only
+    /// ever serves a few bytes proves nothing about it. Skipped when the
+    /// sample file isn't present.
+    #[test]
+    fn serves_ranges_from_a_large_real_file() {
+        let path = match std::env::var("VE_TEST_LARGE_FILE") {
+            Ok(p) if std::path::Path::new(&p).is_file() => p,
+            _ => return,
+        };
+        let len = std::fs::metadata(&path).expect("meta").len();
+        let url = media_url(path).expect("url");
+        let client = reqwest::blocking::Client::new();
+
+        let head = client.head(&url).send().expect("head");
+        println!("HEAD status={} headers={:?}", head.status(), head.headers());
+        assert_eq!(head.status().as_u16(), 200);
+        assert_eq!(
+            head.headers().get("content-length").map(|v| v.to_str().unwrap().to_string()),
+            Some(len.to_string())
+        );
+
+        // The opening probe a media element makes, then a seek near the end
+        // (where an mp4's moov atom often lives).
+        let first = client.get(&url).header("Range", "bytes=0-65535").send().expect("first");
+        assert_eq!(first.status().as_u16(), 206);
+        assert_eq!(first.bytes().expect("bytes").len(), 65536);
+
+        let tail_start = len - 65536;
+        let tail = client.get(&url).header("Range", format!("bytes={tail_start}-")).send().expect("tail");
+        assert_eq!(tail.status().as_u16(), 206);
+        assert_eq!(tail.bytes().expect("bytes").len(), 65536);
     }
 
     #[test]
