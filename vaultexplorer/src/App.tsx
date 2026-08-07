@@ -2777,6 +2777,13 @@ function Explorer({ home }: { home: string }) {
       }
       return;
     }
+    // A contact opens in the same form editor the Contacts view uses, from
+    // wherever it was double-clicked: a .vcf is a contact everywhere, not
+    // only inside one view (see the contact rows in EntryTile).
+    if (/\.vcf$/i.test(entry.name)) {
+      withSensitive(full, () => setMobileEditorTarget({ entry, fullPath: full, inVault: false }));
+      return;
+    }
     // A `.url` shortcut -- what dropping an Internet video result into a
     // folder writes (see downloadInternetItems). Opening it should do what
     // opening the result did, not show the shortcut's own text: a YouTube

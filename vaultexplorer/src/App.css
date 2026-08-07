@@ -5347,3 +5347,62 @@ input[type="range"]::-webkit-slider-thumb {
 .code-mode-btn:hover {
   color: var(--text);
 }
+
+/* Contact rows in the ordinary file grid (see EntryTile's useVCardRow) --
+   a .vcf is a person, so it gets their photo where the file icon goes and
+   the two actions a contact list always has. Same markup in every view,
+   which is the point: contacts were never a separate view. */
+.entry-icon.entry-avatar {
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--accent, #0a6cff);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+.entry-avatar-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.entry-avatar-initial {
+  font-size: 0.9em;
+  line-height: 1;
+}
+.entry-subline {
+  display: block;
+  font-size: 11px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.entry.icon .entry-actions {
+  /* In the icon grid there is no row to sit at the end of; the actions go
+     under the name instead of pushing the tile out of shape. */
+  margin: 2px 0 0;
+  justify-content: center;
+}
+.entry-action-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  background: var(--field-bg);
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.entry-action-btn:hover {
+  color: var(--text);
+  background: var(--hover-bg, rgba(127, 127, 127, 0.2));
+}

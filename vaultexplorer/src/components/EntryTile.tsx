@@ -1,10 +1,50 @@
-import { useRef, useEffect } from "react";
-import { Entry } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { Entry, api, osOpen } from "../api";
 import { View } from "../types";
 import { formatSize, formatDate } from "../api";
-import { FileIcon, GitBranchGlyph, CloudSyncGlyph, LocalSyncGlyph, CheckGlyph, PinGlyph, RefreshGlyph, LockGlyph } from "../icons";
+import { FileIcon, GitBranchGlyph, CloudSyncGlyph, LocalSyncGlyph, CheckGlyph, PinGlyph, RefreshGlyph, LockGlyph, PhoneGlyph, ChatGlyph } from "../icons";
 import { displayEntryName, kindLabel } from "../entryHelpers";
 import { useThumbnail } from "../hooks/useThumbnail";
+import { parseVCard, cleanPhoneForLink, ParsedVCard } from "../vcard";
+
+// A contact file isn't a document with an icon -- it's a person. In any
+// view, a `.vcf` row shows that person's photo (or their initial) where
+// the file icon would go, and offers the two things you actually do with a
+// contact: call, and message. Reported as exactly this: the contacts
+// "view" was never a different view, just the ordinary list with the right
+// affordances for one file type.
+function useVCardRow(entry: Entry, fullPath: string, inVault: boolean, ref: React.RefObject<HTMLElement | null>) {
+  const isVcf = !entry.is_dir && /\.vcf$/i.test(entry.name);
+  const [card, setCard] = useState<ParsedVCard | null>(null);
+  useEffect(() => {
+    if (!isVcf) return;
+    // Gated on visibility for the same reason thumbnails are: a folder of
+    // 500 contacts shouldn't read 500 files to draw the first screen.
+    const el = ref.current;
+    if (!el) return;
+    let cancelled = false;
+    const load = () => {
+      const read = inVault ? api.vaultReadText(fullPath) : api.fsReadText(fullPath);
+      read
+        .then((text) => {
+          if (!cancelled) setCard(parseVCard(text));
+        })
+        .catch(() => {});
+    };
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        io.disconnect();
+        load();
+      }
+    });
+    io.observe(el);
+    return () => {
+      cancelled = true;
+      io.disconnect();
+    };
+  }, [isVcf, fullPath, inVault, ref]);
+  return { isVcf, card };
+}
 
 export function EntryTile({
   entry,
@@ -88,6 +128,8 @@ export function EntryTile({
   // disk-cached) of every visible thumbnail purely because the view
   // changed, not because the folder did.
   const thumb = useThumbnail(entry, fullPath, inVault, 160, tileRef);
+  const { isVcf, card } = useVCardRow(entry, fullPath, inVault, tileRef);
+  const contactPhone = card?.phones[0];
 
   return (
     <div
@@ -111,8 +153,14 @@ export function EntryTile({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <span className="entry-icon">
-        {thumb ? (
+      <span className={`entry-icon${isVcf ? " entry-avatar" : ""}`}>
+        {isVcf ? (
+          card?.photoDataUrl ? (
+            <img src={card.photoDataUrl} className="entry-avatar-photo" alt="" draggable={false} />
+          ) : (
+            <span className="entry-avatar-initial">{(card?.name || entry.name).charAt(0).toUpperCase()}</span>
+          )
+        ) : thumb ? (
           <img src={thumb} className="entry-thumb" alt="" draggable={false} />
         ) : (
           <FileIcon entry={entry} tagHex={entry.is_dir ? tagHex : undefined} customIcon={customIcon} />
@@ -192,7 +240,34 @@ export function EntryTile({
           }}
         />
       ) : (
-        <span className="entry-name">{displayEntryName(entry, !!hideExtensions)}</span>
+        <span className="entry-name">
+          {isVcf ? card?.name || displayEntryName(entry, true) : displayEntryName(entry, !!hideExtensions)}
+          {isVcf && contactPhone && <span className="entry-subline">{contactPhone}</span>}
+        </span>
+      )}
+      {isVcf && contactPhone && !editing && (
+        // Right-hand actions, the way a phone's contact list has them --
+        // stopPropagation so tapping one doesn't also open the contact.
+        <span className="entry-actions" onClick={(e) => e.stopPropagation()}>
+          <button
+            className="entry-action-btn"
+            aria-label="Call"
+            title="Call"
+            onClick={() => osOpen(`tel:${cleanPhoneForLink(contactPhone)}`).catch(() => {})}
+          >
+            <PhoneGlyph size={15} />
+          </button>
+          <button
+            className="entry-action-btn"
+            aria-label="WhatsApp"
+            title="WhatsApp"
+            onClick={() =>
+              osOpen(`https://wa.me/${cleanPhoneForLink(contactPhone).replace(/^\+/, "")}`).catch(() => {})
+            }
+          >
+            <ChatGlyph size={15} />
+          </button>
+        </span>
       )}
       {view === "list" && !compact && (
         <>
