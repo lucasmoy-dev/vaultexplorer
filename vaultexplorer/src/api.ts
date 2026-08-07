@@ -174,6 +174,8 @@ export const api = {
   mediaUrl: (path: string) => invoke<string>("media_url", { path }),
   internetRoot: () => invoke<string>("internet_root"),
   youtubeStreams: (pageUrl: string) => invoke<YoutubeStreams>("youtube_streams", { pageUrl }),
+  downloadStream: (url: string, destDir: string, filename: string, channel: Channel<ProgressEvent>) =>
+    invoke<void>("download_stream", { url, destDir, filename, channel }),
   androidMuxVideo: (videoPath: string, audioPath: string, outPath: string) =>
     invoke<void>("android_mux_video", { videoPath, audioPath, outPath }),
   castDiscover: () => invoke<CastDevice[]>("cast_discover"),

@@ -136,7 +136,13 @@ function formatNameTemplate(template: string): string {
 
 const ARCHIVE_EXT_RE = /\.(zip|tar\.gz|tgz)$/i;
 function startPath(home: string): string {
-  return localStorage.getItem(DEFAULT_START_KEY) || home;
+  const chosen = localStorage.getItem(DEFAULT_START_KEY);
+  if (chosen) return chosen;
+  // On Android `home` is the app's own sandbox directory, which holds
+  // nothing the user put there -- shared storage is where their files
+  // actually live, so that is where the app should open.
+  if (home.includes("/Android/data/") || home.startsWith("/data/")) return PHONE_STORAGE_PATH;
+  return home;
 }
 
 // A home-screen shortcut's pinned Intent can only carry a plain URL, not a
@@ -1938,10 +1944,23 @@ function Explorer({ home }: { home: string }) {
   // regular list (My Computer / Internet aren't backed by `refresh()`) and
   // on desktop, where there's no touchscreen for this to apply to.
   const pullEligible = mobile && !showMyComputer && !showInternet && searchResults === null;
+  // Pull-to-refresh must only arm when the thing under the finger is
+  // itself at the top. Checking only the outer container meant a view with
+  // its own scroller inside it (Library's shelves) armed the refresh on
+  // every downward drag, because the outer container never scrolls there.
+  function scrolledToTop(target: EventTarget | null): boolean {
+    let el = target as HTMLElement | null;
+    while (el && el !== contentRef.current) {
+      const style = getComputedStyle(el);
+      const scrolls = /(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight;
+      if (scrolls) return el.scrollTop <= 0;
+      el = el.parentElement;
+    }
+    return (contentRef.current?.scrollTop ?? 0) <= 0;
+  }
   function onContentTouchStart(e: React.TouchEvent) {
     if (!pullEligible || pullRefreshing) return;
-    const el = contentRef.current;
-    if (el && el.scrollTop <= 0) pullStartY.current = e.touches[0].clientY;
+    if (scrolledToTop(e.target)) pullStartY.current = e.touches[0].clientY;
   }
   function onContentTouchMove(e: React.TouchEvent) {
     if (pullStartY.current == null) return;
@@ -3656,7 +3675,7 @@ function Explorer({ home }: { home: string }) {
       if (!streams.audio_url) throw new Error("No audio stream available for this video.");
       // `.m4a`, not `.mp3`: this is the real container, and converting
       // would need ffmpeg, which Android doesn't have.
-      await api.downloadWebResult(
+      await api.downloadStream(
         streams.audio_url,
         dest,
         `${safe}.${streams.audio_ext || "m4a"}`,
@@ -3667,8 +3686,8 @@ function Explorer({ home }: { home: string }) {
     if (!streams.video_url || !streams.audio_url) throw new Error("No downloadable streams for this video.");
     const videoPart = `${safe}.video.mp4`;
     const audioPart = `${safe}.audio.m4a`;
-    await api.downloadWebResult(streams.video_url, dest, videoPart, beginProgress(`Downloading video — ${safe}`));
-    await api.downloadWebResult(streams.audio_url, dest, audioPart, beginProgress(`Downloading audio — ${safe}`));
+    await api.downloadStream(streams.video_url, dest, videoPart, beginProgress(`Downloading video — ${safe}`));
+    await api.downloadStream(streams.audio_url, dest, audioPart, beginProgress(`Downloading audio — ${safe}`));
     await api.androidMuxVideo(joinPath(dest, videoPart), joinPath(dest, audioPart), joinPath(dest, `${safe}.mp4`));
     // The halves are an implementation detail; leaving them behind would
     // just look like three copies of the same video.

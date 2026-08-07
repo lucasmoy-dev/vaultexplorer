@@ -152,6 +152,11 @@ export function VideoStage({ src, name }: VideoStageProps): React.JSX.Element {
       el.pause();
       el.currentTime = 0;
       el.playbackRate = rate;
+      // Opening a video means wanting to watch it -- start playing rather
+      // than waiting for a second click on the same intent. A rejected
+      // play() (autoplay policy with sound) just leaves it paused, which
+      // is the old behaviour, so nothing is lost where it isn't allowed.
+      void el.play().catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedSrc]);

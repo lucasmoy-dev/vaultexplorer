@@ -1788,6 +1788,7 @@ pub fn run() {
             webfind::download_web_result,
             mediaserver::media_url,
             ytstreams::youtube_streams,
+            ytstreams::download_stream,
             cast::cast_discover,
             cast::cast_play_youtube,
             #[cfg(target_os = "android")]

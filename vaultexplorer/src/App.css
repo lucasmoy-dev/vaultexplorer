@@ -4287,7 +4287,7 @@ input[type="range"]::-webkit-slider-thumb {
   left: 0;
   right: 0;
   top: 16px;
-  height: 15px;
+  height: 10px;
   background-image: var(--wood-grain),
     linear-gradient(180deg, #c47a34 0%, #96591f 30%, #6e3c17 65%, #3c2109 100%);
   background-repeat: repeat, no-repeat;
@@ -4302,15 +4302,26 @@ input[type="range"]::-webkit-slider-thumb {
   width: 26px;
   z-index: 2;
 }
+/* The sides are the bookcase's own uprights -- planks seen edge-on, with
+   the same grain and palette as the boards. They were plain black
+   gradients, which read as vignetting rather than as furniture. */
 .shelf-side-wall-left {
   left: 0;
-  background: linear-gradient(to right, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0));
-  box-shadow: inset -6px 0 10px rgba(0, 0, 0, 0.3);
+  background-image: var(--wood-grain),
+    linear-gradient(to right, #6e3c17 0%, #96591f 45%, #3c2109 100%);
+  background-repeat: repeat, no-repeat;
+  background-size: 180px 90px, auto;
+  background-blend-mode: soft-light, normal;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.14), 6px 0 12px rgba(0, 0, 0, 0.45);
 }
 .shelf-side-wall-right {
   right: 0;
-  background: linear-gradient(to left, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0));
-  box-shadow: inset 6px 0 10px rgba(0, 0, 0, 0.3);
+  background-image: var(--wood-grain),
+    linear-gradient(to left, #6e3c17 0%, #96591f 45%, #3c2109 100%);
+  background-repeat: repeat, no-repeat;
+  background-size: 180px 90px, auto;
+  background-blend-mode: soft-light, normal;
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.14), -6px 0 12px rgba(0, 0, 0, 0.45);
 }
 
 /* ---- shared: every item stands on a fixed-height shelf slot (see
@@ -5468,4 +5479,16 @@ input[type="range"]::-webkit-slider-thumb {
   font-size: 12px;
   color: var(--text-2);
   text-align: center;
+}
+
+/* Android's own back gesture owns the first few millimetres of each screen
+   edge, and the video player's volume slider ran right into it -- sliding
+   the volume kept registering as "go back". Keeping the control bar clear
+   of the edges gives the gesture its strip and the slider its own room. */
+.is-mobile .video-controls-row {
+  padding-left: 22px;
+  padding-right: 22px;
+}
+.is-mobile .video-volume-slider {
+  max-width: 120px;
 }

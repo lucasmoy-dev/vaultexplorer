@@ -279,7 +279,10 @@ export function LibraryShelf({
     const fullPath = pathFor ? pathFor(entry) : joinPath(curDir, entry.name);
     const kind: Kind = entry.is_dir ? "folder" : kindOf(entry);
     const shared = {
-      onDoubleClick: () => onOpen(entry),
+      // One click opens: these are big, deliberately-aimed-at objects on a
+      // shelf, not rows in a dense grid where a click has to mean "select"
+      // first.
+      onClick: () => onOpen(entry),
       onContextMenu: (e: React.MouseEvent) => onMenu(e, entry),
     };
     let inner: React.ReactNode;
@@ -297,7 +300,7 @@ export function LibraryShelf({
       inner = <GenericItem entry={entry} />;
     }
     return (
-      <div key={fullPath} onDoubleClick={shared.onDoubleClick} onContextMenu={shared.onContextMenu}>
+      <div key={fullPath} onClick={shared.onClick} onContextMenu={shared.onContextMenu}>
         {inner}
       </div>
     );

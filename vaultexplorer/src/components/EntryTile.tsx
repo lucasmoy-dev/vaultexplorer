@@ -160,11 +160,11 @@ export function EntryTile({
           card?.photoDataUrl ? (
             <img src={card.photoDataUrl} className="entry-avatar-photo" alt="" draggable={false} />
           ) : (
-            // A silhouette, not the filename's first letter: before the
-            // vCard has been read there is no name to take an initial
-            // from, and the "?" that stood there read as an error.
+            // Always the silhouette when there's no photo: an initial in a
+            // coloured circle reads as "this is their picture", which it
+            // isn't.
             <span className="entry-avatar-initial">
-              {card?.name ? card.name.charAt(0).toUpperCase() : <PersonGlyph size={18} />}
+              <PersonGlyph size={18} />
             </span>
           )
         ) : thumb ? (
@@ -249,7 +249,7 @@ export function EntryTile({
       ) : (
         <span className="entry-name">
           {isVcf ? card?.name || displayEntryName(entry, true) : displayEntryName(entry, !!hideExtensions)}
-          {isVcf && contactPhone && <span className="entry-subline">{contactPhone}</span>}
+
         </span>
       )}
       {isVcf && contactPhone && !editing && (
