@@ -1602,6 +1602,12 @@ pub fn run() {
                                 eprintln!("filemanager1: failed to refresh service registration: {e}");
                             }
                         }
+                        // Registering the backend only decides which portal
+                        // serves a request; GTK and Qt apps have to be told
+                        // to ask a portal at all, and that part only ever
+                        // ran when the setting was newly toggled -- so
+                        // anyone who enabled it earlier never got it.
+                        portal::ensure_env_registered();
                     }
                 });
             }

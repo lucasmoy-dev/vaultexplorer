@@ -5367,7 +5367,7 @@ function Explorer({ home }: { home: string }) {
           </div>
         ) : (
           <div
-            className={`sidebar-item ${showMyComputer ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
+            className={`sidebar-item ${showMyComputer ? "active" : ""} ${favCollapsed ? "icon-only" : ""} hidden-entry`}
             title={favCollapsed ? "My Computer" : undefined}
             onClick={openMyComputer}
             onContextMenu={(e) => {

@@ -608,6 +608,24 @@ fn env_file_path() -> std::path::PathBuf {
         .join(".config/environment.d/95-vaultexplorer-portal.conf")
 }
 
+/// Pushes the same variables into the *running* session, so apps launched
+/// from now on pick them up without logging out. environment.d is only
+/// read at login, which is why enabling the setting appeared to do nothing
+/// until the next session -- the complaint that other programs still
+/// ignored this picker.
+fn apply_env_to_session() {
+    for pair in ["GTK_USE_PORTAL=1", "QT_QPA_PLATFORMTHEME=xdgdesktopportal"] {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "set-environment", pair])
+            .status();
+        // systemd's copy covers units; D-Bus activation has its own,
+        // and that is the one desktop apps are usually started from.
+        let _ = std::process::Command::new("dbus-update-activation-environment")
+            .args(["--systemd", pair])
+            .status();
+    }
+}
+
 fn write_env_file() -> Result<(), String> {
     let path = env_file_path();
     if let Some(dir) = path.parent() {
@@ -654,6 +672,7 @@ pub async fn portal_enable(
     // Best-effort: a failure here only means GTK/Qt apps keep using their
     // own dialogs, which is exactly the state this toggle was already in.
     let _ = write_env_file();
+    apply_env_to_session();
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "restart", "xdg-desktop-portal.service"])
         .status();
@@ -663,6 +682,20 @@ pub async fn portal_enable(
 /// Remove the registration files. Does not stop an already-started
 /// connection this session (see the module doc comment) -- nothing routes
 /// to us anymore once the preference is gone, so that's harmless.
+/// Called at startup when the portal backend is already registered: the
+/// env file was previously written only by the toggle, so anyone who had
+/// enabled the picker *before* that existed never got it -- their file
+/// simply wasn't there, and every other app kept using its own dialog.
+pub fn ensure_env_registered() {
+    if !service_file_path().exists() {
+        return;
+    }
+    if !env_file_path().exists() {
+        let _ = write_env_file();
+    }
+    apply_env_to_session();
+}
+
 #[tauri::command]
 pub fn portal_disable() -> Result<(), String> {
     crate::filemanager1::remove_registration();

@@ -332,6 +332,16 @@ export function ContextMenu({ state, onClose }: { state: MenuState; onClose: () 
     };
     const attach = requestAnimationFrame(() => {
       window.addEventListener("click", closeIfOutside, true);
+      // `click` alone misses the cases where whatever was pressed swallows
+      // it (a drag that starts on mousedown, a button that stops
+      // propagation, a press that lands on a scrollbar) -- which is why
+      // the menu only *sometimes* stayed open. pointerdown fires before
+      // any of that. Desktop only: Android's touch-to-mouse synthesis
+      // fires a phantom pointerdown with a generic target, which would
+      // close the menu on the very tap that opened it.
+      if (!("ontouchstart" in window)) {
+        window.addEventListener("pointerdown", closeIfOutside, true);
+      }
       window.addEventListener("contextmenu", closeIfOutside, true);
       window.addEventListener("resize", onClose);
       window.addEventListener("blur", onClose);
@@ -341,6 +351,7 @@ export function ContextMenu({ state, onClose }: { state: MenuState; onClose: () 
     return () => {
       cancelAnimationFrame(attach);
       window.removeEventListener("click", closeIfOutside, true);
+      window.removeEventListener("pointerdown", closeIfOutside, true);
       window.removeEventListener("contextmenu", closeIfOutside, true);
       window.removeEventListener("resize", onClose);
       window.removeEventListener("blur", onClose);

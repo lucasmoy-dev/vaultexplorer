@@ -5585,3 +5585,24 @@ input[type="range"]::-webkit-slider-thumb {
   right: auto;
   left: 0;
 }
+
+/* The folder preview's thumbnail grid has to scroll rather than grow: a
+   folder with hundreds of files pushed the grid past the bottom of the
+   pane, which is why they looked like they piled up with no way down.
+   Flex children need an explicit min-height:0 before overflow works. */
+.text-editor-pane {
+  min-height: 0;
+}
+.folder-preview-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* "My Computer" was a second, poorer answer to the question "My Device"
+   already answers -- a bare list of drives with no capacity, next to a
+   panel that shows capacity, memory and load and opens any drive from the
+   same place. Kept in the code (its view still backs opening a drive) but
+   out of the sidebar, so there is one door instead of two. */
+.sidebar-item.hidden-entry {
+  display: none;
+}
