@@ -1466,12 +1466,6 @@ fn open_player_window(app: tauri::AppHandle, kind: String, items: String, index:
     Ok(())
 }
 
-/// The local-media counterpart of `open_player_window`: photos, video and
-/// audio files open in their own window rather than as an overlay stacked
-/// on top of the file grid, so the grid stays usable behind them and each
-/// piece of media gets real window chrome (traffic lights, fullscreen,
-/// its own place in the window switcher) -- the way a media file behaves
-/// everywhere else on the desktop.
 /// The real folder behind the Internet section.
 ///
 /// Internet's "Videos"/"Images"/"Books" are live searches with no path
@@ -1485,25 +1479,6 @@ fn internet_root() -> Result<String, String> {
     let dir = std::path::Path::new(&home).join(".local/share/vaultexplorer/internet");
     std::fs::create_dir_all(&dir).str_err()?;
     Ok(dir.to_string_lossy().to_string())
-}
-
-#[cfg(desktop)]
-#[tauri::command]
-fn open_media_window(app: tauri::AppHandle, items: String, index: usize) -> Result<(), String> {
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
-    let label = format!("media-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
-    let url = format!("index.html?media=1&items={}&index={index}", portal::url_encode(&items));
-    let w = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
-        .title("Media")
-        .inner_size(1000.0, 680.0)
-        .min_inner_size(420.0, 300.0)
-        .decorations(false)
-        .transparent(true)
-        .build()
-        .str_err()?;
-    let _ = w.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 255)));
-    let _ = w.set_focus();
-    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1808,8 +1783,6 @@ pub fn run() {
             ytdl::resolve_stream_url,
             #[cfg(desktop)]
             open_player_window,
-            #[cfg(desktop)]
-            open_media_window,
             ytembed::youtube_embed_url,
             #[cfg(desktop)]
             terminal::open_terminal,

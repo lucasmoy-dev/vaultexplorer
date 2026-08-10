@@ -21,7 +21,6 @@ import {
 } from "./api";
 import { TitleBar, TrafficLights } from "./TitleBar";
 import { ContextMenu, MenuState, MenuItem } from "./ContextMenu";
-import { MediaViewer, GalleryEntry } from "./components/media/MediaViewer";
 import {
   ChevronLeft,
   ChevronRight,
@@ -51,7 +50,6 @@ import {
   PasteGlyph,
   RetryImg,
   kindOf,
-  Kind,
   customIconUrl,
   CUSTOM_ICON_PREFIX,
   symbolIconSvg,
@@ -72,7 +70,6 @@ import { serializeVCard, emptyVCard } from "./vcard";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
 import { PlayerWindow } from "./components/PlayerWindow";
-import { MediaWindow } from "./components/MediaWindow";
 import { FreeUpSpaceView } from "./components/FreeUpSpaceView";
 import { FolderPickerSheet } from "./components/sheets/folder-picker-sheet";
 import { DeviceView } from "./components/DeviceView";
@@ -1047,7 +1044,6 @@ function Explorer({ home }: { home: string }) {
   // `isSensitivePath` expands it to inherited descendants.
   const [sensitiveSet, setSensitiveSet] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<MenuState>(null);
-  const [mediaViewer, setMediaViewer] = useState<{ gallery: GalleryEntry[]; startIndex: number } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null
@@ -2210,7 +2206,6 @@ function Explorer({ home }: { home: string }) {
   // every value it touches -- so this now subscribes exactly once, when
   // `mobile` first turns true, and never again for the component's life.
   const backStateRef = useRef({
-    mediaViewer,
     mobileEditorTarget,
     menu,
     settingsOpen,
@@ -2221,7 +2216,6 @@ function Explorer({ home }: { home: string }) {
     refresh,
   });
   backStateRef.current = {
-    mediaViewer,
     mobileEditorTarget,
     menu,
     settingsOpen,
@@ -2243,10 +2237,6 @@ function Explorer({ home }: { home: string }) {
       // folder view up a level while the still-open viewer hides that from
       // the user entirely (confirmed live: pressing back while playing
       // audio just kept playing with nothing visibly changing).
-      if (s.mediaViewer) {
-        setMediaViewer(null);
-        return;
-      }
       // Internet gets first refusal after the media viewer: a playing
       // video should close on back, and a search should step back to the
       // Videos/Images/Books tiles -- pressing back there used to leave the
@@ -2646,46 +2636,29 @@ function Explorer({ home }: { home: string }) {
   // MediaViewer's normal per-item resolution, which does work for
   // desktop (FUSE-backed) but not mobile vault siblings -- an accepted
   // gap for now, single-file viewing still works everywhere.
-  function openMediaViewer(
+  // Photos, video and music open in whatever the system uses for them.
+  //
+  // This app had a full gallery/player of its own -- viewer, media window,
+  // filmstrip, zoom, playback modes. That is a media app's job, not a file
+  // manager's, and keeping it here meant maintaining a second-rate copy of
+  // something every desktop and phone already ships. The in-place preview
+  // in List with Preview stays (peeking at a file without leaving the
+  // grid *is* a file manager's job), and Internet keeps its own player,
+  // since watching a search result never involves a local file at all.
+  async function openMediaViewer(
     dir: string,
     entry: Entry,
     inVault: boolean,
     resolved?: { path: string; inVault: boolean }
   ) {
-    const kind = kindOf(entry);
-    const wantKinds: Kind[] = kind === "audio" ? ["audio"] : ["image", "video"];
-    const siblings = entries.filter((e) => !e.is_dir && wantKinds.includes(kindOf(e)));
-    const gallery: GalleryEntry[] = siblings.map((e) => ({
-      name: e.name,
-      fullPath: joinPath(dir, e.name),
-      kind: kindOf(e) as "image" | "video" | "audio",
-      inVault,
-    }));
-    let startIndex = gallery.findIndex((g) => g.name === entry.name);
-    if (resolved) {
-      // Splice in the already-resolved stand-in for the opened entry
-      // itself (siblings keep their normal vault-relative path).
-      if (startIndex >= 0) {
-        gallery[startIndex] = { ...gallery[startIndex], fullPath: resolved.path, inVault: resolved.inVault };
-      } else {
-        gallery.push({ name: entry.name, fullPath: resolved.path, kind: kind as "image" | "video" | "audio", inVault: resolved.inVault });
-        startIndex = gallery.length - 1;
-      }
+    // A vault file has no path outside its FUSE mount, so it needs
+    // resolving before anything else can open it.
+    const path = resolved?.path ?? (inVault ? await api.openPath(joinPath(dir, entry.name)) : joinPath(dir, entry.name));
+    try {
+      await osOpen(path);
+    } catch (e) {
+      setError(String(e));
     }
-    if (startIndex < 0) startIndex = 0;
-    // Desktop opens media in its own window (traffic lights, fullscreen,
-    // its own entry in the window switcher, the grid still usable behind
-    // it); mobile has no window manager to put one in, so it keeps the
-    // in-app overlay.
-    if (mobile) {
-      setMediaViewer({ gallery, startIndex });
-      return;
-    }
-    api.openMediaWindow(gallery, startIndex).catch(() => {
-      // No window (an unusual WM, or the command missing on this
-      // platform) is not a reason to leave a double-click doing nothing.
-      setMediaViewer({ gallery, startIndex });
-    });
   }
 
   async function activate(dir: string, entry: Entry) {
@@ -6568,16 +6541,6 @@ function Explorer({ home }: { home: string }) {
         />
       )}
       <ContextMenu state={menu} onClose={() => setMenu(null)} />
-      {mediaViewer && (
-        <MediaViewer
-          gallery={mediaViewer.gallery}
-          startIndex={mediaViewer.startIndex}
-          onClose={() => setMediaViewer(null)}
-          onDeleted={() => refresh()}
-          onFileChanged={() => refresh()}
-          mobile={mobile}
-        />
-      )}
       {shareStatus && (
         <div className={`share-toast ${shareStatus.state}`}>
           {shareStatus.state === "working" && (
@@ -6639,16 +6602,6 @@ export default function App() {
         directory={params.get("directory") === "true"}
       />
     );
-  }
-
-  if (params.get("media") === "1") {
-    let gallery: GalleryEntry[] = [];
-    try {
-      gallery = JSON.parse(params.get("items") ?? "[]");
-    } catch {
-      /* malformed items -- MediaWindow renders an empty gallery */
-    }
-    return <MediaWindow gallery={gallery} startIndex={Number(params.get("index") ?? "0")} />;
   }
 
   if (params.get("player") === "1") {
