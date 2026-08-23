@@ -138,6 +138,12 @@ top right: a list that never ends has no bottom to put them under.
 - **Where files land.** `MediaStore` with `IS_PENDING`, which needs no
   storage permission at all and keeps the file invisible until it is
   complete, so no music player indexes a half download.
+- **Light and dark.** `MaterialTheme {}` with no colour scheme is *always
+  light*, so the app used to be a white screen on a phone set to dark. It now
+  follows the system setting (wallpaper-derived colours on Android 12+), and
+  the platform theme has a `values-night` variant -- `Theme.DeviceDefault`
+  has no DayNight flavour, so without it the window flashes white behind the
+  app. A test reads the theme's background under each qualifier.
 - **Livestreams** have no file to download; their buttons are disabled and
   the row says so, instead of failing three steps later.
 - **A "Diagnóstico" button**, because a 403 depends on the network the phone

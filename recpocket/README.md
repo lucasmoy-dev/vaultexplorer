@@ -89,6 +89,13 @@ chronologically in every gallery, file manager and `ls` on earth.
   screenshot comes from; the padding is accounted for and cropped.
 - **Where files go.** `MediaStore` with `IS_PENDING`: no storage permission
   at all, and nothing appears in the gallery until it is complete.
+- **Light and dark.** `MaterialTheme {}` with no colour scheme is *always
+  light*, which on a phone set to dark is a white app among dark ones. The
+  app follows the system setting (wallpaper-derived colours on Android 12+),
+  and the platform theme has a `values-night` variant because
+  `Theme.DeviceDefault` has no DayNight flavour -- without it the window
+  itself flashes white behind a dark app. Both halves are asserted by a test
+  that reads the theme's background under each qualifier.
 
 ## Layout
 

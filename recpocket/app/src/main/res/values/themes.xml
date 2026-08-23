@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Compose paints the UI; the platform theme only keeps the system bars
-         sane and stays out of the way. -->
-    <style name="Theme.RecPocket" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+    <!-- Compose paints the UI; the platform theme only decides the window
+         background behind it and keeps the system bars sane.
+
+         Two files on purpose. `Theme.DeviceDefault` is itself the dark
+         variant and `.Light` the light one, and there is no DayNight flavour
+         of it, so the night qualifier is what makes the window follow the
+         phone's setting. Without it, a phone in dark mode shows a white
+         window flashing behind a dark app. -->
+    <style name="Theme.RecPocket" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
 </resources>

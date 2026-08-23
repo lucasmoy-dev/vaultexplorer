@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark mode: DeviceDefault without `.Light` is the dark variant. -->
+    <style name="Theme.RecPocket" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+</resources>

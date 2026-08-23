@@ -194,7 +194,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        MaterialTheme {
+        AppTheme {
             Surface(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp)) {
                     Row(
