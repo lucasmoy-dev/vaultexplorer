@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The microphone half of the app. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Drawing subtitles over other apps. Not grantable from a dialog: the
+         user has to allow it in Settings, which MainActivity opens. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Whisper models and the ML Kit translation models are downloaded. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Capture has to keep running with the app in the background, which on
+         Android means a foreground service, which means a notification. That
+         notification is also this app's whole control surface while it runs:
+         the Android answer to the desktop version's tray icon. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- In-app updates: the app downloads its own APK from the GitHub release
+         and hands it to the system installer, which is what asks the user to
+         confirm. Nothing installs silently. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LiveSubs">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Both foreground service types are declared because the service
+             runs with one or both, depending on what the user turned on: the
+             microphone alone, or the microphone plus playback capture. -->
+        <!-- A file:// URI to an APK has been rejected by the installer since
+             Android 7, so the downloaded update is handed over as a
+             content:// URI from here. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <service
+            android:name=".CaptionService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|mediaProjection" />
+    </application>
+</manifest>

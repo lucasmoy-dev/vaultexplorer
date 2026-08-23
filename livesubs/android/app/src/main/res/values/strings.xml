@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LiveSubs</string>
+
+    <string name="channel_name">Subtítulos en directo</string>
+    <string name="action_start">Empezar</string>
+    <string name="action_stop">Parar</string>
+    <string name="action_pause">Pausar</string>
+    <string name="action_resume">Reanudar</string>
+    <string name="action_settings">Configuración</string>
+    <string name="action_preview">Ver ejemplo</string>
+    <string name="action_download_model">Descargar modelo</string>
+    <string name="action_downloading">Descargando… %1$d%%</string>
+    <string name="action_pick_transcript">Elegir archivo…</string>
+
+    <string name="section_status">Estado</string>
+    <string name="section_audio">Audio que se escucha</string>
+    <string name="section_recognition">Reconocimiento de voz</string>
+    <string name="section_translation">Traducción</string>
+    <string name="section_appearance">Aspecto de los subtítulos</string>
+    <string name="section_transcript">Guardar transcripción</string>
+
+    <string name="status_listening">Escuchando.</string>
+    <string name="status_stopped">Parado.</string>
+    <string name="status_paused">En pausa.</string>
+    <string name="status_mic_permission">Permiso de micrófono.</string>
+    <string name="status_overlay_permission">Permiso para dibujar encima de otras apps.</string>
+    <string name="status_model">Modelo de voz «%1$s» descargado.</string>
+    <string name="status_model_missing">Falta descargar el modelo «%1$s».</string>
+    <string name="status_model_failed">No se pudo cargar el modelo de voz.</string>
+    <string name="status_no_mic_permission">Sin permiso de micrófono.</string>
+    <string name="status_no_projection">Solo micrófono: falta el permiso de captura de pantalla.</string>
+    <string name="status_projection_stopped">Se detuvo la captura del audio del sistema.</string>
+    <string name="status_capture_failed">No se pudo abrir el audio.</string>
+    <string name="status_transcript_failed">No se pudo escribir la transcripción: %1$s</string>
+
+    <string name="setting_mic">Micrófono</string>
+    <string name="setting_mic_hint">Tu propia voz.</string>
+    <string name="setting_system">Audio del sistema</string>
+    <string name="setting_system_hint">Vídeos, música, navegador. Las llamadas no se pueden capturar (lo bloquea Android).</string>
+    <string name="setting_sensitivity">Sensibilidad</string>
+    <string name="setting_sensitivity_hint">Más alto = hace falta hablar más fuerte para que se active.</string>
+    <string name="setting_model">Modelo</string>
+    <string name="setting_model_hint">Más grande = más preciso y más lento.</string>
+    <string name="setting_spoken_language">Idioma hablado</string>
+    <string name="setting_spoken_language_hint">Automático lo detecta en cada frase; fijarlo es más rápido y preciso.</string>
+    <string name="setting_target_language">Mostrar siempre en</string>
+    <string name="setting_target_language_hint">Los subtítulos aparecen en este idioma, hable quien hable.</string>
+    <string name="setting_show_original">Mostrar también el original</string>
+    <string name="setting_show_original_hint">Debajo de la traducción.</string>
+    <string name="setting_position">Posición</string>
+    <string name="setting_margin">Distancia al borde</string>
+    <string name="setting_margin_hint">Deja sitio para la barra de navegación si hace falta.</string>
+    <string name="setting_width">Ancho</string>
+    <string name="setting_font_size">Tamaño de letra</string>
+    <string name="setting_max_lines">Líneas visibles</string>
+    <string name="setting_max_lines_hint">Cuántas frases se quedan en pantalla a la vez.</string>
+    <string name="setting_hide_after">Desaparecen tras</string>
+    <string name="setting_hide_after_hint">Tiempo sin voz antes de borrarlas.</string>
+    <string name="setting_bg_opacity">Opacidad del fondo</string>
+    <string name="setting_bg_opacity_hint">De transparente a placa sólida.</string>
+    <string name="setting_mic_color">Color del micrófono</string>
+    <string name="setting_system_color">Color del sistema</string>
+    <string name="setting_bg_color">Color del fondo</string>
+    <string name="setting_log">Guardar todo lo reconocido</string>
+    <string name="setting_log_hint">Una línea por frase, con hora, fuente e idioma.</string>
+
+    <string name="language_auto">Detección automática</string>
+    <string name="language_off">Sin traducir</string>
+    <string name="language_en">Inglés</string>
+    <string name="language_es">Español</string>
+    <string name="language_fr">Francés</string>
+
+    <string name="position_bottom">Abajo</string>
+    <string name="position_center">Centro</string>
+    <string name="position_top">Arriba</string>
+
+    <string name="transcript_none">Sin archivo elegido.</string>
+    <string name="translation_note">Traducción en el propio móvil con ML Kit: descarga ~30MB por idioma la primera vez y luego funciona sin conexión. Necesita Google Play Services.</string>
+    <string name="calls_note">Nota: Android no permite capturar el audio de las llamadas (Meet, Zoom, WhatsApp, Teams lo marcan como no capturable). Para subtitular a la otra parte, pon la llamada en altavoz y deja que lo coja el micrófono.</string>
+
+    <string name="msg_need_overlay">Hace falta el permiso para dibujar encima de otras apps.</string>
+    <string name="msg_need_model">Descarga primero el modelo de voz.</string>
+    <string name="msg_model_ready">Modelo «%1$s» listo.</string>
+    <string name="msg_model_failed">No se pudo descargar el modelo: %1$s</string>
+    <string name="section_updates">Actualizaciones</string>
+    <string name="update_current">Versión instalada: %1$s</string>
+    <string name="update_hint">Se publica como release en GitHub (etiqueta livesubs-vX.Y.Z) con el APK adjunto. Al actualizar, el instalador de Android te pedirá confirmación.</string>
+    <string name="update_checking">Buscando actualizaciones…</string>
+    <string name="update_available">Hay una versión nueva: %1$s</string>
+    <string name="update_no_apk">Hay versión %1$s, pero esa release no trae APK.</string>
+    <string name="update_none">Estás al día (%1$s).</string>
+    <string name="update_failed">No se pudo comprobar: %1$s</string>
+    <string name="update_need_permission">Permite «instalar apps desconocidas» para LiveSubs (se acaba de abrir en Ajustes) y vuelve a pulsar.</string>
+    <string name="update_confirm">Confirma la instalación en la pantalla del sistema.</string>
+    <string name="action_check_updates">Buscar actualizaciones</string>
+    <string name="action_install_update">Actualizar a %1$s</string>
+    <string name="action_open_releases">Ver releases</string>
+    <string name="msg_projection_denied">Sin captura de pantalla: solo se subtitulará el micrófono.</string>
+</resources>

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=LiveSubs
+Comment=Live subtitles for the microphone and the system audio
+Comment[es]=Subtítulos en vivo del micrófono y del sonido del sistema
+Exec=livesubs
+Icon=livesubs
+Terminal=false
+Categories=AudioVideo;Utility;Accessibility;
+Keywords=subtitles;captions;subtitulos;transcription;translate;
+StartupNotify=false
+X-GNOME-UsesNotifications=false

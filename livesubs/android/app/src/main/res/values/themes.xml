@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The settings screen is Compose + Material3; the platform theme only
+         has to keep the system bars sane and stay out of the way. -->
+    <style name="Theme.LiveSubs" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+</resources>

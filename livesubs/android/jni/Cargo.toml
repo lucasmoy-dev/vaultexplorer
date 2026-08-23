@@ -1,0 +1,26 @@
+[package]
+name = "livesubs-jni"
+version = "0.1.0"
+description = "JNI bridge from the Android app to livesubs-core"
+edition = "2021"
+
+[lib]
+name = "livesubs"
+# The Android app loads this with System.loadLibrary("livesubs").
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21"
+serde_json = "1"
+# No default features: the model download is Kotlin's job on Android (see
+# the core crate's comment), which keeps a second HTTP/TLS stack out of the
+# .so.
+livesubs-core = { path = "../../core", default-features = false }
+
+# A phone is not a laptop: an unoptimised whisper.cpp is unusably slow, and
+# the .so is shipped in the APK either way.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

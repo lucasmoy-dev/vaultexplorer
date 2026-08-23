@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>LiveSubs overlay</title>
+    <link rel="stylesheet" href="/src/overlay.css" />
+  </head>
+  <body class="overlay-body">
+    <!-- One stack of lines, newest last. Nothing here is interactive: the
+         window itself ignores the pointer (see overlay.rs), so a click
+         lands on whatever is underneath. -->
+    <div id="lines" class="lines"></div>
+    <script type="module" src="/src/overlay.ts"></script>
+  </body>
+</html>

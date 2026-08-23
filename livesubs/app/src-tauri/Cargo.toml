@@ -1,0 +1,39 @@
+[package]
+name = "livesubs"
+version = "0.1.0"
+description = "Live subtitles for everything the machine hears"
+authors = ["lucasmoy-dev"]
+edition = "2021"
+
+[lib]
+name = "livesubs_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# What the Tauri CLI turns on for a production build: the bundled frontend
+# is served through tauri's own protocol instead of the dev server. Without
+# it, a plain `cargo build --release` produces a binary that tries to load
+# http://localhost:5183 and shows "connection refused" in the overlay.
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `tray-icon` is the whole point of the app's chrome: it has no main window,
+# it lives in the top bar. `image-png` lets the tray icon be loaded from a
+# plain PNG instead of raw RGBA bytes.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Speech detection + recognition, shared with the Android app (see
+# ../../core). whisper.cpp lives in there, along with the VAD and the rules
+# for what counts as a caption -- the two apps must agree on all of that.
+livesubs-core = { path = "../../core" }
+# The update check talks to the GitHub releases API (see update.rs).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Two narrow uses: `localtime_r` for the transcript's local timestamps, and
+# `kill` to unblock a capture thread that is waiting on audio which will
+# never arrive (see pipeline::Pipeline::stop).
+libc = "0.2"

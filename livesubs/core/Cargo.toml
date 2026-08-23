@@ -1,0 +1,17 @@
+[package]
+name = "livesubs-core"
+version = "0.1.0"
+description = "Voice activity detection + local speech recognition, shared by the desktop app and the Android app"
+edition = "2021"
+
+[dependencies]
+whisper-rs = "0.16"
+# Only the desktop app downloads models with this crate; on Android the
+# download is Kotlin's job (it already has the network stack, a
+# notification to report progress into, and the app's own storage), so
+# rustls and friends stay out of the .so.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+
+[features]
+default = ["download"]
+download = ["reqwest"]

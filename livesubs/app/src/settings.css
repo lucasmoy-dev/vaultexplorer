@@ -1,0 +1,195 @@
+/* The settings window. Plain, dense, one column: it is a control panel
+ * you open, change one thing in, and close -- not a place to spend time.
+ * Follows the desktop's light/dark preference rather than picking one. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f6f6f7;
+  --card: #ffffff;
+  --text: #1b1b1f;
+  --text-dim: #63636b;
+  --border: rgba(0, 0, 0, 0.12);
+  --accent: #2f7bff;
+  --danger: #d33a2c;
+  --ok: #1a8a4a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1b1e;
+    --card: #26262a;
+    --text: #f2f2f4;
+    --text-dim: #a3a3ad;
+    --border: rgba(255, 255, 255, 0.14);
+    --accent: #66a3ff;
+    --ok: #58d68d;
+    --danger: #ff6b5e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 "Inter", "Ubuntu", system-ui, sans-serif;
+}
+
+.settings {
+  padding: 18px 20px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+section {
+  background: var(--card);
+  border: 0.5px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+}
+
+.row + .row {
+  border-top: 0.5px solid var(--border);
+}
+
+.row label.name {
+  flex: 1;
+  min-width: 0;
+}
+
+.row .hint {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+input[type="text"],
+select {
+  background: var(--bg);
+  color: var(--text);
+  border: 0.5px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font: inherit;
+  min-width: 120px;
+}
+
+input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+input[type="number"] {
+  width: 84px;
+  background: var(--bg);
+  color: var(--text);
+  border: 0.5px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font: inherit;
+}
+
+input[type="color"] {
+  width: 42px;
+  height: 26px;
+  padding: 0;
+  border: 0.5px solid var(--border);
+  border-radius: 6px;
+  background: none;
+}
+
+input[type="range"] {
+  width: 160px;
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 0.5px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: none;
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.bad {
+  background: var(--danger);
+}
+
+.log {
+  margin-top: 10px;
+  max-height: 116px;
+  overflow-y: auto;
+  font-family: ui-monospace, "Ubuntu Mono", monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+.log .err {
+  color: var(--danger);
+}
+
+progress {
+  width: 100%;
+  height: 6px;
+}
+
+.swatch-pair {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
