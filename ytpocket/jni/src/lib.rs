@@ -7,6 +7,7 @@
 //! Android ships an AAC decoder but has never shipped an MP3 encoder, and
 //! there is no ffmpeg to shell out to.
 pub mod bridge;
+pub mod download;
 pub mod mp3;
 pub mod naming;
 pub mod youtube;

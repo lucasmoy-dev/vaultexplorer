@@ -83,7 +83,16 @@ class DownloadService : LifecycleService() {
                 val audio = resolved.audio ?: throw IllegalStateException(getString(R.string.error_no_audio))
                 val source = File(work, "$videoId-audio.${audio.ext}")
                 parts += source
-                fetchWithProgress(audio, source, title, getString(R.string.download_audio), 0f, 0.7f)
+                fetchWithProgress(
+                    videoId = videoId,
+                    pick = { it.audio },
+                    resolved = resolved,
+                    target = source,
+                    title = title,
+                    step = getString(R.string.download_audio),
+                    from = 0f,
+                    to = 0.7f,
+                )
 
                 update(getString(R.string.download_converting, title), 0.75f)
                 progress.value = Progress(title, getString(R.string.download_converting_short), 0.75f)
@@ -104,8 +113,26 @@ class DownloadService : LifecycleService() {
                 // Video first and audio second, weighted by how big they
                 // are: the video is 20x the audio, and a bar that jumps
                 // from 5% to 95% is worse than no bar.
-                fetchWithProgress(video, videoPart, title, getString(R.string.download_video, video.height), 0f, 0.8f)
-                fetchWithProgress(audio, audioPart, title, getString(R.string.download_audio), 0.8f, 0.9f)
+                fetchWithProgress(
+                    videoId = videoId,
+                    pick = { it.video },
+                    resolved = resolved,
+                    target = videoPart,
+                    title = title,
+                    step = getString(R.string.download_video, video.height),
+                    from = 0f,
+                    to = 0.8f,
+                )
+                fetchWithProgress(
+                    videoId = videoId,
+                    pick = { it.audio },
+                    resolved = resolved,
+                    target = audioPart,
+                    title = title,
+                    step = getString(R.string.download_audio),
+                    from = 0.8f,
+                    to = 0.9f,
+                )
 
                 update(getString(R.string.download_muxing, title), 0.92f)
                 progress.value = Progress(title, getString(R.string.download_muxing_short), 0.92f)
@@ -133,18 +160,40 @@ class DownloadService : LifecycleService() {
         }
     }
 
+    /**
+     * Fetch one stream, and if YouTube refuses part way through, resolve the
+     * video again and try once with fresh URLs.
+     *
+     * Worth the retry rather than failing: a googlevideo URL is short-lived
+     * and tied to the client that minted it, so "403 half way" is a normal
+     * thing to recover from, not a reason to make the user start over. The
+     * retry is bounded at one -- a second refusal is a real problem, and
+     * looping would just hammer YouTube.
+     */
     private fun fetchWithProgress(
-        stream: Native.Stream,
+        videoId: String,
+        pick: (Native.Resolved) -> Native.Stream?,
+        resolved: Native.Resolved,
         target: File,
         title: String,
         step: String,
         from: Float,
         to: Float,
     ) {
-        Downloads.fetch(stream.url, target, stream.size) { fraction ->
+        val stream = pick(resolved) ?: throw IllegalStateException(getString(R.string.error_no_audio))
+        val report: (Float) -> Unit = { fraction ->
             val overall = from + (to - from) * fraction
             update("$step · $title", overall)
             progress.value = Progress(title, step, overall)
+        }
+        try {
+            Downloads.fetch(stream.url, target, resolved.userAgent, stream.size, report)
+        } catch (first: Throwable) {
+            val fresh = runCatching { Native.resolveVideo(videoId) }.getOrNull()
+                ?: throw first
+            val retryStream = pick(fresh) ?: throw first
+            update(getString(R.string.download_retrying, title), from)
+            Downloads.fetch(retryStream.url, target, fresh.userAgent, retryStream.size, report)
         }
     }
 

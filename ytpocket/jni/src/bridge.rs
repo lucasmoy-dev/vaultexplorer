@@ -95,6 +95,59 @@ pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_resolve(
     })
 }
 
+/// The size of a stream, for the progress bar, or `{"error":...}`.
+#[no_mangle]
+pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_totalSize(
+    mut env: JNIEnv,
+    _class: JClass,
+    url: JString,
+    user_agent: JString,
+) -> jstring {
+    let url = match text(&mut env, &url) {
+        Ok(value) => value,
+        Err(error) => return respond(&mut env, Err(error)),
+    };
+    let user_agent = text(&mut env, &user_agent).unwrap_or_default();
+    guarded(&mut env, || {
+        let total = crate::download::total_size(&url, &user_agent)?;
+        Ok(serde_json::json!({ "total": total }).to_string())
+    })
+}
+
+/// Append one chunk of `url` to `path`. Returns `{"written": n}`; `0` means
+/// the file ended. Kotlin loops, keeping progress and cancellation on its
+/// side -- see `download.rs` for why the HTTP itself is here.
+#[no_mangle]
+pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_downloadChunk(
+    mut env: JNIEnv,
+    _class: JClass,
+    url: JString,
+    path: JString,
+    offset: jni::sys::jlong,
+    max_bytes: jni::sys::jlong,
+    user_agent: JString,
+) -> jstring {
+    let url = match text(&mut env, &url) {
+        Ok(value) => value,
+        Err(error) => return respond(&mut env, Err(error)),
+    };
+    let path = match text(&mut env, &path) {
+        Ok(value) => value,
+        Err(error) => return respond(&mut env, Err(error)),
+    };
+    let user_agent = text(&mut env, &user_agent).unwrap_or_default();
+    guarded(&mut env, || {
+        let written = crate::download::chunk(
+            &url,
+            &path,
+            offset.max(0) as u64,
+            max_bytes.max(1) as u64,
+            &user_agent,
+        )?;
+        Ok(serde_json::json!({ "written": written }).to_string())
+    })
+}
+
 /// A filename for this title, safe for the phone's storage. In Rust rather
 /// than Kotlin because it is the app's promise -- "files named after the
 /// video" -- and it has the tests to prove it (see `naming.rs`).

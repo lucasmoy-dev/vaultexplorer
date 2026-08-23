@@ -90,6 +90,18 @@ pub struct Resolved {
     pub title: String,
     pub channel: String,
     pub duration: Option<u32>,
+    /// Which YouTube client produced these URLs, and the User-Agent that
+    /// goes with it.
+    ///
+    /// This is not diagnostics: a googlevideo URL is minted for a specific
+    /// client, and a request that does not look like that client can be
+    /// answered with **403**. The download therefore has to go out with this
+    /// exact agent -- which is also why downloading is done by the native
+    /// side now, through the same HTTP stack that resolved the URL, rather
+    /// than by a second client in Kotlin that differs in its headers, its
+    /// TLS and even which IP family it connects over.
+    pub client: String,
+    pub user_agent: String,
     /// The audio track both downloads use: **AAC**, deliberately, even when
     /// YouTube offers a higher-bitrate Opus one.
     ///
@@ -184,47 +196,85 @@ pub fn video_id_of(text: &str) -> Option<String> {
     (!last.is_empty() && last.len() <= 24).then(|| last.to_string())
 }
 
-/// Clients to try, in order, until one returns usable streams.
+/// Clients to try, in order, until one returns streams that actually serve
+/// bytes.
 ///
-/// Not a single hard-coded client: which of YouTube's clients resolve
-/// changes over time (the sibling app pinned iOS because Android and TV
-/// were failing signature deobfuscation at the time), and a download that
-/// stops working is this app's entire failure mode. Trying a short list
-/// costs one extra request in the bad case and keeps working across the
-/// next change.
-const CLIENTS: &[ClientType] = &[ClientType::Ios, ClientType::Tv, ClientType::Desktop, ClientType::Android];
+/// **Desktop, DesktopMusic and Mobile are deliberately absent.** Since
+/// August 2024 YouTube requires a PO token for streams from its web-based
+/// clients, and without one googlevideo answers the download with **403** --
+/// while the resolve step still succeeds, so nothing looks wrong until the
+/// transfer fails. Generating PO tokens needs a simulated browser (rustypipe
+/// farms it out to a separate CLI binary), which is not something a phone
+/// app can carry. Those clients therefore never mint a download URL here.
+///
+/// That leaves the three that need no token: iOS (which also needs no
+/// signature deobfuscation, making it the most reliable), TV and Android.
+const CLIENTS: &[ClientType] = &[ClientType::Ios, ClientType::Tv, ClientType::Android];
+
+/// How many times to walk the client list.
+///
+/// Two, because a failure is often transient (a timeout, a single bad
+/// response) and iOS -- the best of them -- deserves a second chance before
+/// the app tells the user it cannot download at all.
+const CLIENT_ATTEMPTS: usize = 2;
 
 pub fn resolve(video: &str) -> Result<Resolved, String> {
     let id = video_id_of(video).ok_or("eso no parece un vídeo de YouTube")?;
     let runtime = runtime()?;
     let pipe = client()?;
     let mut last_error = String::new();
-    let mut player = None;
-    for client in CLIENTS {
-        match runtime.block_on(async {
+    let mut found_player = None;
+    let mut refused = false;
+    for client in CLIENTS.iter().cycle().take(CLIENTS.len() * CLIENT_ATTEMPTS) {
+        let player = match runtime.block_on(async {
             pipe.query().player_from_client(&id, *client).await
         }) {
-            // A player with no audio at all is not usable for either
-            // download, so keep trying rather than returning it.
-            Ok(found) if !found.audio_streams.is_empty() => {
-                player = Some(found);
+            Ok(player) => player,
+            Err(error) => {
+                last_error = format!("{client:?}: {error}");
+                continue;
+            }
+        };
+        if player.details.is_live {
+            return Err(
+                "es un directo: YouTube no sirve archivos descargables para directos".to_string()
+            );
+        }
+        if player.audio_streams.is_empty() {
+            last_error = format!("el cliente {client:?} no devolvió audio");
+            continue;
+        }
+        // Resolving is not the same as being able to download. YouTube will
+        // hand back perfectly-formed URLs that googlevideo then answers with
+        // 403 -- which is exactly what shipped in 0.1.1 and failed on the
+        // phone. So each candidate is probed with a 1KB range request, using
+        // this client's own agent, and a client whose URLs do not actually
+        // serve bytes is skipped rather than returned to the user.
+        let user_agent = pipe.query().user_agent(*client).to_string();
+        let audio = player.audio_streams.iter().max_by_key(|s| s.bitrate);
+        match audio.map(|s| crate::download::probe(&s.url, &user_agent)) {
+            Some(Ok(())) => {
+                found_player = Some((player, *client, user_agent));
                 break;
             }
-            Ok(found) => {
-                last_error = if found.details.is_live {
-                    "es un directo: YouTube no sirve archivos descargables para directos".to_string()
-                } else {
-                    format!("el cliente {client:?} no devolvió audio")
-                };
-                if found.details.is_live {
-                    break;
-                }
+            Some(Err(error)) => {
+                refused = refused || error.contains("403");
+                last_error = format!("{client:?}: {error}");
             }
-            Err(error) => last_error = format!("{client:?}: {error}"),
+            None => last_error = format!("el cliente {client:?} no devolvió audio"),
         }
     }
-    let Some(player) = player else {
-        return Err(format!("no se pudieron obtener los streams ({last_error})"));
+    let Some((player, used_client, user_agent)) = found_player else {
+        // Separate messages because the fixes are different: a refusal is
+        // YouTube saying no to this network or this app, while everything
+        // else is usually a transient failure worth retrying.
+        return Err(if refused {
+            format!(
+                "YouTube rechazó la descarga de este vídeo desde esta red (403).                  Prueba con otro vídeo o vuelve a intentarlo más tarde. [{last_error}]"
+            )
+        } else {
+            format!("no se pudieron obtener los streams ({last_error})")
+        });
     };
 
     // Preferences first, "anything that exists" second -- see the field
@@ -265,6 +315,8 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
             size: s.size.unwrap_or(0),
         }),
         id,
+        client: format!("{used_client:?}").to_lowercase(),
+        user_agent,
     })
 }
 

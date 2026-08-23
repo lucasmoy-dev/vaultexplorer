@@ -24,6 +24,7 @@
     <string name="download_converting_short">Convirtiendo a MP3…</string>
     <string name="download_muxing">Uniendo vídeo y audio: %1$s</string>
     <string name="download_muxing_short">Uniendo vídeo y audio…</string>
+    <string name="download_retrying">Reintentando con enlaces nuevos: %1$s</string>
     <string name="download_saving">Guardando %1$s</string>
     <string name="download_done">Descarga terminada</string>
     <string name="download_failed">La descarga falló</string>

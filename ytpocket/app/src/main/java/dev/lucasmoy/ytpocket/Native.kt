@@ -40,6 +40,14 @@ object Native {
     private external fun search(query: String, limit: Int): String?
     private external fun resolve(video: String): String?
     private external fun fileName(title: String, ext: String): String?
+    private external fun totalSize(url: String, userAgent: String): String?
+    private external fun downloadChunk(
+        url: String,
+        path: String,
+        offset: Long,
+        maxBytes: Long,
+        userAgent: String,
+    ): String?
     private external fun transcodeMp3(
         source: String,
         destination: String,
@@ -89,6 +97,15 @@ object Native {
         val duration: Int?,
         val audio: Stream?,
         val video: Stream?,
+        /** Which YouTube client minted these URLs. */
+        val client: String,
+        /**
+         * The agent those URLs expect. Sending anything else can be answered
+         * with 403 -- which is why the download goes through the native side
+         * (same HTTP stack that resolved them) rather than a second client
+         * here. See `jni/src/download.rs`.
+         */
+        val userAgent: String,
     )
 
     /** Search, or throw with the message the native side reported. */
@@ -123,7 +140,30 @@ object Native {
             duration = obj.optIntOrNull("duration"),
             audio = obj.optJSONObject("audio")?.toStream(),
             video = obj.optJSONObject("video")?.toStream(),
+            client = obj.optString("client"),
+            userAgent = obj.optString("user_agent"),
         )
+    }
+
+    /** Total bytes of a stream, or 0 when the server won't say. */
+    fun sizeOf(url: String, userAgent: String): Long {
+        requireLibrary()
+        val raw = totalSize(url, userAgent) ?: return 0
+        raw.errorOrNull()?.let { throw IllegalStateException(it) }
+        return JSONObject(raw).optLong("total")
+    }
+
+    /**
+     * Append one chunk to `path`, returning how many bytes landed. Zero means
+     * the file ended. Throws with YouTube's own reason (403, 410, …) so the
+     * caller can decide whether to re-resolve and retry.
+     */
+    fun fetchChunk(url: String, path: String, offset: Long, maxBytes: Long, userAgent: String): Long {
+        requireLibrary()
+        val raw = downloadChunk(url, path, offset, maxBytes, userAgent)
+            ?: throw IllegalStateException("la descarga no devolvió nada")
+        raw.errorOrNull()?.let { throw IllegalStateException(it) }
+        return JSONObject(raw).optLong("written")
     }
 
     /** A filename for this title, safe for the phone's storage. */

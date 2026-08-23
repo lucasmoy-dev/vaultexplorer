@@ -23,11 +23,9 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "net", "ma
 symphonia = { version = "0.5", default-features = false, features = ["isomp4", "aac"] }
 mp3lame-encoder = "0.2"
 lofty = "0.24"
-
-# Test-only: the app downloads with Kotlin's own HTTP stack, but the
-# end-to-end test here has to fetch a real stream to prove the whole chain
-# (resolve -> download -> transcode -> tagged MP3 named after the video).
-[dev-dependencies]
+# The download runs here, not in Kotlin: a googlevideo URL is minted for the
+# client that asked for it, and a second HTTP stack with different headers
+# gets 403 (see download.rs). Same TLS backend rustypipe already uses.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 
 [target.'cfg(target_os = "android")'.dependencies]

@@ -9,8 +9,6 @@ import android.media.MediaMuxer
 import android.net.Uri
 import android.provider.MediaStore
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.nio.ByteBuffer
 
 /**
@@ -37,69 +35,46 @@ object Downloads {
     /** Folder name inside Music/ and Movies/, so downloads stay together. */
     const val ALBUM = "YT Pocket"
 
-    /** How much to ask for per request. See [fetch] for why this exists. */
+    /** How much to ask for per request. See [fetch] for why this matters. */
     private const val CHUNK = 4L * 1024 * 1024
 
     /**
-     * Download `url` to `target`, reporting a 0..1 fraction.
+     * Download a stream to `target`, reporting a 0..1 fraction.
      *
-     * In ranged chunks rather than one long read, which is not premature
-     * optimisation but a measured necessity: googlevideo trickles a plain
-     * sequential download to a non-browser client, and a 3.4MB audio track
-     * timed out entirely before finishing. The same file fetched as 4MB
-     * ranges arrives in a couple of seconds.
+     * The bytes are fetched by the native side, not here. That is the fix for
+     * downloads coming back **403** on a phone while the same URLs served
+     * fine elsewhere: a googlevideo URL is minted for the YouTube client that
+     * asked for it, and answering it from a second HTTP stack -- different
+     * default headers, different TLS, possibly a different IP family -- is
+     * enough to be refused. Resolving and downloading now share one stack and
+     * one agent (`Resolved.userAgent`). See `jni/src/download.rs`.
      *
-     * The first response's `Content-Range` is also the only reliable total,
-     * so progress comes out of it rather than out of what YouTube declared
-     * in the stream list (`expectedSize`, used as a fallback).
+     * Still in chunks, for the other reason: googlevideo throttles a plain
+     * sequential read to a non-browser client (measured: 3.4MB timed out at
+     * 30s as one stream, ~2s as 4MB ranges).
      */
-    fun fetch(url: String, target: File, expectedSize: Long, onProgress: (Float) -> Unit) {
+    fun fetch(
+        url: String,
+        target: File,
+        userAgent: String,
+        expectedSize: Long,
+        onProgress: (Float) -> Unit,
+    ) {
         target.parentFile?.mkdirs()
-        var total = expectedSize
+        // Appending is how the native side writes, so a retry must not start
+        // on top of a partial file.
+        if (target.exists()) target.delete()
+
+        val total = runCatching { Native.sizeOf(url, userAgent) }.getOrDefault(0L)
+            .takeIf { it > 0 } ?: expectedSize
         var done = 0L
-        target.outputStream().use { output ->
-            while (true) {
-                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = true
-                    connectTimeout = 30_000
-                    readTimeout = 60_000
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) YTPocket/1.0")
-                    setRequestProperty("Range", "bytes=$done-${done + CHUNK - 1}")
-                }
-                try {
-                    if (connection.responseCode !in 200..299) {
-                        throw IllegalStateException("HTTP ${connection.responseCode}")
-                    }
-                    // "bytes 0-4194303/3449447" -- the part after the slash is
-                    // the real length of the whole file.
-                    if (total <= 0) {
-                        total = connection.getHeaderField("Content-Range")
-                            ?.substringAfterLast('/')
-                            ?.toLongOrNull()
-                            ?: connection.contentLengthLong
-                    }
-                    var chunkRead = 0L
-                    connection.inputStream.use { input ->
-                        val buffer = ByteArray(256 * 1024)
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read <= 0) break
-                            output.write(buffer, 0, read)
-                            chunkRead += read
-                            done += read
-                            if (total > 0) onProgress((done.toFloat() / total).coerceIn(0f, 1f))
-                        }
-                    }
-                    // A short chunk means the file ended -- servers may also
-                    // answer with less than asked for, hence "short", not
-                    // "empty".
-                    if (chunkRead < CHUNK) break
-                } finally {
-                    connection.disconnect()
-                }
-            }
+        while (true) {
+            val written = Native.fetchChunk(url, target.absolutePath, done, CHUNK, userAgent)
+            if (written <= 0L) break
+            done += written
+            if (total > 0) onProgress((done.toFloat() / total).coerceIn(0f, 1f))
         }
-        if (done <= 0) throw IllegalStateException("la descarga vino vacía")
+        if (done <= 0L) throw IllegalStateException("la descarga vino vacía")
         onProgress(1f)
     }
 

@@ -44,6 +44,25 @@ app; tapping the finished notification opens the file.
   read as one sequential stream timed out at 30s; the same file fetched as
   4MB `Range` chunks arrives in about two seconds. Both the app and the
   end-to-end test fetch in chunks for that reason.
+- **403 Forbidden, the interesting one.** 0.1.1 downloaded fine from a
+  laptop and was refused on a phone. Two causes, both now handled:
+  - Since August 2024 YouTube requires a **PO token** for streams from its
+    *web* clients (Desktop, Mobile) — the resolve succeeds and the download
+    is then refused with 403. Generating one needs a simulated browser
+    (rustypipe delegates it to a separate CLI binary), which a phone app
+    cannot carry, so those clients are no longer allowed to mint download
+    URLs at all. Only iOS, TV and Android are, and iOS is preferred because
+    it needs neither a token nor signature deobfuscation.
+  - A googlevideo URL is minted **for the client that asked for it**, so
+    downloading with a different HTTP stack (Kotlin's `HttpURLConnection`,
+    with its own headers, TLS and possibly a different IP family) can be
+    refused on its own. The download therefore runs natively now, through
+    the same kind of client that resolved it, with that client's own
+    `User-Agent`.
+  - Belt and braces: `resolve` **probes** each candidate with a 1KB range
+    request before returning it, so a URL that will not serve bytes never
+    reaches the UI; and a refusal part way through a transfer re-resolves
+    once and retries with fresh URLs.
 - **Filenames.** The point of the app, so the rules live in Rust with tests
   (`jni/src/naming.rs`): `/ \ : * ? " < > |` become dashes ("AC/DC" reads
   "AC-DC", not "ACDC"), control characters and repeated whitespace collapse,
@@ -69,10 +88,10 @@ app/    Kotlin + Compose: one screen, a foreground service for downloads,
 `rustypipe` is the same extractor (and version) the sibling
 [vaultexplorer](../vaultexplorer) app already ships on Android — a known-good
 combination rather than a fresh bet on someone's parser. It also means the
-same lesson applies: **only YouTube's iOS client currently resolves
-reliably**, so `resolve` tries a short list of clients (iOS, TV, Desktop,
-Android) and takes the first that returns usable streams, rather than pinning
-one and breaking on YouTube's next change.
+same lesson applies: **YouTube's iOS client is the one that reliably works**,
+so `resolve` walks a short list (iOS, TV, Android — no web clients, see the
+403 note above), twice, and takes the first whose streams actually serve
+bytes, rather than pinning one and breaking on YouTube's next change.
 
 ## Build
 
@@ -107,6 +126,14 @@ cargo test --release -- --ignored --nocapture search_and_resolve
 # Live, the whole promise: resolve -> download -> MP3 named after the video,
 # tags and duration checked against what YouTube said
 cargo test --release -- --ignored --nocapture download_and_transcode
+
+# Live: the chunked native download, byte-exact against Content-Range
+cargo test --release -- --ignored --nocapture chunked_download
+
+# Live: the 403 root cause -- asserts an iOS stream serves and a web-client
+# one does not. If this ever fails, YouTube changed its mind about PO tokens
+# and the client list can grow again.
+cargo test --release -- --ignored --nocapture a_web_client_url_is_refused
 
 # The JNI boundary itself, from a real JVM, against real YouTube
 ./tools/harness/run.sh "search terms"
