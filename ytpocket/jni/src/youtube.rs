@@ -242,7 +242,6 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
 
     let runtime = runtime()?;
     let pipe = client()?;
-    let mut last_error = String::new();
     let mut found_player = None;
     let mut refused = false;
     for client in CLIENTS.iter().cycle().take(CLIENTS.len() * CLIENT_ATTEMPTS) {
@@ -251,7 +250,7 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
         }) {
             Ok(player) => player,
             Err(error) => {
-                last_error = format!("{client:?}: {error}");
+                refusals.push(format!("{client:?}: {error}"));
                 continue;
             }
         };
@@ -261,7 +260,7 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
             );
         }
         if player.audio_streams.is_empty() {
-            last_error = format!("el cliente {client:?} no devolvió audio");
+            refusals.push(format!("el cliente {client:?} no devolvió audio"));
             continue;
         }
         // Resolving is not the same as being able to download. YouTube will
@@ -279,10 +278,9 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
             }
             Some(Err(error)) => {
                 refused = refused || error.contains("403");
-                last_error = format!("{client:?}: {error}");
-                refusals.push(last_error.clone());
+                refusals.push(format!("{client:?}: {error}"));
             }
-            None => last_error = format!("el cliente {client:?} no devolvió audio"),
+            None => refusals.push(format!("el cliente {client:?} no devolvió audio")),
         }
     }
     let Some((player, used_client, user_agent)) = found_player else {
