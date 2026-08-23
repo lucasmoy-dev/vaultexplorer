@@ -69,3 +69,51 @@ class SettingsTest {
         assertNull(CaptionJson.parse("not json at all"))
     }
 }
+
+/**
+ * The permission gate, which is what broke "Empezar": a list that is never
+ * empty means a start flow that never starts.
+ */
+class PermissionsTest {
+
+    @Test
+    fun `nothing is asked for when everything is already granted`() {
+        // The regression: this used to return POST_NOTIFICATIONS on 13+ even
+        // though it was granted, and the start flow returned early forever.
+        assertTrue(
+            missingPermissions(micGranted = true, notificationsGranted = true, sdk = 34).isEmpty()
+        )
+        assertTrue(
+            missingPermissions(micGranted = true, notificationsGranted = true, sdk = 29).isEmpty()
+        )
+    }
+
+    @Test
+    fun `only what is missing is asked for`() {
+        assertEquals(
+            listOf(android.Manifest.permission.RECORD_AUDIO),
+            missingPermissions(micGranted = false, notificationsGranted = true, sdk = 34),
+        )
+        assertEquals(
+            listOf(android.Manifest.permission.POST_NOTIFICATIONS),
+            missingPermissions(micGranted = true, notificationsGranted = false, sdk = 34),
+        )
+        assertEquals(
+            listOf(
+                android.Manifest.permission.RECORD_AUDIO,
+                android.Manifest.permission.POST_NOTIFICATIONS,
+            ),
+            missingPermissions(micGranted = false, notificationsGranted = false, sdk = 34),
+        )
+    }
+
+    @Test
+    fun `the notification permission is not asked for below Android 13`() {
+        // It does not exist there: requesting it is denied, and on some
+        // versions logs a warning and nothing else.
+        assertEquals(
+            listOf(android.Manifest.permission.RECORD_AUDIO),
+            missingPermissions(micGranted = false, notificationsGranted = false, sdk = 30),
+        )
+    }
+}

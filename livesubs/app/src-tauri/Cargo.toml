@@ -1,6 +1,6 @@
 [package]
 name = "livesubs"
-version = "0.1.0"
+version = "0.1.1"
 description = "Live subtitles for everything the machine hears"
 authors = ["lucasmoy-dev"]
 edition = "2021"

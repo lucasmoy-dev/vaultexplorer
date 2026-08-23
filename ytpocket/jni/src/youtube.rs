@@ -19,6 +19,41 @@
 use rustypipe::client::{ClientType, RustyPipe};
 use rustypipe::model::{AudioCodec, VideoCodec, VideoItem};
 use serde::Serialize;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// Where rustypipe may keep its cache (YouTube's client versions and the
+/// deobfuscation code it extracts).
+///
+/// This has to be set, and it has to be set by the caller: rustypipe
+/// defaults to the *current working directory*, which for an Android process
+/// is `/` -- not writable. The cache then fails to save on every call, so
+/// every search re-fetches and re-extracts YouTube's player JS, which is
+/// both slow and the most fragile step in the whole chain. Kotlin passes the
+/// app's cache dir in at startup (see `Native.init`).
+static STORAGE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Point the cache at a writable directory. Called once at startup; safe to
+/// call again (the last one wins).
+pub fn set_storage_dir(path: &str) {
+    if let Ok(mut guard) = STORAGE_DIR.lock() {
+        *guard = Some(PathBuf::from(path));
+    }
+}
+
+/// A client with the cache pointed somewhere writable.
+///
+/// Built per call rather than kept in a static: what makes repeat calls
+/// cheap is the *file* cache, which this reads on construction, and a
+/// long-lived client would have to be `Sync` for a gain the cache already
+/// provides.
+fn client() -> Result<RustyPipe, String> {
+    let mut builder = RustyPipe::builder();
+    if let Some(dir) = STORAGE_DIR.lock().ok().and_then(|guard| guard.clone()) {
+        builder = builder.storage_dir(dir);
+    }
+    builder.build().map_err(|e| format!("no se pudo iniciar el cliente de YouTube: {e}"))
+}
 
 #[derive(Serialize)]
 pub struct SearchHit {
@@ -104,13 +139,9 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<SearchHit>, String> {
         return Ok(Vec::new());
     }
     let runtime = runtime()?;
+    let pipe = client()?;
     let results = runtime
-        .block_on(async {
-            RustyPipe::new()
-                .query()
-                .search::<VideoItem, _>(query)
-                .await
-        })
+        .block_on(async { pipe.query().search::<VideoItem, _>(query).await })
         .map_err(|e| format!("la búsqueda falló: {e}"))?;
 
     Ok(results
@@ -166,11 +197,12 @@ const CLIENTS: &[ClientType] = &[ClientType::Ios, ClientType::Tv, ClientType::De
 pub fn resolve(video: &str) -> Result<Resolved, String> {
     let id = video_id_of(video).ok_or("eso no parece un vídeo de YouTube")?;
     let runtime = runtime()?;
+    let pipe = client()?;
     let mut last_error = String::new();
     let mut player = None;
     for client in CLIENTS {
         match runtime.block_on(async {
-            RustyPipe::new().query().player_from_client(&id, *client).await
+            pipe.query().player_from_client(&id, *client).await
         }) {
             // A player with no audio at all is not usable for either
             // download, so keep trying rather than returning it.

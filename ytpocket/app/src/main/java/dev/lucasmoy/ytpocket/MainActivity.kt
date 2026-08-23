@@ -33,6 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -82,14 +83,23 @@ class MainActivity : ComponentActivity() {
         // Notifications are how a download reports itself once the app is in
         // the background, so ask once, up front, rather than at the moment
         // the first download starts.
+        //
+        // In a `LaunchedEffect`, *not* in `remember`: a launcher registers
+        // itself as part of composition, and launching one from inside the
+        // composition that creates it throws "Attempting to launch an
+        // unregistered ActivityResultLauncher" -- which killed the app on
+        // open, before anything was drawn. `LaunchedEffect` runs after the
+        // composition has been applied, which is when the launcher exists.
         val notificationLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { }
-        remember {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        LaunchedEffect(Unit) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
                 notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
-            true
         }
 
         fun runSearch() {

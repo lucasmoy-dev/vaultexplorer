@@ -390,7 +390,14 @@ class CaptionService : LifecycleService() {
         // MICROPHONE` only exists from API 30, so naming it on Android 10
         // (this app's minimum, because that is where playback capture
         // starts) would be a `NoSuchFieldError` at startup.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        // A declared type the app cannot back up is a SecurityException on
+        // Android 14: claiming `microphone` without RECORD_AUDIO granted
+        // kills the service on the spot. Capture is refused a moment later
+        // anyway (with a message the user can act on), so start as a plain
+        // foreground service instead of crashing.
+        val micAllowed = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && micAllowed) {
             var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             if (wantsProjection) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)

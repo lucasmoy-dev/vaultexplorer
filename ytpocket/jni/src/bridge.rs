@@ -46,6 +46,22 @@ fn text(env: &mut JNIEnv, value: &JString) -> Result<String, String> {
     env.get_string(value).map(|s| s.into()).map_err(|e| e.to_string())
 }
 
+/// Tell the native side where it may write.
+///
+/// Not optional: rustypipe's cache defaults to the process's working
+/// directory, which on Android is `/` and read-only. Without this every
+/// search re-downloads and re-parses YouTube's player JS.
+#[no_mangle]
+pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_initCache(
+    mut env: JNIEnv,
+    _class: JClass,
+    dir: JString,
+) {
+    if let Ok(path) = text(&mut env, &dir) {
+        youtube::set_storage_dir(&path);
+    }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_search(
     mut env: JNIEnv,

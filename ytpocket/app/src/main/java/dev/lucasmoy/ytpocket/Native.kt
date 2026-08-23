@@ -1,5 +1,6 @@
 package dev.lucasmoy.ytpocket
 
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -15,10 +16,27 @@ import org.json.JSONObject
  * All of these block. Callers are on a background thread.
  */
 object Native {
-    init {
+    /**
+     * Why the library is loaded into a nullable error instead of an `init`
+     * block: a throw inside an object initialiser becomes an
+     * `ExceptionInInitializerError` the first time *anything* touches this
+     * object -- which would take the whole app down at startup on a device
+     * where the .so cannot load, instead of failing the one action that
+     * needs it with a message. It also lets the JVM-side tests build the
+     * screen without a native library.
+     */
+    private val loadError: String? = try {
         System.loadLibrary("ytpocket")
+        null
+    } catch (error: Throwable) {
+        error.message ?: "no se pudo cargar la librería nativa"
     }
 
+    private fun requireLibrary() {
+        loadError?.let { throw IllegalStateException(it) }
+    }
+
+    private external fun initCache(dir: String)
     private external fun search(query: String, limit: Int): String?
     private external fun resolve(video: String): String?
     private external fun fileName(title: String, ext: String): String?
@@ -28,6 +46,18 @@ object Native {
         title: String,
         artist: String,
     ): String?
+
+    /**
+     * Point the native cache at a writable directory. Must happen before the
+     * first search: rustypipe defaults its cache to the process's working
+     * directory, which on Android is `/` and read-only, and without a cache
+     * every single search re-downloads and re-parses YouTube's player JS.
+     */
+    fun prepare(context: Context) {
+        if (loadError != null) return
+        val dir = java.io.File(context.cacheDir, "youtube").apply { mkdirs() }
+        runCatching { initCache(dir.absolutePath) }
+    }
 
     data class Hit(
         val id: String,
@@ -63,6 +93,7 @@ object Native {
 
     /** Search, or throw with the message the native side reported. */
     fun searchVideos(query: String, limit: Int = 25): List<Hit> {
+        requireLibrary()
         val raw = search(query, limit) ?: throw IllegalStateException("la búsqueda no devolvió nada")
         raw.errorOrNull()?.let { throw IllegalStateException(it) }
         val array = JSONArray(raw)
@@ -81,6 +112,7 @@ object Native {
     }
 
     fun resolveVideo(idOrUrl: String): Resolved {
+        requireLibrary()
         val raw = resolve(idOrUrl) ?: throw IllegalStateException("no se pudo resolver el vídeo")
         raw.errorOrNull()?.let { throw IllegalStateException(it) }
         val obj = JSONObject(raw)
@@ -95,11 +127,14 @@ object Native {
     }
 
     /** A filename for this title, safe for the phone's storage. */
-    fun nameFor(title: String, ext: String): String =
-        fileName(title, ext) ?: "video.$ext"
+    fun nameFor(title: String, ext: String): String {
+        requireLibrary()
+        return fileName(title, ext) ?: "video.$ext"
+    }
 
     /** Transcode a downloaded .m4a to a tagged MP3, or throw. */
     fun toMp3(source: String, destination: String, title: String, artist: String) {
+        requireLibrary()
         val raw = transcodeMp3(source, destination, title, artist)
             ?: throw IllegalStateException("la conversión a MP3 no devolvió nada")
         raw.errorOrNull()?.let { throw IllegalStateException(it) }

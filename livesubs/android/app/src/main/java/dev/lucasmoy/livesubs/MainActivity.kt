@@ -39,6 +39,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -72,6 +73,12 @@ class MainActivity : ComponentActivity() {
         setContent { SettingsScreen() }
     }
 
+    /** Whether notifications are allowed right now (always true below 13). */
+    private fun notificationsGranted(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+
     @Composable
     private fun SettingsScreen() {
         val context = LocalContext.current
@@ -86,6 +93,11 @@ class MainActivity : ComponentActivity() {
         var updateBusy by remember { mutableStateOf(false) }
         var updateProgress by remember { mutableFloatStateOf(-1f) }
         var updateMessage by remember { mutableStateOf("") }
+        // Flipped by a launcher callback; a LaunchedEffect below picks it up
+        // and resumes the start flow. Not a direct call from the callback:
+        // `startCapture` is declared further down and closes over state this
+        // composition owns.
+        var pendingStart by remember { mutableStateOf(false) }
         var overlayGranted by remember { mutableStateOf(AndroidSettings.canDrawOverlays(context)) }
         var micGranted by remember {
             mutableStateOf(
@@ -94,14 +106,28 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        // Set when a permission request was made *in order to start*, so the
+        // result can carry on where it left off instead of leaving the user
+        // to press the button again.
+        var startAfterPermissions by remember { mutableStateOf(false) }
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { granted ->
             micGranted = granted[Manifest.permission.RECORD_AUDIO] ?: micGranted
+            if (startAfterPermissions) {
+                startAfterPermissions = false
+                pendingStart = true
+            }
         }
         val overlayLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.StartActivityForResult()
-        ) { overlayGranted = AndroidSettings.canDrawOverlays(context) }
+        ) {
+            overlayGranted = AndroidSettings.canDrawOverlays(context)
+            // Coming back from Settings with it granted means carrying on --
+            // being sent to Settings and then having to find the button again
+            // is the same dead-end feeling as the bug above.
+            if (overlayGranted) pendingStart = true
+        }
         // Screen-capture consent is what unlocks "system audio": the same
         // dialog a screen recorder shows, because it is the same permission.
         val projectionLauncher = rememberLauncherForActivityResult(
@@ -127,13 +153,18 @@ class MainActivity : ComponentActivity() {
         }
 
         fun startCapture() {
-            val missing = buildList {
-                if (!micGranted) add(Manifest.permission.RECORD_AUDIO)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    add(Manifest.permission.POST_NOTIFICATIONS)
-                }
-            }
+            // Only what is actually missing. Asking for an already-granted
+            // permission returns instantly with no dialog, which is exactly
+            // what made "Empezar" look like a dead button: POST_NOTIFICATIONS
+            // was added unconditionally on Android 13+, so the list was never
+            // empty, and the flow always stopped here and returned.
+            val missing = missingPermissions(
+                micGranted = micGranted,
+                notificationsGranted = notificationsGranted(),
+                sdk = Build.VERSION.SDK_INT,
+            )
             if (missing.isNotEmpty()) {
+                startAfterPermissions = true
                 permissionLauncher.launch(missing.toTypedArray())
                 return
             }
@@ -156,6 +187,13 @@ class MainActivity : ComponentActivity() {
                 projectionLauncher.launch(manager.createScreenCaptureIntent())
             } else {
                 CaptionService.start(context)
+            }
+        }
+
+        LaunchedEffect(pendingStart) {
+            if (pendingStart) {
+                pendingStart = false
+                startCapture()
             }
         }
 

@@ -6,6 +6,13 @@ public class Harness {
         String query = args.length > 0 ? args[0] : "rick astley never gonna give you up";
         Native n = Native.INSTANCE;
 
+        // Same first call the app makes: rustypipe's cache must point at a
+        // writable directory (on Android the default is `/`).
+        String cache = System.getProperty("java.io.tmpdir") + "/ytpocket-harness-cache";
+        new java.io.File(cache).mkdirs();
+        n.initCache(cache);
+        System.out.println("CACHE " + cache);
+
         String hits = n.search(query, 5);
         System.out.println("SEARCH " + shorten(hits));
         if (hits == null || hits.startsWith("{\"error")) throw new IllegalStateException("search failed");

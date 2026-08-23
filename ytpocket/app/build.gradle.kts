@@ -29,8 +29,8 @@ android {
         // and scoped storage as the only model worth targeting.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         // arm64 only: every phone worth running this on has been arm64 for
         // years, and a second ABI doubles build time and APK size.
         ndk { abiFilters += "arm64-v8a" }
@@ -69,7 +69,12 @@ android {
         compose = true
         buildConfig = true
     }
-    testOptions { unitTests.isReturnDefaultValues = true }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        // Robolectric needs the real resources (themes, strings) to inflate
+        // an activity.
+        unitTests.isIncludeAndroidResources = true
+    }
 
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
@@ -90,6 +95,11 @@ dependencies {
     implementation(libs.coil.compose)
 
     testImplementation("junit:junit:4.13.2")
+    // Robolectric runs the real Activity on the JVM, which is the only way
+    // to catch "the app closes the moment you open it" without a device --
+    // exactly the class of bug that shipped in 0.1.0.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
     // The real org.json: the one in android.jar is a stub that throws in
     // unit tests, and parsing what the native side returns is exactly what
     // those tests are for.
