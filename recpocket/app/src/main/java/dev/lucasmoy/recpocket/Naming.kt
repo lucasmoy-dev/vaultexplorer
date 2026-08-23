@@ -32,6 +32,19 @@ object Naming {
         SCREENSHOT("captura", "jpg"),
     }
 
+    /**
+     * The same recording without its video half.
+     *
+     * Used when the screen-capture permission is not held: the recording
+     * still happens (microphone only), and calling the result
+     * `videollamada.mp4` would be a lie *and* an MP4 with no video track.
+     */
+    fun Kind.audioOnly(): Kind = when (this) {
+        Kind.CALL_VIDEO -> Kind.CALL_AUDIO
+        Kind.SCREEN -> Kind.MIC
+        else -> this
+    }
+
     /** `2026-08-23_17-49-43`, in the phone's own time zone. */
     fun stamp(millis: Long, zone: TimeZone = TimeZone.getDefault()): String {
         val calendar = Calendar.getInstance(zone, Locale.ROOT).apply { timeInMillis = millis }

@@ -111,9 +111,13 @@ class CaptureService : LifecycleService() {
         }
     }
 
-    private fun startRecording(kind: Naming.Kind, note: String) {
+    private fun startRecording(requested: Naming.Kind, note: String) {
         if (recording.value) return
         val settings = Settings(this)
+        // Without the capture permission there is no video and no playback
+        // audio, so the recording becomes microphone-only -- and says so in
+        // its name rather than producing an .mp4 with no video track.
+        val kind = if (projection == null) with(Naming) { requested.audioOnly() } else requested
         val wantsVideo = kind == Naming.Kind.SCREEN || kind == Naming.Kind.CALL_VIDEO
         // A call recording is about the voices, whatever the general setting
         // says; anything else follows the configuration.

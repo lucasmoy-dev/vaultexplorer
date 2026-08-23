@@ -54,6 +54,20 @@ class NamingTest {
     }
 
     @Test
+    fun `without the capture permission a recording is named for what it is`() {
+        // A video call recorded with no screen-capture permission is a voice
+        // recording: naming it .mp4 would produce a video file with no video
+        // track in it.
+        with(Naming) {
+            assertEquals(Naming.Kind.CALL_AUDIO, Naming.Kind.CALL_VIDEO.audioOnly())
+            assertEquals(Naming.Kind.MIC, Naming.Kind.SCREEN.audioOnly())
+            // The audio-only kinds are already what they claim to be.
+            assertEquals(Naming.Kind.BOTH, Naming.Kind.BOTH.audioOnly())
+            assertEquals(Naming.Kind.CALL_AUDIO, Naming.Kind.CALL_AUDIO.audioOnly())
+        }
+    }
+
+    @Test
     fun `a note cannot break the file name`() {
         // Slashes become dashes rather than vanishing: "AC/DC" should read
         // "AC-DC", not "ACDC".
