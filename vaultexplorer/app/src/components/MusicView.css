@@ -1,7 +1,15 @@
 /* MusicView -- the library list plus the transport bar that stays put.
 
+   Every colour here comes from the app's own theme tokens (App.css), which
+   are redefined for dark mode *and* for a forced [data-theme]. The first
+   version of this file invented its own names with light-coloured
+   fallbacks -- `var(--surface, #fff)` -- and since no such token exists,
+   every button rendered white on a dark window. There are no hardcoded
+   greys below for that reason: an unknown token here would fail visibly in
+   one theme and look fine in the other.
+
    The bar is `position: sticky` at the bottom of the view rather than fixed
-   to the window: this view lives inside the app's own layout (sidebar,
+   to the window: this view lives inside the app's layout (sidebar,
    breadcrumb), and a fixed bar would sit on top of them. */
 
 .music-view {
@@ -10,6 +18,7 @@
   min-height: 0;
   height: 100%;
   gap: 8px;
+  color: var(--text);
 }
 
 .music-toolbar,
@@ -31,17 +40,19 @@
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
+  font: inherit;
   font-size: 12px;
   border-radius: 7px;
-  border: 1px solid var(--border, #d8d8dd);
-  background: var(--surface, #fff);
-  color: inherit;
+  border: 0.5px solid var(--toolbar-border);
+  background: var(--field-bg);
+  color: var(--text);
   cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
 .music-action:hover:not(:disabled),
 .music-folder:hover {
-  background: var(--hover, rgba(0, 0, 0, 0.05));
+  background: var(--row-hover);
 }
 
 .music-action:disabled {
@@ -51,12 +62,14 @@
 
 .music-action.primary {
   font-weight: 600;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .music-action.on,
 .music-folder.on {
-  border-color: var(--accent, #3b82f6);
-  color: var(--accent, #3b82f6);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .music-count {
@@ -68,11 +81,11 @@
 .music-error {
   font-size: 12px;
   padding: 8px 2px;
-  opacity: 0.75;
+  opacity: 0.7;
 }
 
 .music-error {
-  color: var(--danger, #d33);
+  color: #e5484d;
   opacity: 1;
 }
 
@@ -94,18 +107,20 @@
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: inherit;
+  color: var(--text);
   text-align: left;
   cursor: pointer;
   font: inherit;
 }
 
 .music-row:hover {
-  background: var(--hover, rgba(0, 0, 0, 0.05));
+  background: var(--row-hover);
 }
 
 .music-row.current {
-  background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+  /* The selection colour the rest of the app uses for "this is the one",
+     at low opacity so the row text stays readable in both themes. */
+  background: color-mix(in srgb, var(--selection-bg) 26%, transparent);
 }
 
 .music-row-index {
@@ -160,8 +175,12 @@
   align-items: center;
   gap: 8px 10px;
   padding: 8px 10px;
-  border-top: 1px solid var(--border, #d8d8dd);
-  background: var(--surface, #fff);
+  border-top: 0.5px solid var(--toolbar-border);
+  /* The toolbar's own translucent background, so the bar reads as chrome
+     rather than as a card floating over the list. */
+  background: var(--toolbar-bg);
+  backdrop-filter: blur(18px);
+  color: var(--text);
 }
 
 .music-bar-art {
@@ -172,7 +191,9 @@
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: var(--hover, rgba(0, 0, 0, 0.06));
+  background: var(--field-bg);
+  color: var(--text);
+  opacity: 0.95;
 }
 
 .music-bar-art img {
@@ -218,12 +239,12 @@
   border-radius: 50%;
   border: 0;
   background: transparent;
-  color: inherit;
+  color: var(--text);
   cursor: pointer;
 }
 
 .music-bar-controls button:hover:not(:disabled) {
-  background: var(--hover, rgba(0, 0, 0, 0.08));
+  background: var(--row-hover);
 }
 
 .music-bar-controls button:disabled {
@@ -231,9 +252,16 @@
   cursor: default;
 }
 
-.music-bar-play {
-  background: var(--accent, #3b82f6) !important;
+.music-bar-controls .music-bar-play {
+  /* The one filled control, in the accent colour: white text on accent is
+     legible in both themes, which is exactly why it is the only button
+     that sets its own colours. */
+  background: var(--accent);
   color: #fff;
+}
+
+.music-bar-controls .music-bar-play:hover {
+  filter: brightness(1.08);
 }
 
 .music-bar-seek {
@@ -249,6 +277,39 @@
 .music-bar-seek input {
   flex: 1;
   min-width: 0;
+  /* A native range input renders with the platform's own light chrome
+     inside a dark window (this is the same white-on-dark problem the rest
+     of this file is about), so the track and thumb are drawn here. */
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--field-bg);
+  cursor: pointer;
+}
+
+.music-bar-seek input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--accent);
+}
+
+.music-bar-seek input::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--accent);
+}
+
+.music-bar-seek input::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--field-bg);
 }
 
 /* On a phone the transport matters more than the metadata: bigger buttons,

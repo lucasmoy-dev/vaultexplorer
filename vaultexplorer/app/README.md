@@ -84,6 +84,12 @@ cd ../.. && npx tsc app/src/musicQueue.ts --outDir /tmp/mq --module esnext \
 
 # Types and the production bundle
 cd app && npx tsc --noEmit && npx vite build
+
+# Every var(--token) a stylesheet uses is actually defined, and defined for
+# light mode too. This exists because MusicView.css shipped once with
+# invented names and light fallbacks -- var(--surface, #fff) -- which
+# rendered every button and the transport bar pure white on a dark window.
+node scripts/check-theme-tokens.mjs
 ```
 
 One known failure that is about this machine rather than the code:
