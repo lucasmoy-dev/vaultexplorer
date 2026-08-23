@@ -331,10 +331,22 @@ class CaptureService : LifecycleService() {
         val isArmed: StateFlow<Boolean> get() = armed
         val isRecording: StateFlow<Boolean> get() = recording
 
-        fun send(context: Context, action: String, kind: Naming.Kind? = null) {
+        /**
+         * Ask the service to do something.
+         *
+         * Wrapped, because starting a foreground service from the background
+         * is restricted from Android 12: when the trigger fires from the
+         * notification listener and the service is *not* already running
+         * (nothing armed, nothing recording), the system refuses with
+         * `ForegroundServiceStartNotAllowedException`. That is a legitimate
+         * outcome -- automatic recording needs the app armed first, which is
+         * what the screen says -- and it must not take the notification
+         * listener down with it.
+         */
+        fun send(context: Context, action: String, kind: Naming.Kind? = null): Boolean {
             val intent = Intent(context, CaptureService::class.java).setAction(action)
             if (kind != null) intent.putExtra(EXTRA_KIND, kind.name)
-            context.startForegroundService(intent)
+            return runCatching { context.startForegroundService(intent) }.isSuccess
         }
     }
 }
