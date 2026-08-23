@@ -447,9 +447,18 @@ mod root_cause_tests {
     }
 }
 
+/// YouTube's own words when it will not serve a network at all, whatever
+/// client asks. Worth naming: it is the difference between "this build is
+/// broken" and "this address is banned".
+#[cfg(test)]
+fn is_bot_gated(message: &str) -> bool {
+    message.contains("not a bot") || message.contains("ip-ban")
+}
+
 #[cfg(test)]
 mod volume_tests {
     use super::*;
+    use super::is_bot_gated;
 
     /// Every live test so far downloaded a few MB. The device failed at
     /// ~40MB. So: take a long video and pull the whole audio track through
@@ -467,7 +476,14 @@ mod volume_tests {
             .expect("no long-enough results");
         println!("picked {} ({:?}s) {}", pick.title, pick.duration, pick.id);
 
-        let resolved = crate::youtube::resolve(&pick.id).expect("resolve");
+        let resolved = match crate::youtube::resolve(&pick.id) {
+            Ok(resolved) => resolved,
+            Err(refusal) if is_bot_gated(&refusal) => {
+                println!("this network is bot-gated for everything: {refusal}");
+                return;
+            }
+            Err(other) => panic!("resolve: {other}"),
+        };
         let audio = resolved.audio.as_ref().expect("audio");
         println!("client {}, declared {} bytes", resolved.client, audio.size);
 
@@ -501,6 +517,7 @@ mod volume_tests {
 #[cfg(test)]
 mod client_matrix {
     use super::*;
+    use super::is_bot_gated;
     use crate::innertube;
 
     /// The two findings behind the 403, both asserted.
@@ -527,8 +544,17 @@ mod client_matrix {
         println!("video: {} ({:?}s) {}", pick.title, pick.duration, pick.id);
 
         let visitor = innertube::visitor().expect("no visitor id");
-        let with = innertube::player_as(innertube::VISIONOS, &pick.id, Some(visitor))
-            .expect("visionos refused a request carrying a visitor id");
+        let with = match innertube::player_as(innertube::VISIONOS, &pick.id, Some(&visitor)) {
+            Ok(player) => player,
+            Err(refusal) if is_bot_gated(&refusal) => {
+                // Datacenter addresses are refused outright, visitor id or
+                // not -- YouTube calls it an ip-ban. Nothing about the app can
+                // change that, so this network cannot answer the question.
+                println!("this network is bot-gated for everything: {refusal}");
+                return;
+            }
+            Err(other) => panic!("visionos refused a request carrying a visitor id: {other}"),
+        };
         let audio = with.best_audio().expect("no audio formats");
 
         let path = std::env::temp_dir().join("ytpocket-matrix.bin");

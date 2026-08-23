@@ -98,10 +98,17 @@ app; tapping the finished notification opens the file.
     | `android_vr` | bot gate | bot gate |
     | `web_safari` | video unavailable | video unavailable |
 
-    The visitor id comes from `youtube.com/sw.js_data`, is fetched once per
-    process, and now rides along on every Innertube request. Short or obscure
-    videos were never gated, which is why every earlier test passed and the
-    phone still failed.
+    The visitor id comes from `youtube.com/sw.js_data`, is cached, and now
+    rides along on every Innertube request. Short or obscure videos were never
+    gated, which is why every earlier test passed and the phone still failed.
+  - **When the gate closes anyway.** It is decided per session as well as per
+    address, so a refusal throws the cached visitor id away and tries once
+    with a new one. If that fails too the app says so in those words --
+    "YouTube pide verificación de humano desde esta red" and suggests changing
+    connection -- instead of reporting a 403 the user can do nothing about.
+    Measured from a datacenter address, where YouTube refuses *every* client
+    and calls it an ip-ban: no app-side change reaches that, and the live
+    tests report it as a property of the network rather than failing.
   - **A 1KB probe proved nothing.** `resolve` used to check a candidate with
     a `bytes=0-1023` request; PO-token URLs answer that with 200 and answer
     `bytes=0-4194303` with **403**. So the probe passed exactly the streams

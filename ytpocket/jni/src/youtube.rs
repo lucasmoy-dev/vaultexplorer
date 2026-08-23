@@ -236,7 +236,20 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
     for client in DIRECT_CLIENTS {
         match resolve_direct(*client, &id) {
             Ok(resolved) => return Ok(resolved),
-            Err(error) => refusals.push(error),
+            Err(error) => {
+                // A bot gate is partly about the session, not only the
+                // address, so a session YouTube has not seen is worth one
+                // try before falling back to clients that need a PO token.
+                if error.contains("not a bot") {
+                    crate::innertube::forget_visitor();
+                    match resolve_direct(*client, &id) {
+                        Ok(resolved) => return Ok(resolved),
+                        Err(again) => refusals.push(again),
+                    }
+                } else {
+                    refusals.push(error);
+                }
+            }
         }
     }
 
@@ -288,6 +301,16 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
         // YouTube saying no to this network or this app, while everything
         // else is usually a transient failure worth retrying.
         let detail = refusals.join(" | ");
+        // A bot gate is not a 403 and the advice is different: nothing about
+        // the app can change it, but another network usually can. YouTube
+        // says this to whole address ranges at a time (it calls the harshest
+        // form an "ip-ban"), so telling the user plainly beats a generic
+        // rejection message they can do nothing with.
+        if detail.contains("not a bot") || detail.contains("ip-ban") {
+            return Err(format!(
+                "YouTube pide verificación de humano desde esta red y no sirve el vídeo. Prueba con otra conexión (datos móviles en vez de wifi, o al revés). [{detail}]"
+            ));
+        }
         return Err(if refused {
             format!(
                 "YouTube rechazó la descarga desde esta red (403). Pulsa «Diagnóstico» para ver qué cliente falla. [{detail}]"
@@ -417,6 +440,7 @@ pub fn diagnose(video: &str) -> String {
             // you're not a bot" and every download falls back to a client
             // whose URLs refuse real chunks.
             "visitor_id": crate::innertube::visitor().map(|v| v[..8.min(v.len())].to_string()),
+            "network": "ok",
         }));
     }
 

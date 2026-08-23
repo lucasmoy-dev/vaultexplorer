@@ -27,7 +27,7 @@
 //! idea of which clients are safe.
 
 use serde::Serialize;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use serde_json::Value;
 
 /// One Innertube client's identity, as YouTube expects to see it.
@@ -157,10 +157,10 @@ pub struct Player {
 
 /// Ask a client for a video's streams.
 pub fn player(client: Client, video_id: &str) -> Result<Player, String> {
-    player_as(client, video_id, visitor())
+    player_as(client, video_id, visitor().as_deref())
 }
 
-/// The cached visitor id, fetched once per process.
+/// The cached visitor id, fetched on first use and replaceable.
 ///
 /// **This is what fixed the 403.** Without it YouTube answers a token-free
 /// client with "Sign in to confirm you're not a bot" for anything long or
@@ -168,10 +168,24 @@ pub fn player(client: Client, video_id: &str) -> Result<Player, String> {
 /// URLs serve a small range and refuse a real one. With it, `visionos`
 /// returns formats and those formats serve 4MB chunks. Measured both ways in
 /// `download::client_matrix`.
-pub fn visitor() -> Option<&'static str> {
-    static VISITOR: OnceLock<Option<String>> = OnceLock::new();
-    VISITOR.get_or_init(|| visitor_data().ok()).as_deref()
+pub fn visitor() -> Option<String> {
+    let mut cached = VISITOR.lock().unwrap_or_else(|e| e.into_inner());
+    if cached.is_none() {
+        *cached = visitor_data().ok();
+    }
+    cached.clone()
 }
+
+/// Throw the cached visitor id away, so the next request fetches a new one.
+///
+/// Worth a retry when YouTube says "Sign in to confirm you're not a bot": the
+/// gate is decided per session as well as per address, and a session it has
+/// not seen before is sometimes let through.
+pub fn forget_visitor() {
+    *VISITOR.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+static VISITOR: Mutex<Option<String>> = Mutex::new(None);
 
 /// A visitor id ties the request to a session YouTube has seen before, which
 /// is what its bot heuristics look for.
