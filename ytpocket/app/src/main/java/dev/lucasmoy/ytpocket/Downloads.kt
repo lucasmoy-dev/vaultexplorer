@@ -53,18 +53,38 @@ object Downloads {
      * sequential read to a non-browser client (measured: 3.4MB timed out at
      * 30s as one stream, ~2s as 4MB ranges).
      */
+    /**
+     * How many times a refusal may be answered by resolving again and
+     * carrying on. Bounded, because a network that refuses everything must
+     * still end in an error rather than an infinite loop -- but generous,
+     * because each refresh costs one request and saves re-downloading
+     * everything that already landed.
+     */
+    private const val MAX_REFRESHES = 6
+
     fun fetch(
         url: String,
         target: File,
         userAgent: String,
         expectedSize: Long,
         onProgress: (Float) -> Unit,
+        /**
+         * Mints a fresh URL for the same stream (a new resolve). Called when
+         * googlevideo refuses a chunk, which happens when the address the URL
+         * was signed for is no longer the address we are calling from -- a
+         * phone rotating its IP mid-download. The download then *continues*
+         * from where it stopped instead of starting over.
+         */
+        refresh: (() -> Pair<String, String>?)? = null,
     ) {
         target.parentFile?.mkdirs()
-        // Appending is how the native side writes, so a retry must not start
-        // on top of a partial file.
+        // Appending is how the native side writes, so a fresh download must
+        // not start on top of a partial file.
         if (target.exists()) target.delete()
 
+        var currentUrl = url
+        var currentAgent = userAgent
+        var refreshes = 0
         val total = runCatching { Native.sizeOf(url, userAgent) }.getOrDefault(0L)
             .takeIf { it > 0 } ?: expectedSize
         var done = 0L
@@ -76,13 +96,24 @@ object Downloads {
         // "YouTube rechazó la descarga a mitad".
         while (total <= 0L || done < total) {
             val remaining = if (total > 0L) total - done else CHUNK
-            val written = Native.fetchChunk(
-                url,
-                target.absolutePath,
-                done,
-                minOf(CHUNK, remaining),
-                userAgent,
-            )
+            val written = try {
+                Native.fetchChunk(
+                    currentUrl,
+                    target.absolutePath,
+                    done,
+                    minOf(CHUNK, remaining),
+                    currentAgent,
+                )
+            } catch (refused: Throwable) {
+                // Out of refreshes, or no fresher URL to be had: the refusal
+                // stands, and the caller reports it.
+                val next = (if (refreshes < MAX_REFRESHES) refresh?.invoke() else null)
+                    ?: throw refused
+                refreshes++
+                currentUrl = next.first
+                currentAgent = next.second
+                continue
+            }
             if (written <= 0L) break
             done += written
             if (total > 0) onProgress((done.toFloat() / total).coerceIn(0f, 1f))

@@ -67,10 +67,29 @@ app; tapping the finished notification opens the file.
     refused on its own. The download therefore runs natively now, through
     the same kind of client that resolved it, with that client's own
     `User-Agent`.
+  - **The URL is signed for one IP address**, and that was the cause of the
+    stubborn one: "worked for 40MB, then 403". A googlevideo URL carries
+    `ip=<the address that asked>` inside `sparams`, and `sparams` is the list
+    of parameters the signature covers — so the address is not a hint, it is
+    part of the contract. A laptop on one address downloads happily; a phone
+    hands out a **rotating IPv6 privacy address** and switches between IPv4
+    and IPv6 as signal changes, so part way through a transfer the caller is
+    somebody else and every subsequent request is refused, in every request
+    shape (which is why the phone reported the same error for `header`,
+    `query` and `query+cpn` alike). Two fixes, both needed:
+    - The HTTP client is **pinned to IPv4** (`local_address`), so resolving
+      and downloading cannot land on different families. Measurable: the
+      test below asserts the address written into the URL is the address we
+      are calling from — it failed before this and passes now.
+    - A refusal mid-transfer no longer restarts. It **re-resolves and
+      continues from the byte it stopped at** (up to six times), so a genuine
+      address change costs a round trip, not the download. `MediaStore` never
+      sees the partial file, so a resumed download is still one clean file.
   - Belt and braces: `resolve` **probes** each candidate with a 1KB range
     request before returning it, so a URL that will not serve bytes never
-    reaches the UI; and a refusal part way through a transfer re-resolves
-    once and retries with fresh URLs.
+    reaches the UI; and requests are tried as a `Range` header, then as
+    `&range=` query parameters, then with a playback nonce, because
+    googlevideo has served all three shapes over the years.
 - **Filenames.** The point of the app, so the rules live in Rust with tests
   (`jni/src/naming.rs`): `/ \ : * ? " < > |` become dashes ("AC/DC" reads
   "AC-DC", not "ACDC"), control characters and repeated whitespace collapse,
@@ -85,10 +104,11 @@ app; tapping the finished notification opens the file.
   the row says so, instead of failing three steps later.
 - **A "Diagnóstico" button**, because a 403 depends on the network the phone
   is on and cannot be reproduced from a laptop. It asks every client in turn
-  and reports what each one did — `[{"client":"visionos","resolve":"ok",
-  "download":"ok"},{"client":"ios","download":"YouTube rechazó (403)"},…]` —
-  with a share button, so a failure somewhere else becomes a fact rather than
-  a guessing game.
+  and reports what each one did — `[{"egress_ip":"…"},{"client":"visionos",
+  "resolve":"ok","download":"ok","url_signed_for_ip":"…"},{"client":"ios",
+  "download":"YouTube rechazó (403)"},…]` — with a share button. The two
+  addresses are in there deliberately: if they ever disagree, the 403 is the
+  IP binding above and not anything else.
 
 ## Layout
 
@@ -145,6 +165,11 @@ cargo test --release -- --ignored --nocapture download_and_transcode
 
 # Live: the chunked native download, byte-exact against Content-Range
 cargo test --release -- --ignored --nocapture chunked_download
+
+# Live: the address invariant -- the URL is signed for the IP we call from,
+# and a fresh URL can continue a download the old one stopped serving. These
+# two are the 0.1.5 regression guards.
+cargo test --release -- --ignored --nocapture address_tests
 
 # Live: the 403 root cause -- asserts an iOS stream serves and a web-client
 # one does not. If this ever fails, YouTube changed its mind about PO tokens

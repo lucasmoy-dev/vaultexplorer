@@ -29,8 +29,8 @@ android {
         // and scoped storage as the only model worth targeting.
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
         // arm64 only: every phone worth running this on has been arm64 for
         // years, and a second ABI doubles build time and APK size.
         ndk { abiFilters += "arm64-v8a" }

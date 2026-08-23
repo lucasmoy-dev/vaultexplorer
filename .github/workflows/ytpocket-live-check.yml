@@ -30,6 +30,10 @@ jobs:
             ytpocket/jni/target
           key: ytpocket-jni-${{ hashFiles('ytpocket/jni/Cargo.toml') }}
 
-      - name: Which clients work from this network, and does a download finish
+      - name: Live checks against real YouTube from this network
         working-directory: ytpocket/jni
-        run: cargo run --release --example diag -- "${{ inputs.video }}"
+        # The address invariant is the important one: googlevideo signs the
+        # caller's IP into the stream URL, so resolving from one address and
+        # downloading from another is refused with 403 -- the failure that
+        # took four releases to pin down.
+        run: cargo test --release -- --ignored --nocapture

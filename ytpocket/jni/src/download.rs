@@ -29,22 +29,65 @@ use std::time::Duration;
 /// One client for the whole process: connection reuse is most of why the
 /// chunked download is fast, and building a client per chunk would throw
 /// that away (plus a fresh TLS handshake each time).
+///
+/// **Bound to IPv4 on purpose.** A googlevideo URL carries the client's IP
+/// in its signed parameters (`ip=…`, listed in `sparams`), so requests from
+/// a different address are refused with 403. On a phone that is a live
+/// hazard: Android's IPv6 privacy addresses rotate, and a dual-stack device
+/// can resolve over IPv6 and then open the next connection over IPv4 — which
+/// is exactly the "worked for the first few megabytes, then 403" failure
+/// reported from a real device, in every request shape. An IPv4 address on a
+/// phone is a carrier NAT address that stays put for the session, so pinning
+/// the family makes the URL's IP and our IP agree for the whole download.
+///
+/// If the network has no IPv4 at all, the bind fails and the unbound client
+/// is used instead — being consistent is the goal, not being IPv4.
 pub(crate) fn http() -> Result<&'static reqwest::blocking::Client, String> {
     static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(120))
-                // No redirect chasing: a googlevideo URL is final, and a
-                // redirect here would mean something is wrong (a captive
-                // portal, an ISP interstitial) rather than something to
-                // follow silently.
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|e| e.to_string())
+            let base = || {
+                reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(120))
+                    // No redirect chasing: a googlevideo URL is final, and a
+                    // redirect here would mean something is wrong (a captive
+                    // portal, an ISP interstitial) rather than something to
+                    // follow silently.
+                    .redirect(reqwest::redirect::Policy::none())
+            };
+            let ipv4 = base()
+                .local_address(Some(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)))
+                .build();
+            match ipv4 {
+                Ok(client) => Ok(client),
+                Err(_) => base().build().map_err(|e| e.to_string()),
+            }
         })
         .as_ref()
         .map_err(|e| e.clone())
+}
+
+/// The IP googlevideo signed into a stream URL, if it is in there.
+///
+/// Worth surfacing rather than keeping as trivia: when this does not match
+/// the address the phone is actually using, every request is refused, and
+/// saying so ("tu IP cambió durante la descarga") is the difference between
+/// a fixable report and "no funciona".
+pub fn signed_ip(url: &str) -> Option<String> {
+    let (_, query) = url.split_once('?')?;
+    let raw = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("ip="))?;
+    // Percent-decoding, for the colons in an IPv6 address.
+    Some(raw.replace("%3A", ":").replace("%3a", ":"))
+}
+
+/// The address this machine is actually reaching the internet from, through
+/// the same client the downloads use.
+pub fn egress_ip() -> Option<String> {
+    let text = http().ok()?.get("https://api.ipify.org").send().ok()?.text().ok()?;
+    let text = text.trim().to_string();
+    (!text.is_empty() && text.len() < 64).then_some(text)
 }
 
 /// How to ask googlevideo for a byte range.
@@ -281,6 +324,59 @@ mod tests {
         println!("downloaded={done}");
         assert_eq!(done, total, "downloaded size does not match Content-Range");
         assert_eq!(std::fs::metadata(&path).unwrap().len(), total);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::*;
+
+    /// The invariant that a phone kept breaking: googlevideo signs the
+    /// caller's IP into the stream URL (it is listed in `sparams`, so it is
+    /// verified), which means the address that resolves and the address that
+    /// downloads have to be the same one.
+    ///
+    /// Before the client was pinned to one family, this machine resolved over
+    /// IPv6 and could download over IPv4 -- fine here, fatal on a device whose
+    /// IPv6 privacy address rotates mid-transfer: 403 on every request shape,
+    /// which is exactly what was reported. `#[ignore]`d (network).
+    #[test]
+    #[ignore]
+    fn the_url_is_signed_for_the_address_we_call_from() {
+        let resolved = crate::youtube::resolve("dQw4w9WgXcQ").expect("resolve");
+        let audio = resolved.audio.expect("audio");
+        let signed = signed_ip(&audio.url).expect("no ip in the stream url");
+        let egress = egress_ip().expect("could not determine our egress ip");
+        println!("signed for {signed}, calling from {egress}");
+        assert_eq!(signed, egress, "the URL is bound to an address we are not using");
+    }
+
+    /// Recovering from a refusal by resolving again and *continuing* is what
+    /// makes a rotating address survivable: the bytes already on disk stay,
+    /// and only the URL is replaced. This proves a fresh URL accepts a
+    /// request at an arbitrary offset. `#[ignore]`d (network).
+    #[test]
+    #[ignore]
+    fn a_fresh_url_continues_where_the_old_one_stopped() {
+        let first_resolve = crate::youtube::resolve("dQw4w9WgXcQ").expect("resolve");
+        let audio = first_resolve.audio.expect("audio");
+        let path = std::env::temp_dir().join("ytpocket-resume-test.bin");
+        let _ = std::fs::remove_file(&path);
+        let file = path.to_string_lossy().to_string();
+
+        let first = chunk(&audio.url, &file, 0, 1024 * 1024, &first_resolve.user_agent)
+            .expect("first chunk");
+        assert!(first > 0);
+
+        let second_resolve = crate::youtube::resolve("dQw4w9WgXcQ").expect("re-resolve");
+        let fresh = second_resolve.audio.expect("audio again");
+        let second = chunk(&fresh.url, &file, first, 1024 * 1024, &second_resolve.user_agent)
+            .expect("resumed chunk");
+        assert!(second > 0);
+
+        // One file, both halves, in order.
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), first + second);
         let _ = std::fs::remove_file(&path);
     }
 }

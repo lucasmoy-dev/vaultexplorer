@@ -405,6 +405,15 @@ pub fn diagnose(video: &str) -> String {
     };
     let mut report = Vec::new();
 
+    // The address question first, because it is the one that produced a
+    // "worked for 40MB then 403" on a real phone: googlevideo signs the
+    // caller's IP into the URL, so if the phone answers from a different one
+    // later (a rotating IPv6 privacy address, a dual-stack switch), every
+    // remaining request is refused.
+    if let Some(egress) = crate::download::egress_ip() {
+        report.push(serde_json::json!({ "client": "-", "egress_ip": egress }));
+    }
+
     for client in DIRECT_CLIENTS {
         report.push(match crate::innertube::player(*client, &id) {
             Ok(player) => match player.best_audio() {
@@ -412,6 +421,7 @@ pub fn diagnose(video: &str) -> String {
                     Ok(()) => serde_json::json!({
                         "client": client.label, "resolve": "ok", "download": "ok",
                         "codec": audio.codec, "kbps": audio.bitrate / 1000,
+                        "url_signed_for_ip": crate::download::signed_ip(&audio.url),
                     }),
                     Err(error) => serde_json::json!({
                         "client": client.label, "resolve": "ok", "download": error,
