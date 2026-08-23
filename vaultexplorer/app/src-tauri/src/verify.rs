@@ -120,6 +120,7 @@ pub fn verify_pair(local_path: &str, remote: &str) {
     verifying_set().lock_safe().insert(local_path.to_string());
     let output = Command::new("rclone")
         .args(["check", local_path, remote, "--combined", "-"])
+        .args(crate::rclone::PACING_ARGS)
         .output();
     verifying_set().lock_safe().remove(local_path);
     let Ok(output) = output else { return };

@@ -3,6 +3,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as pickPath } from "@tauri-apps/plugin-dialog";
 import { api, baseName } from "../../api";
+import { FolderPickerSheet } from "./folder-picker-sheet";
 
 export function GitStatusSheet({
   root,
@@ -934,6 +935,301 @@ export function SyncthingSheet({ folderA, onClose }: { folderA: string; onClose:
             <button className="btn-primary" disabled={busy || deviceIdInput.trim() === ""} onClick={addDevice}>
               Add Device
             </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// The mobile counterpart of DriveSyncSheet. Same shape -- connect, link a
+// folder, sync, unlink -- over a completely different mechanism: there is
+// no rclone on Android, so this drives the Drive REST API in-process
+// (see drive_rest.rs). Signing in happens once, in Settings, because it
+// needs the user's own OAuth client credentials pasted in; this sheet only
+// links/unlinks/syncs and says where to go when nobody has signed in yet.
+export function MobileDriveSyncSheet({
+  localPath,
+  onOpenSettings,
+  onClose,
+}: {
+  localPath: string;
+  onOpenSettings: () => void;
+  onClose: () => void;
+}) {
+  const [connection, setConnection] = useState<import("../../api").DriveConnection | null>(null);
+  const [pair, setPair] = useState<import("../../api").MobileSyncPair | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  async function refreshState() {
+    try {
+      const [conn, pairs] = await Promise.all([api.driveRestConnection(), api.driveRestListPairs()]);
+      setConnection(conn);
+      setPair(pairs.find((p) => p.local_path === localPath) ?? null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  useEffect(() => {
+    refreshState();
+  }, []);
+
+  async function link() {
+    setBusy(true);
+    setError("");
+    setStatus("Creating the Drive folder…");
+    try {
+      setPair(await api.driveRestAddPair(localPath));
+      setStatus("Linked. Syncing starts now and repeats every ~10 minutes while the app is open.");
+      await syncNow();
+    } catch (e) {
+      setError(String(e));
+      setStatus("");
+    }
+    setBusy(false);
+  }
+  async function syncNow() {
+    setBusy(true);
+    setError("");
+    setStatus("Syncing…");
+    try {
+      // A real progress channel: a first sync of a folder full of photos
+      // is minutes of work, and a sheet that just says "Syncing…" for
+      // that long is indistinguishable from one that's stuck.
+      const channel = new Channel<import("../../api").ProgressEvent>();
+      channel.onmessage = (e) => {
+        if (e.total > 1) setStatus(`Syncing… ${e.done}/${e.total}`);
+      };
+      const outcome = await api.driveRestSyncNow(localPath, channel);
+      setStatus(outcome.summary);
+    } catch (e) {
+      setError(String(e));
+      setStatus("");
+    }
+    setBusy(false);
+  }
+  async function unlink() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.driveRestRemovePair(localPath);
+      setPair(null);
+      setStatus("");
+    } catch (e) {
+      setError(String(e));
+    }
+    setBusy(false);
+  }
+
+  const overlayClose = useOverlayClose(onClose);
+  return (
+    <div className="sheet-overlay" onMouseDown={overlayClose}>
+      <div className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
+        <h3>Sync with Google Drive</h3>
+        {connection === null ? (
+          <p>Loading…</p>
+        ) : !connection.connected ? (
+          <p>
+            No Google account is connected on this device yet. Connect one in Settings → Cloud &amp;
+            folder sync (it's a one-time setup: your own Google OAuth client, then a normal sign-in),
+            then come back here to link this folder.
+          </p>
+        ) : !pair ? (
+          <p>
+            Signed in as {connection.account_email || "your Google account"}. Linking this folder
+            pairs it with <code>VaultExplorer/{baseName(localPath)}</code> on Drive -- the same
+            folder the desktop app uses, so both devices sync the one folder.
+          </p>
+        ) : (
+          <p>
+            Linked to Drive folder “{pair.remote_folder_name}”. Sync is two-way: new and changed
+            files go both directions, deletions propagate, and a file changed on both sides since
+            the last sync is kept twice (the Drive copy lands next to it as “… (from Drive)”)
+            rather than one edit overwriting the other.
+          </p>
+        )}
+        {status && (
+          <p className="error" style={{ color: "var(--text-2)" }}>
+            {status}
+          </p>
+        )}
+        {error && <p className="error">{error}</p>}
+        <div className="sheet-actions">
+          <button className="btn-plain" onClick={onClose}>
+            Close
+          </button>
+          {connection === null ? null : !connection.connected ? (
+            <button
+              className="btn-primary"
+              onClick={() => {
+                onClose();
+                onOpenSettings();
+              }}
+            >
+              Open Settings
+            </button>
+          ) : !pair ? (
+            <button className="btn-primary" disabled={busy} onClick={link}>
+              Link Folder
+            </button>
+          ) : (
+            <>
+              <button className="btn-plain danger" disabled={busy} onClick={unlink}>
+                Unlink
+              </button>
+              <button className="btn-primary" disabled={busy} onClick={syncNow}>
+                Sync Now
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// Folder-to-folder sync on mobile. Same idea as LocalSyncSheet above, but
+// with no unison underneath (see folder_sync.rs) and with this app's own
+// folder browser to pick the second folder -- the OS directory picker has
+// no Android implementation at all (see FolderPickerSheet).
+export function MobileFolderSyncSheet({
+  folderA,
+  onClose,
+}: {
+  folderA: string;
+  onClose: () => void;
+}) {
+  const [pair, setPair] = useState<import("../../api").FolderSyncPair | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [pickStart, setPickStart] = useState("/");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  async function refreshState() {
+    try {
+      const pairs = await api.folderSyncListPairs();
+      setPair(pairs.find((p) => p.folder_a === folderA || p.folder_b === folderA) ?? null);
+    } catch (e) {
+      setError(String(e));
+    }
+    setLoaded(true);
+  }
+  useEffect(() => {
+    refreshState();
+    api.homeDir().then(setPickStart).catch(() => setPickStart("/"));
+  }, []);
+
+  async function pairWith(folderB: string) {
+    setPicking(false);
+    setBusy(true);
+    setError("");
+    try {
+      setPair(await api.folderSyncAdd(folderA, folderB));
+      await syncNow(folderA);
+    } catch (e) {
+      setError(String(e));
+    }
+    setBusy(false);
+  }
+  async function syncNow(folder: string) {
+    setBusy(true);
+    setError("");
+    setStatus("Syncing…");
+    try {
+      const channel = new Channel<import("../../api").ProgressEvent>();
+      channel.onmessage = (e) => {
+        if (e.total > 1) setStatus(`Syncing… ${e.done}/${e.total}`);
+      };
+      const outcome = await api.folderSyncNow(folder, channel);
+      setStatus(outcome.summary);
+    } catch (e) {
+      setError(String(e));
+      setStatus("");
+    }
+    setBusy(false);
+  }
+  async function unpair() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.folderSyncRemove(folderA);
+      setPair(null);
+      setStatus("");
+    } catch (e) {
+      setError(String(e));
+    }
+    setBusy(false);
+  }
+
+  const overlayClose = useOverlayClose(onClose);
+  const other = pair ? (pair.folder_a === folderA ? pair.folder_b : pair.folder_a) : null;
+  if (picking) {
+    return (
+      <FolderPickerSheet
+        startPath={pickStart}
+        title="Sync with which folder?"
+        confirmLabel="Pair with this folder"
+        onPick={pairWith}
+        onClose={() => setPicking(false)}
+      />
+    );
+  }
+  return (
+    <div className="sheet-overlay" onMouseDown={overlayClose}>
+      <div className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
+        <h3>Sync with another folder</h3>
+        {!loaded ? (
+          <p>Loading…</p>
+        ) : !pair ? (
+          <p>
+            Keeps this folder and a second one on this device in step, both ways: new and changed
+            files copy across, deletions propagate, and a file changed on both sides since the last
+            pass is kept twice rather than one edit winning. Useful between the app's own storage and
+            shared storage (or an SD card), which are separate trees on a phone.
+          </p>
+        ) : (
+          <div className="info-rows">
+            <div className="info-row">
+              <span>Paired with</span>
+              <span className="info-path" title={other ?? ""}>
+                {other}
+              </span>
+            </div>
+            <div className="info-row">
+              <span>Status</span>
+              <span>Syncing every ~5 minutes while the app is open</span>
+            </div>
+          </div>
+        )}
+        {status && (
+          <p className="error" style={{ color: "var(--text-2)" }}>
+            {status}
+          </p>
+        )}
+        {error && <p className="error">{error}</p>}
+        <div className="sheet-actions">
+          <button className="btn-plain" onClick={onClose}>
+            Close
+          </button>
+          {!loaded ? null : !pair ? (
+            <button className="btn-primary" disabled={busy} onClick={() => setPicking(true)}>
+              Choose Folder…
+            </button>
+          ) : (
+            <>
+              <button className="btn-plain danger" disabled={busy} onClick={unpair}>
+                Unpair
+              </button>
+              <button className="btn-primary" disabled={busy} onClick={() => syncNow(folderA)}>
+                Sync Now
+              </button>
+            </>
           )}
         </div>
       </div>

@@ -19,7 +19,7 @@ export function ColumnRow({
   isSel: boolean;
   cut?: boolean;
   onActivate: () => void;
-  onSelect: () => void;
+  onSelect: (e: React.MouseEvent) => void;
   onMenu: (e: React.MouseEvent) => void;
 }) {
   const rowRef = useRef<HTMLDivElement>(null);

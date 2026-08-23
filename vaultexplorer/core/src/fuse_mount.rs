@@ -14,7 +14,7 @@
 //! [`fuser::mount2`] for a blocking, foreground mount (what a CLI tool
 //! wants).
 
-use crate::vault::{Stat, Vault};
+use crate::vault::{Stat, Vault, VaultFileReader};
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
@@ -38,10 +38,41 @@ pub fn spawn(vault: Vault, mountpoint: &Path) -> io::Result<BackgroundSession> {
     fuser::spawn_mount2(fs, mountpoint, &options)
 }
 
+/// How an open handle backs its plaintext.
+///
+/// Reads start out [`Streaming`](Content::Streaming): nothing is decrypted
+/// at `open` time and each `read` pulls only the 64 KiB chunks it covers.
+/// That's what makes opening a multi-GB video in an external player start
+/// instantly instead of stalling on a full decrypt of the whole file (and
+/// allocating the whole file in RAM) before the first byte is served.
+///
+/// The first write flips the handle to [`Buffered`](Content::Buffered),
+/// since the write path re-encrypts the file whole and does need the entire
+/// plaintext in memory.
+enum Content {
+    Streaming(VaultFileReader),
+    Buffered(Vec<u8>),
+}
+
 struct OpenFile {
     rel_path: PathBuf,
-    buffer: Vec<u8>,
+    content: Content,
     dirty: bool,
+}
+
+impl OpenFile {
+    /// Materialize the whole plaintext so it can be modified in place.
+    /// Returns `None` if the ciphertext can't be read back.
+    fn buffer_mut(&mut self) -> Option<&mut Vec<u8>> {
+        if let Content::Streaming(reader) = &mut self.content {
+            let buf = reader.read_all().ok()?;
+            self.content = Content::Buffered(buf);
+        }
+        match &mut self.content {
+            Content::Buffered(b) => Some(b),
+            Content::Streaming(_) => None,
+        }
+    }
 }
 
 struct Inodes {
@@ -150,8 +181,13 @@ impl VaultFs {
     fn writeback(&self, fh: u64) {
         let mut handles = self.handles.lock().unwrap();
         if let Some(f) = handles.get_mut(&fh) {
+            // Only a `Buffered` handle can be dirty (writing is what
+            // materializes the buffer), so a read-only handle never
+            // re-encrypts anything here.
             if f.dirty {
-                let _ = self.vault.write_file(&f.rel_path, &f.buffer);
+                if let Content::Buffered(buf) = &f.content {
+                    let _ = self.vault.write_file(&f.rel_path, buf);
+                }
                 f.dirty = false;
             }
         }
@@ -243,8 +279,10 @@ impl Filesystem for VaultFs {
                 return;
             }
         };
-        let buffer = match self.vault.decrypt_file(&path) {
-            Ok(b) => b,
+        // No decryption here on purpose -- `read` pulls chunks as they're
+        // asked for, so `open` is O(1) whatever the file's size.
+        let reader = match self.vault.open_read(&path) {
+            Ok(r) => r,
             Err(_) => {
                 reply.error(libc::EIO);
                 return;
@@ -255,7 +293,7 @@ impl Filesystem for VaultFs {
             fh,
             OpenFile {
                 rel_path: path,
-                buffer,
+                content: Content::Streaming(reader),
                 dirty: false,
             },
         );
@@ -273,15 +311,24 @@ impl Filesystem for VaultFs {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        let handles = self.handles.lock().unwrap();
-        match handles.get(&fh) {
+        let mut handles = self.handles.lock().unwrap();
+        match handles.get_mut(&fh) {
             Some(f) => {
-                let offset = offset as usize;
-                let end = (offset + size as usize).min(f.buffer.len());
-                if offset >= f.buffer.len() {
-                    reply.data(&[]);
-                } else {
-                    reply.data(&f.buffer[offset..end]);
+                let offset = offset.max(0) as u64;
+                match &mut f.content {
+                    Content::Streaming(reader) => match reader.read_at(offset, size as usize) {
+                        Ok(data) => reply.data(&data),
+                        Err(_) => reply.error(libc::EIO),
+                    },
+                    Content::Buffered(buf) => {
+                        let offset = offset as usize;
+                        let end = (offset + size as usize).min(buf.len());
+                        if offset >= buf.len() {
+                            reply.data(&[]);
+                        } else {
+                            reply.data(&buf[offset..end]);
+                        }
+                    }
                 }
             }
             None => reply.error(libc::EBADF),
@@ -303,11 +350,15 @@ impl Filesystem for VaultFs {
         let mut handles = self.handles.lock().unwrap();
         match handles.get_mut(&fh) {
             Some(f) => {
-                let offset = offset as usize;
-                if f.buffer.len() < offset + data.len() {
-                    f.buffer.resize(offset + data.len(), 0);
+                let offset = offset.max(0) as usize;
+                let Some(buf) = f.buffer_mut() else {
+                    reply.error(libc::EIO);
+                    return;
+                };
+                if buf.len() < offset + data.len() {
+                    buf.resize(offset + data.len(), 0);
                 }
-                f.buffer[offset..offset + data.len()].copy_from_slice(data);
+                buf[offset..offset + data.len()].copy_from_slice(data);
                 f.dirty = true;
                 reply.written(data.len() as u32);
             }
@@ -354,7 +405,11 @@ impl Filesystem for VaultFs {
             let open = fh.and_then(|h| handles.get_mut(&h));
             if let Some(f) = open {
                 // Truncate the in-memory buffer; writeback re-encrypts on flush.
-                f.buffer.resize(sz, 0);
+                let Some(buf) = f.buffer_mut() else {
+                    reply.error(libc::EIO);
+                    return;
+                };
+                buf.resize(sz, 0);
                 f.dirty = true;
             } else {
                 drop(handles);
@@ -431,7 +486,7 @@ impl Filesystem for VaultFs {
             fh,
             OpenFile {
                 rel_path: child_path,
-                buffer: Vec::new(),
+                content: Content::Buffered(Vec::new()),
                 dirty: false,
             },
         );

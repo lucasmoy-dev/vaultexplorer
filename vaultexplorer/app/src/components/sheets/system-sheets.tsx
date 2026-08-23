@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Channel } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { api, osOpen, formatSize, joinPath } from "../../api";
 import { PHONE_STORAGE_PATH } from "../../constants";
@@ -363,6 +364,16 @@ export function SettingsScreen({
   const [contactsBusy, setContactsBusy] = useState(false);
   const [contactsMsg, setContactsMsg] = useState("");
   const [appVersion, setAppVersion] = useState("");
+  // Mobile Google Drive sync (see drive_rest.rs). Signing in lives here
+  // rather than in the per-folder sheet because it's a one-time setup
+  // step with credentials to paste, not something to redo per folder.
+  const [driveConn, setDriveConn] = useState<import("../../api").DriveConnection | null>(null);
+  const [drivePairs, setDrivePairs] = useState<import("../../api").MobileSyncPair[]>([]);
+  const [driveClientId, setDriveClientId] = useState("");
+  const [driveClientSecret, setDriveClientSecret] = useState("");
+  const [driveBusy, setDriveBusy] = useState(false);
+  const [driveMsg, setDriveMsg] = useState("");
+  const [driveAuthUrl, setDriveAuthUrl] = useState("");
   const [updateCheck, setUpdateCheck] = useState<UpdateCheck>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
@@ -371,6 +382,86 @@ export function SettingsScreen({
       .then(setAppVersion)
       .catch(() => {});
   }, []);
+  useEffect(() => {
+    if (!mobile) return;
+    refreshDrive();
+  }, [mobile]);
+  async function refreshDrive() {
+    try {
+      const [conn, pairs] = await Promise.all([api.driveRestConnection(), api.driveRestListPairs()]);
+      setDriveConn(conn);
+      setDrivePairs(pairs);
+    } catch (e) {
+      setDriveMsg(String(e));
+    }
+  }
+  async function connectDrive() {
+    setDriveBusy(true);
+    setDriveMsg(
+      "Waiting for the Google sign-in in your browser… when it says you can close the tab, switch " +
+        "back here. If the page seems to hang right at the end, switching back is what finishes it: " +
+        "Android pauses this app -- and the local sign-in endpoint it is serving -- while the " +
+        "browser is in front."
+    );
+    setDriveAuthUrl("");
+    try {
+      // The backend serves the OAuth redirect on 127.0.0.1 and hands the
+      // consent URL back through this channel the moment it's built, so
+      // there's always a tappable link even when handing the URL to a
+      // browser fails.
+      const channel = new Channel<string>();
+      channel.onmessage = (url) => setDriveAuthUrl(url);
+      const email = await api.driveRestConnect(driveClientId, driveClientSecret, channel);
+      setDriveMsg(email ? `Connected as ${email}.` : "Connected.");
+      setDriveAuthUrl("");
+      setDriveClientSecret("");
+      await refreshDrive();
+    } catch (e) {
+      setDriveMsg(String(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  }
+  async function disconnectDrive() {
+    setDriveBusy(true);
+    try {
+      await api.driveRestDisconnect();
+      setDriveMsg("Disconnected. Linked folders stay linked but won't sync until you connect again.");
+      await refreshDrive();
+    } catch (e) {
+      setDriveMsg(String(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  }
+  async function syncPairNow(localPath: string) {
+    setDriveBusy(true);
+    setDriveMsg("Syncing…");
+    try {
+      const channel = new Channel<import("../../api").ProgressEvent>();
+      channel.onmessage = (e) => {
+        if (e.total > 1) setDriveMsg(`Syncing… ${e.done}/${e.total}`);
+      };
+      const outcome = await api.driveRestSyncNow(localPath, channel);
+      setDriveMsg(outcome.summary);
+    } catch (e) {
+      setDriveMsg(String(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  }
+  async function unlinkPair(localPath: string) {
+    setDriveBusy(true);
+    try {
+      await api.driveRestRemovePair(localPath);
+      await refreshDrive();
+      setDriveMsg("Unlinked.");
+    } catch (e) {
+      setDriveMsg(String(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  }
   async function checkForUpdate() {
     setUpdateBusy(true);
     setUpdateMsg("");
@@ -471,6 +562,28 @@ export function SettingsScreen({
   useEffect(() => {
     api.portalIsEnabled().then(setPortalEnabled).catch(() => {});
   }, []);
+
+  const [defaultFmEnabled, setDefaultFmEnabled] = useState(false);
+  const [defaultFmBusy, setDefaultFmBusy] = useState(false);
+  const [defaultFmError, setDefaultFmError] = useState("");
+  useEffect(() => {
+    api.defaultFileManagerEnabled().then(setDefaultFmEnabled).catch(() => {});
+  }, []);
+
+  async function toggleDefaultFm(checked: boolean) {
+    setDefaultFmBusy(true);
+    setDefaultFmError("");
+    try {
+      await api.setDefaultFileManager(checked);
+      // Re-read rather than assuming: the backend reports "on" only when
+      // the desktop entry it wrote actually resolves, so a half-applied
+      // change shows as off instead of lying about it.
+      setDefaultFmEnabled(await api.defaultFileManagerEnabled());
+    } catch (e) {
+      setDefaultFmError(String(e));
+    }
+    setDefaultFmBusy(false);
+  }
 
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
@@ -653,15 +766,101 @@ export function SettingsScreen({
                   </p>
                 )}
                 <label className="field-label" style={{ marginTop: 14 }}>
-                  Cloud & folder sync
+                  Cloud &amp; folder sync
                 </label>
                 <p className="hint" style={{ marginTop: -2 }}>
-                  Not available on mobile yet -- desktop's sync (Drive/OneDrive/Dropbox, Syncthing,
-                  Git, plain folder-to-folder) all shell out to a binary Android can't run.
-                  Bringing it here needs its own design, not a straight port -- likely linking a
-                  folder your phone's Drive/OneDrive app already syncs, rather than this app
-                  syncing directly.
+                  Google Drive and folder-to-folder sync both work here: this app talks to Drive
+                  directly and syncs two local folders itself, so nothing has to shell out to{" "}
+                  <code>rclone</code> or <code>unison</code> (Android can run neither). Both are
+                  two-way, and Drive uses the same <code>VaultExplorer/&lt;folder&gt;</code> folder
+                  the desktop app does. Link either from a folder: long-press it → Sync. OneDrive,
+                  Dropbox, Git and P2P stay desktop-only -- each needs its own binary or its own API
+                  client, not a shared one.
                 </p>
+                {driveConn?.connected ? (
+                  <>
+                    <p className="hint" style={{ marginTop: 4 }}>
+                      Connected{driveConn.account_email ? ` as ${driveConn.account_email}` : ""}. Link a
+                      folder by long-pressing it → Sync → Google Drive.
+                    </p>
+                    {drivePairs.length > 0 && (
+                      <div className="info-rows">
+                        {drivePairs.map((p) => (
+                          <div className="info-row" key={p.local_path}>
+                            <span className="info-path" title={p.local_path}>
+                              {p.local_path}
+                            </span>
+                            <span style={{ display: "flex", gap: 6 }}>
+                              <button
+                                className="btn-plain small"
+                                disabled={driveBusy}
+                                onClick={() => syncPairNow(p.local_path)}
+                              >
+                                Sync now
+                              </button>
+                              <button
+                                className="btn-plain small"
+                                disabled={driveBusy}
+                                onClick={() => unlinkPair(p.local_path)}
+                              >
+                                Unlink
+                              </button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                      <button className="btn-plain small" disabled={driveBusy} onClick={disconnectDrive}>
+                        Disconnect Google Drive
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="hint" style={{ marginTop: 4 }}>
+                      One-time setup: in the Google Cloud console, enable the Drive API and create an
+                      OAuth client of type “Desktop app”, then paste its ID and secret here. Your own
+                      client is deliberate -- a shared one is exactly what Google is retiring
+                      rclone's built-in Drive client over, and an ID shipped inside an APK isn't a
+                      secret anyway. Both values stay on this device.
+                    </p>
+                    <label className="field-label">Client ID</label>
+                    <input
+                      value={driveClientId}
+                      placeholder="…apps.googleusercontent.com"
+                      onChange={(e) => setDriveClientId(e.target.value)}
+                    />
+                    <label className="field-label">Client secret</label>
+                    <input
+                      type="password"
+                      value={driveClientSecret}
+                      onChange={(e) => setDriveClientSecret(e.target.value)}
+                    />
+                    <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                      <button
+                        className="btn-primary small"
+                        disabled={driveBusy || !driveClientId.trim() || !driveClientSecret.trim()}
+                        onClick={connectDrive}
+                      >
+                        Connect Google Drive
+                      </button>
+                      {driveAuthUrl && (
+                        <button
+                          className="btn-plain small"
+                          onClick={() => osOpen(driveAuthUrl).catch((e) => setDriveMsg(String(e)))}
+                        >
+                          Open sign-in page
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+                {driveMsg && (
+                  <p className="hint" style={{ marginTop: 6 }}>
+                    {driveMsg}
+                  </p>
+                )}
               </>
             )}
             <label className="field-label" style={{ marginTop: 14 }}>
@@ -749,6 +948,20 @@ export function SettingsScreen({
               apps that opt in) — not every app's native dialog.
             </p>
             {portalError && <p className="error">{portalError}</p>}
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={defaultFmEnabled}
+                disabled={defaultFmBusy}
+                onChange={(e) => toggleDefaultFm(e.target.checked)}
+              />
+              Use as the default file manager
+            </label>
+            <p style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: -6 }}>
+              Folders opened from any other app come here instead of Files, and so does
+              “Show in folder” from Chrome, OBS and the like.
+            </p>
+            {defaultFmError && <p className="error">{defaultFmError}</p>}
             <label className="checkbox-row">
               <input
                 type="checkbox"

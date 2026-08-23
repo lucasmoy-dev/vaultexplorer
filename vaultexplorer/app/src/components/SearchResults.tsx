@@ -10,19 +10,39 @@ function SearchRow({
   path,
   entry,
   inVault,
+  mobile,
+  selected,
+  onSelect,
   onOpen,
   onMenu,
 }: {
   path: string;
   entry: Entry;
   inVault: boolean;
+  mobile?: boolean;
+  selected: boolean;
+  onSelect: (p: string) => void;
   onOpen: (p: string) => void;
   onMenu: (e: React.MouseEvent, p: string) => void;
 }) {
   const rowRef = useRef<HTMLLIElement>(null);
   const thumb = useThumbnail(entry, path, inVault, 32, rowRef);
   return (
-    <li ref={rowRef} onClick={() => onOpen(path)} onContextMenu={(e) => onMenu(e, path)}>
+    <li
+      ref={rowRef}
+      className={selected ? "selected" : undefined}
+      // Same click contract as an ordinary listing row: click selects,
+      // double-click opens on desktop; on touch a single tap does both
+      // (see the EntryTile handler in App.tsx). A hit used to navigate to
+      // its *parent folder* on a single click, which threw the search away
+      // and never opened the thing that was clicked.
+      onClick={() => {
+        onSelect(path);
+        if (mobile) onOpen(path);
+      }}
+      onDoubleClick={() => onOpen(path)}
+      onContextMenu={(e) => onMenu(e, path)}
+    >
       <span className="result-icon">
         {thumb ? (
           <img src={thumb} className="entry-thumb" alt="" draggable={false} />
@@ -41,6 +61,9 @@ export function SearchResults({
   results,
   entries,
   inVault,
+  mobile,
+  selected,
+  onSelect,
   onOpen,
   onMenu,
 }: {
@@ -52,6 +75,9 @@ export function SearchResults({
   // listing resolves.
   entries: Record<string, Entry>;
   inVault: boolean;
+  mobile?: boolean;
+  selected: string | null;
+  onSelect: (p: string) => void;
   onOpen: (p: string) => void;
   onMenu: (e: React.MouseEvent, p: string) => void;
 }) {
@@ -69,6 +95,9 @@ export function SearchResults({
             path={p}
             entry={entries[p] ?? { name: baseName(p), is_dir: false, size: 0, mtime: 0 }}
             inVault={inVault}
+            mobile={mobile}
+            selected={selected === p}
+            onSelect={onSelect}
             onOpen={onOpen}
             onMenu={onMenu}
           />

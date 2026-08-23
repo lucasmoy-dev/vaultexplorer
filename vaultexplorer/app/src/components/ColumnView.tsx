@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Entry, joinPath } from "../api";
 import { ColumnRow } from "./ColumnRow";
-import { PreviewColumn } from "./PreviewColumn";
+import { FilePreviewPane } from "./TextEditorPane";
 
 export function ColumnView({
   chain,
@@ -13,6 +13,11 @@ export function ColumnView({
   previewEntry,
   onSelectFile,
   cutPaths,
+  selectedNames,
+  curDir,
+  sortEntries,
+  textEditorExts,
+  onOpenInEditor,
 }: {
   chain: { dirs: string[]; sel: string[] };
   list: (dir: string) => Promise<Entry[]>;
@@ -21,8 +26,22 @@ export function ColumnView({
   onActivate: (dir: string, entry: Entry) => void;
   onMenu: (e: React.MouseEvent, dir: string, entry: Entry) => void;
   previewEntry: { dir: string; entry: Entry } | null;
-  onSelectFile: (dir: string, entry: Entry) => void;
+  onSelectFile: (dir: string, entry: Entry, e: React.MouseEvent) => void;
+  // The real multi-selection (Ctrl+A, Ctrl/Shift-click, and everything
+  // Ctrl+C/Delete/Enter act on), which only ever covers `curDir` -- the
+  // rightmost non-preview column. Rows there highlight from this, so
+  // Select All has something visible to show for itself.
+  selectedNames: Set<string>;
+  curDir: string;
+  // The app's own sort (see App.tsx), so every column matches the order
+  // the toolbar's sort chose and the keyboard steps through.
+  sortEntries: (dir: string, entries: Entry[]) => Entry[];
   cutPaths?: string[];
+  // Threaded straight through to FilePreviewPane -- the rightmost column
+  // is the same preview List-with-Preview shows (see the render below), so
+  // it needs the same "which formats open as text" wiring.
+  textEditorExts: Set<string>;
+  onOpenInEditor: (ext: string) => void;
 }) {
   const [cols, setCols] = useState<{ dir: string; entries: Entry[] }[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
@@ -33,12 +52,7 @@ export function ColumnView({
     Promise.all(
       chain.dirs.map(async (dir) => {
         try {
-          const entries = await list(dir);
-          entries.sort((a, b) => {
-            if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-            return a.name.localeCompare(b.name);
-          });
-          return { dir, entries };
+          return { dir, entries: sortEntries(dir, await list(dir)) };
         } catch {
           return { dir, entries: [] as Entry[] };
         }
@@ -48,7 +62,7 @@ export function ColumnView({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirsKey]);
+  }, [dirsKey, sortEntries]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ inline: "end", block: "nearest" });
@@ -62,7 +76,8 @@ export function ColumnView({
           {col.entries.map((entry) => {
             const isSel =
               chain.sel[i] === entry.name ||
-              (previewEntry?.dir === col.dir && previewEntry.entry.name === entry.name);
+              (previewEntry?.dir === col.dir && previewEntry.entry.name === entry.name) ||
+              (col.dir === curDir && selectedNames.has(entry.name));
             return (
               <ColumnRow
                 key={entry.name}
@@ -72,20 +87,29 @@ export function ColumnView({
                 isSel={isSel}
                 cut={!!cutPaths?.includes(joinPath(col.dir, entry.name))}
                 onActivate={() => onActivate(col.dir, entry)}
-                onSelect={() => onSelectFile(col.dir, entry)}
+                onSelect={(e) => onSelectFile(col.dir, entry, e)}
                 onMenu={(e) => onMenu(e, col.dir, entry)}
               />
             );
           })}
         </div>
       ))}
+      {/* One preview, not two implementations: the last column used to
+          render PreviewColumn directly, so a PDF got a dead cover image
+          and a markdown/text file got nothing but its metadata -- while
+          List with Preview, going through FilePreviewPane, rendered all
+          three properly. Same pane here, wrapped so it keeps a Miller
+          column's fixed width instead of stretching. */}
       {previewEntry && (
-        <PreviewColumn
-          entry={previewEntry.entry}
-          fullPath={joinPath(previewEntry.dir, previewEntry.entry.name)}
-          inVault={inVault}
-          root={root}
-        />
+        <div className="columns-preview">
+          <FilePreviewPane
+            target={previewEntry}
+            inVault={inVault}
+            root={root}
+            textEditorExts={textEditorExts}
+            onOpenInEditor={onOpenInEditor}
+          />
+        </div>
       )}
       <div ref={endRef} />
     </div>

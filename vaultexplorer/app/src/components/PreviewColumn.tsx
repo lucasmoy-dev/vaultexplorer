@@ -290,6 +290,66 @@ export function PreviewColumn({
   useEffect(() => setThumbSize(480), [fullPath]);
   const thumb = useThumbnail(entry, fullPath, inVault, thumbSize);
 
+  // A PDF isn't previewed as a lone cover image any more: it pages through
+  // the actual document here. The webview has no PDF renderer to hand the
+  // file to (neither webkit2gtk nor Android's WebView embeds one), so each
+  // page is rasterized by poppler on the Rust side and shown as an image --
+  // which also means it inherits the zoom/pan viewer above for free.
+  //
+  // Real-fs only, like the PDF cover thumbnail: poppler needs a real path,
+  // so a vault PDF still falls back to its generic icon.
+  const isPdf = kindOf(entry) === "pdf" && !inVault;
+  const [pageCount, setPageCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSrc, setPageSrc] = useState<string | null>(null);
+  const [pdfError, setPdfError] = useState("");
+  useEffect(() => {
+    setPage(1);
+    setPageSrc(null);
+    setPageCount(0);
+    setPdfError("");
+  }, [fullPath]);
+  useEffect(() => {
+    if (!isPdf) return;
+    let cancelled = false;
+    api
+      .fsPdfPageCount(fullPath)
+      .then((n) => !cancelled && setPageCount(n))
+      // A missing/failing pdfinfo only costs the page stepper, not the
+      // page itself -- page 1 still renders below.
+      .catch(() => !cancelled && setPageCount(0));
+    return () => {
+      cancelled = true;
+    };
+  }, [isPdf, fullPath]);
+  // Rendered at the resolution the current zoom bucket asks for (same
+  // three buckets the image thumbnail uses), scaled up because a page of
+  // text needs far more pixels to stay readable than a photo does to look
+  // right. The previous page image stays on screen while the next one
+  // renders, so stepping pages doesn't flash empty.
+  const pageSize = thumbSize >= 1920 ? 2400 : thumbSize >= 960 ? 1600 : 1100;
+  useEffect(() => {
+    if (!isPdf) return;
+    let cancelled = false;
+    api
+      .fsPdfPage(fullPath, page, pageSize)
+      .then((uri) => {
+        if (cancelled) return;
+        setPageSrc(uri);
+        setPdfError("");
+      })
+      .catch((err) => !cancelled && setPdfError(String(err)));
+    return () => {
+      cancelled = true;
+    };
+  }, [isPdf, fullPath, page, pageSize]);
+  function stepPage(delta: number) {
+    setPage((p) => {
+      const last = pageCount || p + 1;
+      return Math.min(last, Math.max(1, p + delta));
+    });
+  }
+
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   useEffect(() => {
@@ -350,9 +410,9 @@ export function PreviewColumn({
       >
         {isMedia ? (
           <MediaPreview entry={entry} fullPath={fullPath} inVault={inVault} poster={thumb} />
-        ) : thumb ? (
+        ) : (isPdf ? pageSrc ?? thumb : thumb) ? (
           <img
-            src={thumb}
+            src={(isPdf ? pageSrc ?? thumb : thumb) as string}
             alt=""
             draggable={false}
             style={{
@@ -369,6 +429,32 @@ export function PreviewColumn({
           </div>
         )}
       </div>
+      {isPdf && (
+        <div className="pdf-pager">
+          <button
+            type="button"
+            className="btn-plain small"
+            disabled={page <= 1}
+            aria-label="Previous page"
+            onClick={() => stepPage(-1)}
+          >
+            ‹
+          </button>
+          <span className="pdf-pager-label">
+            {pageCount ? `Page ${page} of ${pageCount}` : `Page ${page}`}
+          </span>
+          <button
+            type="button"
+            className="btn-plain small"
+            disabled={!!pageCount && page >= pageCount}
+            aria-label="Next page"
+            onClick={() => stepPage(1)}
+          >
+            ›
+          </button>
+        </div>
+      )}
+      {pdfError && <p className="preview-media-error">{pdfError}</p>}
       <div className="preview-name-row">
         <EditableFileName name={entry.name} onRename={onRename} />
         <CopyButton text={entry.name} title="Copy name" />
@@ -391,7 +477,7 @@ export function PreviewColumn({
           <span>Size</span>
           <span>{formatSize(entry.size)}</span>
         </div>
-        <div className="info-row">
+        <div className="info-row info-row-wide">
           <span>Location</span>
           <span className="info-path-group">
             <span className="info-path" title={displayDir}>

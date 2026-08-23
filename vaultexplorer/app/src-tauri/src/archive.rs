@@ -37,6 +37,29 @@ pub(crate) fn decompress_entry(
     })
 }
 
+/// A zip entry only needs the zip64 extension (the `zip` crate's
+/// `large_file` option) once its own size can't fit a 32-bit field; entry
+/// *offsets* past 4GiB get a zip64 extra field from the crate on their own.
+/// Without it the crate aborts the whole archive mid-write with "Large
+/// file option has not been set" -- which is what compressing anything
+/// with a 4GB+ file in it used to do. Set per entry rather than globally
+/// so ordinary archives stay plain zip32, readable by the oldest tools.
+/// The margin under `u32::MAX` covers deflate's small worst-case overhead
+/// on incompressible data, where the compressed size lands just above the
+/// original.
+pub(crate) const ZIP64_FILE_THRESHOLD: u64 = u32::MAX as u64 - 16 * 1024 * 1024;
+
+pub(crate) fn zip_options_for_size(
+    options: zip::write::FileOptions<'_, ()>,
+    size: u64,
+) -> zip::write::FileOptions<'_, ()> {
+    if size > ZIP64_FILE_THRESHOLD {
+        options.large_file(true)
+    } else {
+        options
+    }
+}
+
 fn zip_add_recursive(
     zw: &mut zip::ZipWriter<std::fs::File>,
     base: &Path,
@@ -52,7 +75,8 @@ fn zip_add_recursive(
     } else {
         let rel = path.strip_prefix(base).unwrap_or(path);
         let name = rel.to_string_lossy().replace('\\', "/");
-        zw.start_file(name, options)
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        zw.start_file(name, zip_options_for_size(options, size))
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         std::io::copy(&mut std::fs::File::open(path)?, zw)?;
         done.set(done.get() + 1);

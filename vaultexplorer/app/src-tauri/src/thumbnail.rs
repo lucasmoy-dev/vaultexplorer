@@ -143,14 +143,24 @@ pub fn thumbnail_for_video(app: &tauri::AppHandle, path: &str, max_size: u32) ->
     Ok(to_data_uri(&jpeg))
 }
 
-/// Thumbnail for a real on-disk PDF: rasterizes just page 1 via
-/// `pdftoppm` (poppler-utils, same tool `convert::pdf_to_images` already
-/// shells out to for the real PDF-to-images feature) into a temp JPEG,
-/// then runs it through the same resize/cache pipeline as a real image --
-/// this is what gives the Library view (see LibraryShelf.tsx) a real
-/// cover instead of a plain color block, and every other view a proper
-/// page-1 icon for a PDF the same way Finder/GNOME Files already do.
-pub fn thumbnail_for_pdf(app: &tauri::AppHandle, path: &str, max_size: u32) -> Result<String, String> {
+/// Rasterize one page of a real on-disk PDF to a JPEG data URI, cached by
+/// path+mtime+page+size like every other thumbnail here. This is both the
+/// page-1 cover the grid/Library views show (see `thumbnail_for_pdf`) and
+/// the page images the preview pane pages through, since the webview has
+/// no built-in PDF renderer to point at the file directly -- `pdftoppm`
+/// (poppler-utils, the same tool `convert::pdf_to_images` shells out to)
+/// is what draws the page.
+///
+/// Real-fs only, for the same reason as video: poppler needs a real path,
+/// and decrypting a vault PDF to a plaintext temp file for it would break
+/// the vault's on-disk invariant.
+pub fn pdf_page_image(
+    app: &tauri::AppHandle,
+    path: &str,
+    page: u32,
+    max_size: u32,
+) -> Result<String, String> {
+    let page = page.max(1);
     let metadata = std::fs::metadata(path).str_err()?;
     let mtime = metadata
         .modified()
@@ -160,7 +170,7 @@ pub fn thumbnail_for_pdf(app: &tauri::AppHandle, path: &str, max_size: u32) -> R
         .unwrap_or(0);
     let dir = cache_dir(app);
     std::fs::create_dir_all(&dir).str_err()?;
-    let cache_path = dir.join(cache_key(&format!("pdf:{path}"), mtime, max_size));
+    let cache_path = dir.join(cache_key(&format!("pdf:{path}:p{page}"), mtime, max_size));
     if let Ok(cached) = std::fs::read(&cache_path) {
         return Ok(to_data_uri(&cached));
     }
@@ -170,25 +180,72 @@ pub fn thumbnail_for_pdf(app: &tauri::AppHandle, path: &str, max_size: u32) -> R
     let seq = PTHUMB_SEQ.fetch_add(1, Ordering::Relaxed);
     let prefix =
         std::env::temp_dir().join(format!("vaultexplorer-pthumb-{}-{}", std::process::id(), seq));
+    // Rasterize at roughly the resolution actually asked for rather than a
+    // fixed 120dpi: a page rendered for a grid icon and one rendered to be
+    // *read* (and zoomed into) in the preview pane want very different
+    // amounts of detail, and rendering small then upscaling is exactly the
+    // blur the preview is meant to avoid. ~9in is the long edge of a
+    // typical page, so max_size/9 is the dpi that fills the request;
+    // clamped so a tiny thumbnail still renders legibly and a big one
+    // can't ask poppler for an enormous bitmap.
+    let dpi = (max_size / 9).clamp(96, 300);
+    let page_arg = page.to_string();
     let output = Command::new("pdftoppm")
-        .args(["-jpeg", "-f", "1", "-l", "1", "-r", "120", path, prefix.to_str().unwrap()])
+        .args(["-jpeg", "-f", &page_arg, "-l", &page_arg, "-r", &dpi.to_string(), path])
+        .arg(prefix.to_str().unwrap())
         .stdout(Stdio::null())
         .output()
         .str_err()?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    // pdftoppm names its single-page output "<prefix>-1.jpg" (or, on older
-    // poppler versions, just "<prefix>.jpg" with no page suffix) --
-    // checking both rather than assuming one.
-    let candidate_a = PathBuf::from(format!("{}-1.jpg", prefix.to_str().unwrap()));
-    let candidate_b = PathBuf::from(format!("{}.jpg", prefix.to_str().unwrap()));
-    let frame_path = if candidate_a.exists() { candidate_a } else { candidate_b };
+    // pdftoppm suffixes the page number, zero-padded to the width of the
+    // document's page count ("-1", "-01", "-001"), and older poppler
+    // versions drop the suffix entirely for a single-page render -- so the
+    // output file is found by prefix rather than by guessing the name.
+    let frame_path = find_page_output(&prefix).ok_or("pdftoppm produced no page image")?;
     let bytes = std::fs::read(&frame_path).str_err()?;
     let _ = std::fs::remove_file(&frame_path);
     let jpeg = make_thumbnail(&bytes, max_size)?;
     let _ = std::fs::write(&cache_path, &jpeg);
     Ok(to_data_uri(&jpeg))
+}
+
+/// The single `<prefix>*.jpg` file `pdftoppm` just wrote, whatever page
+/// suffix it chose (see the call site).
+fn find_page_output(prefix: &Path) -> Option<PathBuf> {
+    let dir = prefix.parent()?;
+    let stem = prefix.file_name()?.to_string_lossy().to_string();
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .map(|n| {
+                    let n = n.to_string_lossy();
+                    n.starts_with(&stem) && n.ends_with(".jpg")
+                })
+                .unwrap_or(false)
+        })
+}
+
+/// A PDF's page count, via `pdfinfo` -- what the preview pane's page
+/// stepper needs to know where the document ends.
+pub fn pdf_page_count(path: &str) -> Result<u32, String> {
+    let output = Command::new("pdfinfo").arg(path).output().str_err()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find_map(|line| line.strip_prefix("Pages:"))
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .ok_or_else(|| "could not read the PDF's page count".to_string())
+}
+
+/// The page-1 cover every non-preview view shows for a PDF, the same way
+/// Finder/GNOME Files do -- this is what gives the Library view (see
+/// LibraryShelf.tsx) a real cover instead of a plain color block.
+pub fn thumbnail_for_pdf(app: &tauri::AppHandle, path: &str, max_size: u32) -> Result<String, String> {
+    pdf_page_image(app, path, 1, max_size)
 }
 
 // ---- Tauri commands ----
@@ -230,6 +287,28 @@ pub async fn vault_thumbnail(
 ) -> Result<String, String> {
     let bytes = crate::with_vault(&state, |v| v.decrypt_file(&rel_path))?;
     tauri::async_runtime::spawn_blocking(move || thumbnail_for_bytes(&bytes, max_size))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// One rasterized page of a real on-disk PDF, for the preview pane's
+/// page-through viewer. Cached and offloaded exactly like `fs_thumbnail`.
+#[tauri::command]
+pub async fn fs_pdf_page(
+    app: tauri::AppHandle,
+    path: String,
+    page: u32,
+    max_size: u32,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || pdf_page_image(&app, &path, page, max_size))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// How many pages that PDF has, so the viewer knows its bounds.
+#[tauri::command]
+pub async fn fs_pdf_page_count(path: String) -> Result<u32, String> {
+    tauri::async_runtime::spawn_blocking(move || pdf_page_count(&path))
         .await
         .map_err(|e| e.to_string())?
 }

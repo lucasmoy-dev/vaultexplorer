@@ -132,13 +132,14 @@ export function ResizeSheet({
 }
 
 export function ConvertSheet({
-  name,
+  names,
   targetLabel,
   mode,
   onCancel,
   onSubmit,
 }: {
-  name: string;
+  // The whole selection: the quality picked here applies to all of them.
+  names: string[];
   targetLabel: string;
   mode: "imageQuality" | "mediaQuality";
   onCancel: () => void;
@@ -150,7 +151,11 @@ export function ConvertSheet({
   return (
     <div className="sheet-overlay" onMouseDown={onCancel}>
       <div className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>Convert “{name}” to {targetLabel}</h3>
+        <h3>
+          {names.length > 1
+            ? `Convert ${names.length} items to ${targetLabel}`
+            : `Convert “${names[0]}” to ${targetLabel}`}
+        </h3>
         {mode === "imageQuality" ? (
           <div className="quality-slider">
             <span>Quality</span>

@@ -38,6 +38,23 @@ pub fn remote_name(provider: &str) -> String {
     format!("vaultexplorer-{provider}")
 }
 
+/// Flags handed to every long-running rclone call (`bisync`, `check`), on
+/// top of whatever that subcommand needs itself.
+///
+/// `--tpslimit 10` is Google Drive's documented per-user ceiling (1000
+/// requests / 100s), so pacing at it means rclone throttles itself instead
+/// of earning a `403 rateLimitExceeded`; `--tpslimit-burst` restores the
+/// short bursts that a bare `--tpslimit` would otherwise flatten (its
+/// default burst is 1). `--low-level-retries` retries an individual
+/// rejected HTTP request in place -- without it a single 403 on a
+/// directory listing propagates all the way up and aborts the whole
+/// bisync pass ("Bisync aborted. Please try again.").
+///
+/// All three are old, backend-agnostic global flags, so unlike the
+/// version-gated bisync flags in `sync.rs` these need no capability check.
+pub const PACING_ARGS: &[&str] =
+    &["--tpslimit", "10", "--tpslimit-burst", "10", "--low-level-retries", "10"];
+
 /// Optional user-supplied OAuth client for a provider, read from
 /// `~/.config/vaultexplorer/oauth_clients.json`:
 ///
@@ -63,6 +80,14 @@ fn oauth_client_override(provider: &str) -> Option<(String, String)> {
         return None;
     }
     Some((id.to_string(), secret.to_string()))
+}
+
+/// Whether this provider is authenticated against a user-supplied OAuth
+/// client rather than rclone's shared built-in one -- lets a rate-limit
+/// error say something useful ("switch to your own client ID") only when
+/// that advice hasn't already been taken.
+pub fn has_oauth_client_override(provider: &str) -> bool {
+    oauth_client_override(provider).is_some()
 }
 
 pub fn is_installed() -> bool {

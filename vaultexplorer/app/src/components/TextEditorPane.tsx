@@ -3,7 +3,9 @@ import { Entry, api, joinPath, parentPath } from "../api";
 import { kindOf, FileIcon } from "../icons";
 import { highlightCode, renderMarkdownToHtml, serializePreviewToMarkdown } from "../markdown";
 import { useAutoSaveText } from "../hooks/useAutoSaveText";
+import { useTextHistory, handleHistoryKeyDown } from "../hooks/useTextHistory";
 import { useThumbnail } from "../hooks/useThumbnail";
+import { listKeyDown, numberLines, renumberOrderedLists } from "../listEdit";
 import { EditableFileName, PreviewColumn } from "./PreviewColumn";
 
 // Extensions worth colouring. Deliberately a list rather than "anything
@@ -26,6 +28,8 @@ export function TextEditorPane({
   onRename?: (newName: string) => void;
 }) {
   const { content, error, saving, setContent } = useAutoSaveText(fullPath, inVault);
+  const history = useTextHistory(content, setContent, fullPath);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const ext = entry.name.slice(entry.name.lastIndexOf(".") + 1).toLowerCase();
   const isCode = CODE_EXT_RE.test(entry.name);
   // Source files open coloured (reading is the common case) but stay one
@@ -36,11 +40,64 @@ export function TextEditorPane({
     () => (isCode && reading && content !== null ? highlightCode(content, ext) : ""),
     [isCode, reading, content, ext]
   );
+  // Markdown gets the same list continuation the markdown pane's Source
+  // mode has -- this is the editor Notes and the mobile editor screen
+  // actually open a .md in, so without it Enter after "1. milk" landed on
+  // a bare line and every item had to be numbered by hand.
+  const isMarkdown = ext === "md" || ext === "markdown" || ext === "mdown";
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (handleHistoryKeyDown(e, history)) return;
+    if (!isMarkdown || content === null) return;
+    const edit = listKeyDown(e, content);
+    if (!edit) return;
+    history.record();
+    setContent(edit.text);
+    requestAnimationFrame(() => textareaRef.current?.setSelectionRange(edit.caret, edit.caret));
+  }
   return (
     <div className="preview-pane text-editor-pane">
       <div className="preview-name-row">
         <EditableFileName name={entry.name} onRename={onRename} />
         {saving && <span className="saving-hint"> — saving…</span>}
+        {/* Buttons, not just Ctrl+Z: this pane is what a phone opens a
+            note in, and a touch keyboard has no chord for undo. */}
+        <button
+          className="code-mode-btn"
+          title="Undo"
+          disabled={!history.canUndo}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={history.undo}
+          aria-label="Undo"
+        >
+          ↺
+        </button>
+        <button
+          className="code-mode-btn"
+          title="Redo"
+          disabled={!history.canRedo}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={history.redo}
+          aria-label="Redo"
+        >
+          ↻
+        </button>
+        {isMarkdown && (
+          <button
+            className="code-mode-btn"
+            title="Numbered list"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              const ta = textareaRef.current;
+              if (!ta || content === null) return;
+              const edit = numberLines(content, ta.selectionStart, ta.selectionEnd);
+              history.record();
+              setContent(edit.text);
+              requestAnimationFrame(() => ta.setSelectionRange(edit.caret, edit.caret));
+            }}
+          >
+            1.
+          </button>
+        )}
         {isCode && (
           <button className="code-mode-btn" onClick={() => setReading((r) => !r)}>
             {reading ? "Edit" : "Highlight"}
@@ -59,9 +116,14 @@ export function TextEditorPane({
           />
         ) : (
           <textarea
+            ref={textareaRef}
             className="text-editor-area"
             value={content}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={(e) => {
+              history.record();
+              setContent(e.target.value);
+            }}
+            onKeyDown={onKeyDown}
             spellCheck={false}
           />
         ))}
@@ -186,6 +248,7 @@ export function MarkdownEditorPane({
   onRename?: (newName: string) => void;
 }) {
   const { content, error, saving, setContent, externalRevision } = useAutoSaveText(fullPath, inVault);
+  const history = useTextHistory(content, setContent, fullPath);
   const [mode, setMode] = useState<"preview" | "source">("preview");
   const [pasteError, setPasteError] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -201,10 +264,13 @@ export function MarkdownEditorPane({
       previewRef.current.innerHTML = renderMarkdownToHtml(content);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fullPath, mode, content !== null, externalRevision]);
+  }, [fullPath, mode, content !== null, externalRevision, history.restoreRevision]);
 
   function onPreviewInput() {
     if (!previewRef.current) return;
+    // Snapshot *before* the edit lands (see useTextHistory): `content` is
+    // still the pre-edit text at this point.
+    history.record();
     setContent(serializePreviewToMarkdown(previewRef.current));
   }
 
@@ -598,75 +664,124 @@ export function MarkdownEditorPane({
   }, [findOpen]);
 
   // ---- raw-text list behaviour ---------------------------------------
-  // The rendered editor has had checklist keyboard handling for a while,
-  // but the plain-text one had none: typing "- [ ] milk" and pressing
-  // Enter dropped you on a bare line, so every item had to be typed with
-  // its marker by hand. Keep (and every notes app since) continues the
-  // list for you, ends it when you press Enter on an empty item, and
-  // indents with Tab -- that is what this brings to the textarea.
-  const LIST_RE = /^(\s*)(?:([-*+])\s+(?:\[( |x|X)\]\s+)?|(\d+)\.\s+)/;
-
-  function replaceRange(start: number, end: number, text: string, caret: number) {
-    const text0 = content ?? "";
-    const next = text0.slice(0, start) + text + text0.slice(end);
-    setContent(next);
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (el) el.setSelectionRange(caret, caret);
-    });
+  // Source mode shares its Enter/Tab list handling (and the renumbering
+  // that keeps "1. 2. 3." counting up) with the plain text editor above
+  // -- see listEdit.ts.
+  function onTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (handleHistoryKeyDown(e, history)) return;
+    if (content === null) return;
+    const edit = listKeyDown(e, content);
+    if (!edit) return;
+    history.record();
+    setContent(edit.text);
+    requestAnimationFrame(() => textareaRef.current?.setSelectionRange(edit.caret, edit.caret));
   }
 
-  function onTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    const el = e.currentTarget;
-    const text = content ?? "";
-    const { selectionStart: start, selectionEnd: end } = el;
-    const lineStart = text.lastIndexOf("\n", start - 1) + 1;
-    const lineEnd = text.indexOf("\n", start) === -1 ? text.length : text.indexOf("\n", start);
-    const line = text.slice(lineStart, lineEnd);
-    const m = LIST_RE.exec(line);
-
-    if (e.key === "Enter" && !e.shiftKey && m && start === end) {
-      const marker = m[0];
-      // Enter on an item with no text ends the list instead of adding
-      // another empty one -- the universal "I'm done" gesture.
-      if (line.trim() === marker.trim()) {
-        e.preventDefault();
-        replaceRange(lineStart, lineEnd, m[1], lineStart + m[1].length);
-        return;
+  // ---- plain list items (bullets and numbers) in the rendered editor ---
+  // Task items have had their own keyboard handling for a while; plain
+  // ones had none, so Enter fell through to the soft-line-break below and
+  // a numbered list could never grow past its first item -- every later
+  // line folded into item 1 on save, which is what "it always writes 1."
+  // looks like from the outside. The browser numbers an <ol> itself, so
+  // all this has to do is produce a real new <li>.
+  function findPlainLi(node: Node | null): HTMLLIElement | null {
+    let n: Node | null = node;
+    while (n && n !== previewRef.current) {
+      if (n.nodeType === Node.ELEMENT_NODE && (n as HTMLElement).matches?.("li:not(.md-task)")) {
+        return n as HTMLLIElement;
       }
-      e.preventDefault();
-      // A continued checkbox always starts unchecked, whatever the line
-      // above was: copying "[x]" onto a brand-new item would mark work
-      // done that nobody has done.
-      const next = m[4]
-        ? `${m[1]}${Number(m[4]) + 1}. `
-        : `${m[1]}${m[2]}${m[3] !== undefined ? " [ ]" : ""} `;
-      replaceRange(start, end, "\n" + next, start + 1 + next.length);
-      return;
+      n = n.parentNode;
     }
+    return null;
+  }
 
-    if (e.key === "Tab" && m) {
-      e.preventDefault();
-      if (e.shiftKey) {
-        const dedented = m[1].slice(0, Math.max(0, m[1].length - 2));
-        replaceRange(lineStart, lineStart + m[1].length, dedented, Math.max(lineStart, start - (m[1].length - dedented.length)));
-      } else {
-        replaceRange(lineStart, lineStart, "  ", start + 2);
+  // Everything from the caret to the end of the item, moved into a new
+  // sibling item -- so Enter in the middle of an item splits it, and
+  // Enter at the end just opens an empty one.
+  function splitPlainLi(li: HTMLLIElement) {
+    const list = li.parentElement as HTMLElement | null;
+    if (!list) return;
+    const sel = window.getSelection();
+    const nli = document.createElement("li");
+    // A nested sublist belongs to the item being left behind, not to the
+    // new one, so the extraction stops before it.
+    const sub = li.querySelector(":scope > ul, :scope > ol");
+    const lastOwn = sub ? sub.previousSibling : li.lastChild;
+    // Never set the range's end outside `li` itself -- extracting from a
+    // caret to a point *after* the item would tear the item out of the
+    // list rather than split it.
+    if (sel && sel.rangeCount > 0 && lastOwn && li.contains(sel.getRangeAt(0).startContainer)) {
+      const range = sel.getRangeAt(0).cloneRange();
+      range.setEndAfter(lastOwn);
+      try {
+        nli.appendChild(range.extractContents());
+      } catch {
+        /* nothing after the caret -- new item just starts empty */
       }
-      return;
     }
+    if (!nli.firstChild) nli.appendChild(document.createElement("br"));
+    li.after(nli);
+    if (!li.firstChild) li.appendChild(document.createElement("br"));
+    caretToStart(nli);
+    onPreviewInput();
+  }
 
-    // Ctrl/Cmd+Enter ticks the current item off without reaching for the
-    // mouse or retyping the marker.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && m && m[3] !== undefined) {
-      e.preventDefault();
-      const toggled = line.replace(/\[( |x|X)\]/, m[3] === " " ? "[x]" : "[ ]");
-      replaceRange(lineStart, lineEnd, toggled, start);
-      return;
+  function caretToStart(el: HTMLElement) {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(true);
+    const s = window.getSelection();
+    s?.removeAllRanges();
+    s?.addRange(r);
+  }
+
+  // Enter on an empty item leaves the list: one level out if nested,
+  // otherwise back to ordinary text below the list.
+  function exitPlainList(li: HTMLLIElement): boolean {
+    const list = li.parentElement as HTMLElement | null;
+    if (!list) return false;
+    if (isNestedLi(li)) {
+      outdentPlainLi(li);
+      return true;
     }
+    const p = document.createElement("div");
+    p.innerHTML = "<br>";
+    list.after(p);
+    li.remove();
+    if (list.children.length === 0) list.remove();
+    caretToEnd(p);
+    onPreviewInput();
+    return true;
+  }
+
+  function indentPlainLi(li: HTMLLIElement) {
+    const prev = li.previousElementSibling as HTMLElement | null;
+    if (!prev || prev.tagName !== "LI") return; // first item can't indent
+    const listTag = (li.parentElement?.tagName ?? "UL").toLowerCase();
+    let sub = prev.querySelector<HTMLElement>(":scope > ul, :scope > ol");
+    if (!sub) {
+      sub = document.createElement(listTag);
+      prev.appendChild(sub);
+    }
+    sub.appendChild(li);
+    caretToEnd(li);
+    onPreviewInput();
+  }
+  function outdentPlainLi(li: HTMLLIElement) {
+    const list = li.parentElement as HTMLElement | null;
+    const parentLi = list?.parentElement as HTMLElement | null;
+    if (!parentLi || parentLi.tagName !== "LI") return; // already top level
+    parentLi.after(li);
+    if (list && list.children.length === 0) list.remove();
+    caretToEnd(li);
+    onPreviewInput();
   }
 
   function onPreviewKeyDown(e: React.KeyboardEvent) {
+    // Before anything else: the browser's own contentEditable undo stack
+    // is useless here (the pane re-renders from `content`, which wipes
+    // it), so Ctrl+Z has to go through this pane's own history.
+    if (handleHistoryKeyDown(e, history)) return;
     const li = findTaskLi(window.getSelection()?.anchorNode ?? null);
     if (li) {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -690,6 +805,22 @@ export function MarkdownEditorPane({
         return;
       }
       // Shift+Enter falls through to the soft-line-break below.
+    }
+    const plainLi = li ? null : findPlainLi(window.getSelection()?.anchorNode ?? null);
+    if (plainLi) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if ((plainLi.textContent ?? "").trim() === "") {
+          if (exitPlainList(plainLi)) return;
+        }
+        splitPlainLi(plainLi);
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        e.shiftKey ? outdentPlainLi(plainLi) : indentPlainLi(plainLi);
+        return;
+      }
     }
     // A plain Enter should behave like any ordinary text box (one new line),
     // not contentEditable's default of starting a whole new block element
@@ -856,6 +987,7 @@ export function MarkdownEditorPane({
     const start = ta.selectionStart;
     const end = ta.selectionEnd;
     const next = content.slice(0, start) + before + content.slice(start, end) + after + content.slice(end);
+    history.record();
     setContent(next);
     requestAnimationFrame(() => {
       ta.focus();
@@ -876,7 +1008,21 @@ export function MarkdownEditorPane({
         .map((l) => prefix + l)
         .join("\n") +
       content.slice(end);
+    history.record();
     setContent(next);
+  }
+
+  // Numbered list, source mode: each line gets its own number, and the
+  // whole run is renumbered afterwards so it still counts up if it ran
+  // into a list that was already there.
+  function numberSelectedLines() {
+    const ta = textareaRef.current;
+    if (!ta || content === null) return;
+    const numbered = numberLines(content, ta.selectionStart, ta.selectionEnd);
+    const edit = renumberOrderedLists(numbered.text, numbered.caret);
+    history.record();
+    setContent(edit.text);
+    requestAnimationFrame(() => ta.setSelectionRange(edit.caret, edit.caret));
   }
 
   const bold = () => (mode === "preview" ? wrapPreviewSelection("strong") : wrapSelection("**"));
@@ -886,6 +1032,8 @@ export function MarkdownEditorPane({
   const code = () => (mode === "preview" ? wrapPreviewSelection("code") : wrapSelection("`"));
   const bulletList = () =>
     mode === "preview" ? previewBlockCommand("insertUnorderedList") : prefixLines("- ");
+  const numberedList = () =>
+    mode === "preview" ? previewBlockCommand("insertOrderedList") : numberSelectedLines();
   const heading = () => (mode === "preview" ? previewBlockCommand("formatBlock", "H1") : prefixLines("# "));
 
   return (
@@ -970,6 +1118,14 @@ export function MarkdownEditorPane({
             </button>
             <button
               className="btn-plain small"
+              title="Numbered List"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={numberedList}
+            >
+              1.
+            </button>
+            <button
+              className="btn-plain small"
               title="Heading"
               onMouseDown={(e) => e.preventDefault()}
               onClick={heading}
@@ -991,6 +1147,30 @@ export function MarkdownEditorPane({
               onClick={() => setShowImagePicker(true)}
             >
               🖼
+            </button>
+            {/* Undo/redo as buttons as well as Ctrl+Z / Ctrl+Shift+Z:
+                both editing surfaces here rewrite their own content
+                programmatically, which is exactly what the browser's
+                native undo can't follow (see useTextHistory). */}
+            <button
+              className="btn-plain small"
+              title="Undo (Ctrl+Z)"
+              disabled={!history.canUndo}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={history.undo}
+              aria-label="Undo"
+            >
+              ↺
+            </button>
+            <button
+              className="btn-plain small"
+              title="Redo (Ctrl+Shift+Z)"
+              disabled={!history.canRedo}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={history.redo}
+              aria-label="Redo"
+            >
+              ↻
             </button>
           </div>
           {findOpen && (
@@ -1046,7 +1226,10 @@ export function MarkdownEditorPane({
               ref={textareaRef}
               className="text-editor-area"
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={(e) => {
+                history.record();
+                setContent(e.target.value);
+              }}
               onKeyDown={onTextareaKeyDown}
               spellCheck={false}
             />

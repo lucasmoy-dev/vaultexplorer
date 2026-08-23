@@ -170,30 +170,33 @@ fn activity_map() -> &'static Mutex<HashMap<String, SyncActivity>> {
     ACTIVITY.get_or_init(Default::default)
 }
 
-/// `--create-empty-src-dirs` and `--max-lock` are both rclone >= 1.64
-/// bisync flags; older system-installed rclones (seen: 1.60.1) reject them
-/// outright with "unknown flag", failing every sync. Detected once via
-/// `rclone version` and cached, so this degrades gracefully on an old
-/// rclone instead of breaking sync entirely.
-fn rclone_supports_modern_bisync_flags() -> bool {
-    static SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SUPPORTED.get_or_init(|| {
-        let Ok(output) = Command::new("rclone").arg("version").output() else {
-            return false;
-        };
-        let Some(first_line) = String::from_utf8_lossy(&output.stdout).lines().next().map(str::to_string) else {
-            return false;
-        };
-        let Some(version) = first_line.split_whitespace().nth(1) else {
-            return false;
-        };
-        let version = version.trim_start_matches('v');
-        let mut parts = version.split('.').filter_map(|p| p.parse::<u32>().ok());
-        let (Some(major), Some(minor)) = (parts.next(), parts.next()) else {
-            return false;
-        };
-        (major, minor) >= (1, 64)
+/// Parse `(major, minor)` out of the first line of `rclone version`
+/// ("rclone v1.74.2"). `None` for anything unparseable, which every caller
+/// below treats as "assume unsupported".
+fn parse_rclone_version(first_line: &str) -> Option<(u32, u32)> {
+    let version = first_line.split_whitespace().nth(1)?.trim_start_matches('v');
+    let mut parts = version.split('.').filter_map(|p| p.parse::<u32>().ok());
+    Some((parts.next()?, parts.next()?))
+}
+
+/// The installed rclone's `(major, minor)`, resolved once per process --
+/// several bisync flags this app wants exist only from a given version and
+/// older rclones reject an unknown flag outright ("unknown flag", failing
+/// every sync), so each one is gated on this rather than passed blind.
+/// `None` when rclone can't be run or prints something unrecognizable; all
+/// gates then read false and the command line degrades to the flags every
+/// rclone has ever had.
+fn rclone_version() -> Option<(u32, u32)> {
+    static VERSION: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    *VERSION.get_or_init(|| {
+        let output = Command::new("rclone").arg("version").output().ok()?;
+        let first_line = String::from_utf8_lossy(&output.stdout).lines().next()?.to_string();
+        parse_rclone_version(&first_line)
     })
+}
+
+fn rclone_version_at_least(major: u32, minor: u32) -> bool {
+    rclone_version().is_some_and(|v| v >= (major, minor))
 }
 
 /// On success returns rclone's captured log plus whether this pass did any
@@ -202,7 +205,7 @@ fn rclone_supports_modern_bisync_flags() -> bool {
 /// worth an `rclone check`.
 fn run_bisync(local_path: &str, remote: &str, resync: bool) -> Result<(String, bool), String> {
     let mut args = vec!["bisync".to_string(), local_path.to_string(), remote.to_string()];
-    if rclone_supports_modern_bisync_flags() {
+    if rclone_version_at_least(1, 64) {
         // `--create-empty-src-dirs`: rclone otherwise ignores empty
         // directories, so an empty folder (e.g. `.../test`) never propagates.
         args.push("--create-empty-src-dirs".to_string());
@@ -216,6 +219,14 @@ fn run_bisync(local_path: &str, remote: &str, resync: bool) -> Result<(String, b
         args.push("--max-lock".to_string());
         args.push("2m".to_string());
     }
+    // rclone >= 1.66. Downgrades bisync's "any error is fatal" default: a
+    // non-critical failure (a provider 403, one unreadable file) no longer
+    // invalidates the baseline listing, so the next pass resumes normally
+    // instead of demanding a full --resync.
+    if rclone_version_at_least(1, 66) {
+        args.push("--resilient".to_string());
+    }
+    args.extend(crate::rclone::PACING_ARGS.iter().map(|s| s.to_string()));
     args.push("--stats-one-line".to_string());
     args.push("-v".to_string());
     if resync {
@@ -349,6 +360,32 @@ fn sync_now_inner(pair: &SyncPair, remote: &str) -> Result<(SyncReport, bool), S
             }
             Ok((SyncReport { summary: extract_summary(&stderr) }, transferred))
         }
+        // Checked *before* the resync arm below: a rate-limited pass aborts
+        // during the initial listing, before touching a single file, so its
+        // baseline is intact and waiting is the whole fix -- re-establishing
+        // the baseline with --resync would be a far more expensive way to
+        // recover from something that isn't a baseline problem at all.
+        Err(e) if is_rate_limit_error(&e) => {
+            // Quotas here are per-minute, so back off well past a minute in
+            // total before giving up. This blocks the calling thread (the
+            // pair's own watch loop, or the "Sync Now" click's thread), same
+            // as the corruption backoff below.
+            let mut last = e;
+            for delay in [Duration::from_secs(20), Duration::from_secs(50)] {
+                std::thread::sleep(delay);
+                match run_bisync(&pair.local_path, remote, !pair.resynced) {
+                    Ok((stderr, transferred)) => {
+                        if !pair.resynced {
+                            mark_resynced(&pair.local_path)?;
+                        }
+                        return Ok((SyncReport { summary: extract_summary(&stderr) }, transferred));
+                    }
+                    Err(e2) if is_rate_limit_error(&e2) => last = e2,
+                    Err(e2) => return Err(e2),
+                }
+            }
+            Err(rate_limit_message(&pair.provider, &last))
+        }
         Err(e) if needs_resync_retry(&e) => {
             // Two attempts, not one: the abort that lands here can be the
             // transient "corrupted on transfer: md5 hashes differ" case (a
@@ -446,6 +483,65 @@ fn stale_lock_path(err: &str) -> Option<String> {
 /// regardless of how the two ever fell out of sync.
 fn needs_resync_retry(err: &str) -> bool {
     err.to_lowercase().contains("run --resync to recover")
+}
+
+/// A provider-side "you're asking too often" rejection, whatever wording
+/// the backend dresses it in: Google Drive answers `403` with reason
+/// `rateLimitExceeded`/`userRateLimitExceeded` plus a `RATE_LIMIT_EXCEEDED`
+/// / "Quota exceeded" body, OneDrive and Dropbox answer `429 Too Many
+/// Requests`. Matched on the reason strings rather than the status code
+/// alone -- a bare "403" or "429" substring would also hit byte counts and
+/// paths in rclone's log.
+fn is_rate_limit_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    ["ratelimitexceeded", "rate_limit_exceeded", "quota exceeded", "too many requests"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// One line for the error banner instead of the ~30-line JSON quota dump
+/// rclone relays verbatim from the Google API.
+///
+/// For Drive on rclone's shared built-in OAuth client the quota being blown
+/// is *global across every rclone user on earth*, not this user's -- so the
+/// only real fix is a private client ID, and the message says so. Once
+/// `oauth_clients.json` supplies one (or for any other provider), that
+/// advice would be wrong, so it's dropped and the message just reports the
+/// wait.
+fn rate_limit_message(provider: &str, err: &str) -> String {
+    let display = crate::rclone::PROVIDERS
+        .iter()
+        .find(|(id, _)| *id == provider)
+        .map(|(_, name)| *name)
+        .unwrap_or(provider);
+    let mut msg =
+        format!("{display} is rate-limiting requests (over quota). Retried twice; will retry on the next pass.");
+    if provider == "drive" && !crate::rclone::has_oauth_client_override(provider) {
+        msg.push_str(
+            " Cause: rclone's shared OAuth client, whose quota is shared with every other rclone \
+             user. For a private quota put your own client ID in \
+             ~/.config/vaultexplorer/oauth_clients.json and reconnect Drive \
+             (https://rclone.org/drive/#making-your-own-client-id).",
+        );
+    } else if let Some(detail) = rate_limit_detail(err) {
+        // No known cause to name, so keep rclone's own diagnosis line
+        // instead -- the rest of what it printed is boilerplate JSON.
+        msg.push_str(&format!(" ({detail})"));
+    }
+    msg
+}
+
+/// The single most informative line of a rate-limit abort: rclone's own
+/// "Failed to …" summary line, truncated so a stray JSON blob can't blow
+/// the banner back up to full size.
+fn rate_limit_detail(err: &str) -> Option<String> {
+    let line = err.lines().rev().find(|l| l.contains("Failed to") || l.contains("Error 403"))?;
+    let line = strip_ansi(line.trim());
+    Some(if line.chars().count() > 160 {
+        format!("{}…", line.chars().take(160).collect::<String>())
+    } else {
+        line
+    })
 }
 
 /// rclone's "corrupted on transfer: md5 hashes differ" abort -- in this
@@ -720,6 +816,69 @@ mod tests {
     #[test]
     fn needs_resync_retry_is_false_for_unrelated_errors() {
         assert!(!needs_resync_retry("some other rclone failure"));
+    }
+
+    /// Verbatim tail of a real rclone 1.74 bisync abort against Google
+    /// Drive on rclone's shared built-in OAuth client (project number
+    /// 202264815644 is rclone's own, not this user's).
+    const REAL_QUOTA_ABORT: &str = concat!(
+        "<5>NOTICE: bisync is EXPERIMENTAL. Don't use in production!\n",
+        "<6>INFO  : Path1 checking for diffs\n",
+        "<5>NOTICE: Bisync aborted. Please try again.\n",
+        "Failed to bisync: couldn't list directory: googleapi: Error 403: Quota exceeded for quota ",
+        "metric 'Queries' and limit 'Queries per minute' of service 'drive.googleapis.com' for ",
+        "consumer 'project_number:202264815644'.\nDetails:\n[\n  {\n    ",
+        "\"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n    \"reason\": ",
+        "\"RATE_LIMIT_EXCEEDED\"\n  }\n]\n, rateLimitExceeded"
+    );
+
+    #[test]
+    fn is_rate_limit_error_matches_a_real_drive_quota_abort() {
+        assert!(is_rate_limit_error(REAL_QUOTA_ABORT));
+        assert!(is_rate_limit_error("429 Too Many Requests"));
+        assert!(is_rate_limit_error("googleapi: Error 403: ..., userRateLimitExceeded"));
+        assert!(!is_rate_limit_error("some other rclone failure"));
+        assert!(!is_rate_limit_error("Transferred: 3 files, 429 KiB"));
+    }
+
+    /// The quota abort says "Please try again", *not* "Must run --resync to
+    /// recover" -- so it must fall to the rate-limit arm of
+    /// `sync_now_inner`, which waits, rather than the resync arm, which
+    /// would rebuild both baselines for nothing.
+    #[test]
+    fn a_quota_abort_is_not_mistaken_for_a_stale_baseline() {
+        assert!(!needs_resync_retry(REAL_QUOTA_ABORT));
+        assert!(!is_corruption_error(REAL_QUOTA_ABORT));
+        assert!(stale_lock_path(REAL_QUOTA_ABORT).is_none());
+    }
+
+    #[test]
+    fn rate_limit_message_collapses_the_json_dump_to_one_line() {
+        let msg = rate_limit_message("drive", REAL_QUOTA_ABORT);
+        assert!(!msg.contains('\n'), "error banner must stay one line: {msg}");
+        assert!(msg.len() < REAL_QUOTA_ABORT.len(), "must be shorter than the raw dump: {msg}");
+        assert!(msg.starts_with("Google Drive is rate-limiting"), "{msg}");
+    }
+
+    /// Keeps rclone's own diagnosis, truncated -- the untruncated line
+    /// carries the whole JSON body on a single line for some backends.
+    #[test]
+    fn rate_limit_detail_keeps_the_failure_line_and_bounds_it() {
+        let detail = rate_limit_detail(REAL_QUOTA_ABORT).expect("real abort has a Failed to line");
+        assert!(detail.starts_with("Failed to bisync:"), "{detail}");
+        assert!(detail.chars().count() <= 161, "must be truncated: {detail}");
+        assert_eq!(rate_limit_detail("nothing useful"), None);
+    }
+
+    #[test]
+    fn parse_rclone_version_reads_the_version_banner() {
+        assert_eq!(parse_rclone_version("rclone v1.74.2"), Some((1, 74)));
+        // The old system rclone that rejected --create-empty-src-dirs.
+        assert_eq!(parse_rclone_version("rclone v1.60.1"), Some((1, 60)));
+        assert_eq!(parse_rclone_version("rclone v1.66"), Some((1, 66)));
+        assert_eq!(parse_rclone_version("rclone"), None);
+        assert_eq!(parse_rclone_version(""), None);
+        assert_eq!(parse_rclone_version("rclone unknown"), None);
     }
 
     #[test]

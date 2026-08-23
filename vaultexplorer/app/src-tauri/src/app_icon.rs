@@ -42,7 +42,7 @@ fn mime_for_ext(ext: &str) -> Option<&'static str> {
     })
 }
 
-fn desktop_dirs() -> Vec<PathBuf> {
+pub(crate) fn desktop_dirs() -> Vec<PathBuf> {
     let home = crate::home_dir();
     vec![
         PathBuf::from(format!("{home}/.local/share/applications")),
@@ -64,7 +64,7 @@ fn desktop_dirs() -> Vec<PathBuf> {
 /// `libreoffice-writer.desktop`, but some installs (flatpak, some distro
 /// packages) nest their `.desktop` file a level down (e.g. `kde4/`) --
 /// one shallow subdir walk covers that without a whole crate for it.
-fn find_desktop_file(desktop_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_desktop_file(desktop_id: &str) -> Option<PathBuf> {
     for dir in desktop_dirs() {
         let direct = dir.join(desktop_id);
         if direct.is_file() {
@@ -85,7 +85,7 @@ fn find_desktop_file(desktop_id: &str) -> Option<PathBuf> {
 /// Reads one `Key=value` line out of a `.desktop` file's `[Desktop Entry]`
 /// section (the only section relevant here -- action-specific keys under
 /// `[Desktop Action ...]` sections are never what these callers want).
-fn desktop_entry_value(path: &Path, key: &str) -> Option<String> {
+pub(crate) fn desktop_entry_value(path: &Path, key: &str) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     let prefix = format!("{key}=");
     let mut in_desktop_entry = false;
@@ -104,7 +104,7 @@ fn desktop_entry_value(path: &Path, key: &str) -> Option<String> {
     None
 }
 
-fn desktop_entry_hidden(path: &Path) -> bool {
+pub(crate) fn desktop_entry_hidden(path: &Path) -> bool {
     desktop_entry_value(path, "NoDisplay").as_deref() == Some("true")
         || desktop_entry_value(path, "Hidden").as_deref() == Some("true")
 }

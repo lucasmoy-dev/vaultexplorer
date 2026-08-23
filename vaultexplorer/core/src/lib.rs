@@ -36,5 +36,5 @@ pub use pq::{HybridWrap, RecipientPublicKey, RecipientSecretKey};
 pub use vault::{
     change_password, decrypt_bytes_with_password, decrypt_file_as_recipient,
     decrypt_file_with_password, encrypt_file_with_password, vault_exists, CompressOptions,
-    DirEntry, Stat, Vault,
+    DirEntry, Stat, Vault, VaultFileReader,
 };

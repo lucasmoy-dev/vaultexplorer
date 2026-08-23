@@ -16,6 +16,11 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const VAULT_META_FILENAME: &str = ".vault.meta";
+
+/// Entry size past which a zip entry must carry the zip64 extension. The
+/// margin under `u32::MAX` covers deflate's worst-case overhead on
+/// incompressible data (compressed slightly larger than the original).
+const ZIP64_FILE_THRESHOLD: u64 = u32::MAX as u64 - 16 * 1024 * 1024;
 /// Encrypted manifest (in the vault root) of which plaintext paths are
 /// marked "sensitive". Fixed plaintext name like `.vault.meta`; skipped by
 /// directory listings. Its contents are AEAD-encrypted under the master key.
@@ -321,6 +326,34 @@ impl Vault {
         let mut out = Vec::with_capacity(meta.plaintext_len as usize);
         file::decrypt_stream(&mut reader, &mut out, &fek, &meta)?;
         Ok(out)
+    }
+
+    /// Open `rel_path` for *random access* instead of decrypting it whole.
+    ///
+    /// [`decrypt_file`](Self::decrypt_file) is the right primitive for
+    /// anything that needs the entire plaintext (preview, thumbnail,
+    /// export), but it costs time and RAM proportional to the file: a 4 GB
+    /// video means a 4 GB allocation and seconds of AES before the first
+    /// byte is available. A player opening that video through the FUSE
+    /// mount only ever wants a window at a time, so this hands back a
+    /// reader that decrypts the 64 KiB chunks a read actually covers.
+    ///
+    /// Same sensitive-file gate as `decrypt_file` -- it's applied here, at
+    /// open time, so a reader can't be obtained for a locked file at all.
+    pub fn open_read(&self, rel_path: impl AsRef<Path>) -> Result<VaultFileReader> {
+        let src = self.encrypted_path(rel_path.as_ref())?;
+        let mut file = fs::File::open(&src)?;
+        let meta = file::read_meta(&mut file)?;
+        if self.is_sensitive(rel_path.as_ref()) && !self.sensitive_unlocked() {
+            return Err(VaultError::SensitiveLocked);
+        }
+        let fek = self.unwrap_fek_with_master_key(&meta.wrapped_keys)?;
+        Ok(VaultFileReader {
+            file,
+            fek,
+            meta,
+            cached: None,
+        })
     }
 
     // ---- Sensitive files (per-file / per-folder re-auth gate) ----
@@ -766,6 +799,15 @@ impl Vault {
                     .to_string_lossy()
                     .replace('\\', "/");
                 let content = self.decrypt_file(leaf)?;
+                // A zip entry over 4GiB needs the zip64 extension, or the
+                // writer aborts the archive with "Large file option has not
+                // been set" partway through. Per entry, so archives without
+                // a huge member stay plain zip32.
+                let options = if content.len() as u64 > ZIP64_FILE_THRESHOLD {
+                    options.large_file(true)
+                } else {
+                    options
+                };
                 zw.start_file(entry_name, options)?;
                 zw.write_all(&content)?;
             }
@@ -971,6 +1013,72 @@ fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(out)
+}
+
+/// A seekable view of one encrypted file, handed out by
+/// [`Vault::open_read`]. Holds the open ciphertext handle and the unwrapped
+/// FEK, and decrypts on demand: reading a range touches only the chunks it
+/// overlaps, so cost scales with the range, not the file.
+///
+/// One chunk of plaintext is cached, which is what makes the common access
+/// pattern cheap -- a sequential reader asks for 4 KiB at a time and the
+/// kernel splits large reads at page boundaries, so consecutive reads keep
+/// landing in the same 64 KiB chunk.
+pub struct VaultFileReader {
+    file: fs::File,
+    fek: Key32,
+    meta: file::FileMeta,
+    cached: Option<(u64, Vec<u8>)>,
+}
+
+impl VaultFileReader {
+    /// Plaintext length, i.e. what the file looks like from outside.
+    pub fn len(&self) -> u64 {
+        self.meta.plaintext_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.meta.plaintext_len == 0
+    }
+
+    /// Plaintext bytes `[offset, offset + len)`, clamped to EOF (a short or
+    /// empty result means end of file, not an error).
+    pub fn read_at(&mut self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        if offset >= self.meta.plaintext_len || len == 0 {
+            return Ok(Vec::new());
+        }
+        let end = (offset + len as u64).min(self.meta.plaintext_len);
+        let chunk_size = self.meta.chunk_size.max(1) as u64;
+        let mut out = Vec::with_capacity((end - offset) as usize);
+        let mut pos = offset;
+        while pos < end {
+            let index = pos / chunk_size;
+            let chunk = self.chunk(index)?;
+            let within = (pos % chunk_size) as usize;
+            if within >= chunk.len() {
+                break; // ciphertext shorter than the header claims
+            }
+            let take = ((end - pos) as usize).min(chunk.len() - within);
+            out.extend_from_slice(&chunk[within..within + take]);
+            pos += take as u64;
+        }
+        Ok(out)
+    }
+
+    /// The whole plaintext, for callers that started out streaming and then
+    /// need the entire buffer anyway (a FUSE handle that gets written to).
+    pub fn read_all(&mut self) -> Result<Vec<u8>> {
+        self.read_at(0, self.meta.plaintext_len as usize)
+    }
+
+    fn chunk(&mut self, index: u64) -> Result<&[u8]> {
+        let hit = matches!(self.cached, Some((i, _)) if i == index);
+        if !hit {
+            let data = file::decrypt_chunk(&mut self.file, &self.fek, &self.meta, index)?;
+            self.cached = Some((index, data));
+        }
+        Ok(self.cached.as_ref().map(|(_, d)| d.as_slice()).unwrap_or(&[]))
+    }
 }
 
 /// Change a vault's password in O(1), without re-encrypting any file.

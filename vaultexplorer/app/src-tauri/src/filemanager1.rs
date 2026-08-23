@@ -216,6 +216,51 @@ async fn yield_name_from_nautilus(conn: &zbus::Connection) {
     let _ = std::process::Command::new("nautilus").arg("-q").status();
 }
 
+/// Re-request the name for this connection, replacing whoever holds it.
+async fn request_fm_name(conn: &zbus::Connection) -> bool {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else { return false };
+    let Ok(name) = zbus::names::WellKnownName::try_from(FM_BUS_NAME) else { return false };
+    dbus.request_name(name, Default::default()).await.is_ok()
+}
+
+/// Take the name back when something else grabs it mid-session.
+///
+/// The claim below is made with D-Bus's default flags, which include
+/// `AllowReplacement` -- so Nautilus starting up *after* VaultExplorer
+/// (the user opens Files once, or any app hands GNOME a folder) silently
+/// takes `org.freedesktop.FileManager1` away again, and every later "Show
+/// in folder" lands in Nautilus even though VaultExplorer is still
+/// running and still configured as the file manager. That is the
+/// "sometimes it works, sometimes it doesn't" half of this feature: the
+/// configuration was never the thing that changed, ownership was.
+///
+/// Bounded on purpose. If some other program is *also* re-claiming on
+/// loss, two processes trading the name forever is worse than losing it
+/// once, so this gives up after a handful of rounds.
+const RECLAIM_LIMIT: usize = 5;
+
+async fn watch_for_name_loss(conn: zbus::Connection) {
+    use futures_util::StreamExt;
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(&conn).await else { return };
+    let Ok(mut lost) = dbus.receive_name_lost().await else { return };
+    let mut reclaims = 0usize;
+    while let Some(signal) = lost.next().await {
+        let Ok(args) = signal.args() else { continue };
+        if args.name.as_str() != FM_BUS_NAME {
+            continue;
+        }
+        reclaims += 1;
+        if reclaims > RECLAIM_LIMIT {
+            eprintln!("filemanager1: gave up reclaiming {FM_BUS_NAME} after {RECLAIM_LIMIT} rounds");
+            break;
+        }
+        yield_name_from_nautilus(&conn).await;
+        if !request_fm_name(&conn).await {
+            eprintln!("filemanager1: failed to reclaim {FM_BUS_NAME}");
+        }
+    }
+}
+
 pub async fn start_service(app: AppHandle) -> Result<zbus::Connection, String> {
     // A first, name-less connection just to see who holds it. Doing this
     // before the real request keeps the common case (nobody else has it)
@@ -224,7 +269,7 @@ pub async fn start_service(app: AppHandle) -> Result<zbus::Connection, String> {
         yield_name_from_nautilus(&probe).await;
     }
     let iface = FileManager1Iface { app };
-    zbus::connection::Builder::session()
+    let conn = zbus::connection::Builder::session()
         .str_err()?
         .name(FM_BUS_NAME)
         .str_err()?
@@ -233,5 +278,8 @@ pub async fn start_service(app: AppHandle) -> Result<zbus::Connection, String> {
         .str_err()?
         .build()
         .await
-        .str_err()
+        .str_err()?;
+    let watcher = conn.clone();
+    tauri::async_runtime::spawn(async move { watch_for_name_loss(watcher).await });
+    Ok(conn)
 }

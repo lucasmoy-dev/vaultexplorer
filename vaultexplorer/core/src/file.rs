@@ -35,6 +35,11 @@ pub struct FileMeta {
     pub chunk_size: u32,
     pub plaintext_len: u64,
     pub wrapped_keys: Vec<WrappedKey>,
+    /// Bytes the header occupies, i.e. the offset of chunk 0 from the start
+    /// of the file. Fixed-size fields (25) plus the variable wrapped-keys
+    /// blob. Only [`decrypt_chunk`] needs it -- it seeks straight to a chunk
+    /// rather than streaming from the header like [`decrypt_stream`].
+    pub header_len: u64,
 }
 
 /// Write the fixed-layout header (magic/version/nonce_prefix/chunk_size/
@@ -143,7 +148,53 @@ pub fn read_meta<R: Read>(mut reader: R) -> Result<FileMeta> {
         chunk_size,
         plaintext_len,
         wrapped_keys,
+        // MAGIC(4) + VERSION(1) + nonce_prefix(4) + chunk_size(4)
+        // + plaintext_len(8) + wrapped_keys_len(4) + wrapped_keys.
+        header_len: 25 + wrapped_len as u64,
     })
+}
+
+/// Number of chunks the file body is split into.
+pub fn chunk_count(meta: &FileMeta) -> u64 {
+    meta.plaintext_len.div_ceil(meta.chunk_size.max(1) as u64)
+}
+
+/// Decrypt one chunk by index, seeking straight to it. Chunks are
+/// fixed-size on both sides (plaintext `chunk_size`, ciphertext
+/// `chunk_size + tag`), so chunk `i` starts at a computable offset -- which
+/// is what makes random access possible without decrypting the whole file.
+///
+/// This is the primitive behind reading a range out of a multi-GB file
+/// (a media player seeking through a video on the FUSE mount): it touches
+/// one 64 KiB chunk instead of the entire stream.
+pub fn decrypt_chunk<R: Read + Seek>(
+    mut reader: R,
+    fek: &Key32,
+    meta: &FileMeta,
+    index: u64,
+) -> Result<Vec<u8>> {
+    let total = chunk_count(meta);
+    if index >= total {
+        return Ok(Vec::new());
+    }
+    let chunk_size = meta.chunk_size as u64;
+    let this_plain_len = if index + 1 == total {
+        let rem = meta.plaintext_len % chunk_size;
+        if rem == 0 {
+            chunk_size
+        } else {
+            rem
+        }
+    } else {
+        chunk_size
+    } as usize;
+
+    let offset = meta.header_len + index * (chunk_size + GCM_TAG_LEN as u64);
+    reader.seek(SeekFrom::Start(offset))?;
+    let mut ciphertext = vec![0u8; this_plain_len + GCM_TAG_LEN];
+    reader.read_exact(&mut ciphertext)?;
+    let nonce = chunk_nonce(&meta.nonce_prefix, index);
+    aead_decrypt(fek, &nonce, &index.to_be_bytes(), &ciphertext)
 }
 
 /// Decrypt the full file body from `reader` (already positioned just past

@@ -1,6 +1,6 @@
 [package]
 name = "vaultexplorer"
-version = "0.2.28"
+version = "0.2.32"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -22,7 +22,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-vaultcore = { path = "../../vaultcore" }
+vaultcore = { path = "../../core" }
 zip = { version = "2", default-features = false, features = ["deflate", "aes-crypto"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "multipart", "rustls-tls"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "net", "macros"] }
@@ -37,6 +37,12 @@ base64 = "0.22"
 rand = "0.8"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 lofty = "0.24.0"
+# Pure-Rust demux + decode (MP4/AAC and friends) feeding LAME, so a phone
+# can produce a real .mp3 with no ffmpeg and no Android MP3 encoder --
+# see mp3.rs. `mp3lame-encoder` builds LAME's own C source through `cc`,
+# which cross-compiles to Android with the NDK like any other C dep.
+symphonia = { version = "0.5", default-features = false, features = ["isomp4", "aac", "mp3", "wav", "flac", "ogg", "vorbis"] }
+mp3lame-encoder = "0.2"
 libc = "0.2.186"
 argon2 = "0.5.3"
 kamadak-exif = "0.6.1"
@@ -64,6 +70,9 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 fuser = "0.14"
 trash = "5.2.6"
 zbus = { version = "5.17.0", default-features = false, features = ["tokio"] }
+# Only for polling zbus signal streams (see filemanager1.rs's name-loss
+# watcher); already in the tree as a zbus dependency.
+futures-util = { version = "0.3", default-features = false }
 whisper-rs = "0.16.0"
 notify-debouncer-mini = "0.7.0"
 tauri-plugin-drag = "2"

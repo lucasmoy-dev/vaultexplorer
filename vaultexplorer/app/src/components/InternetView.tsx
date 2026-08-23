@@ -28,6 +28,11 @@ type Mode = "root" | "videos" | "images" | "books";
 // Only images and books get one (see downloadItemsFor): a video result
 // only ever has a page/watch URL, not an actual media file, so there's
 // nothing honest to download for it (same reasoning as canPlayInApp).
+// What a "Download" on a video result should end up as. On desktop the
+// audio cases are the same yt-dlp call; on mobile "mp3" costs an extra
+// transcode step that "m4a" skips (see App.tsx's downloadOnMobile).
+export type VideoDownloadKind = "video" | "mp3" | "m4a";
+
 export interface InternetDownloadItem {
   url: string;
   filename: string;
@@ -84,7 +89,7 @@ export function InternetView({
   onSaveToFolder: (items: InternetDownloadItem[]) => void;
   // Right-click "Download MP4"/"Download MP3" -- App owns this because the
   // Actions row (and its cancel button) lives there, not in this view.
-  onDownloadVideos: (pageUrls: string[], audioOnly: boolean) => void;
+  onDownloadVideos: (pageUrls: string[], kind: VideoDownloadKind) => void;
   // Opening one of the real folders that live under the Internet section
   // hands off to the normal file browser -- past that point it is an
   // ordinary folder and should behave like one.
@@ -371,9 +376,9 @@ export function InternetView({
 
   // A video tile's key maps back to a real watch page (YouTube ids need
   // rebuilding into a URL; provider results already carry theirs).
-  function downloadKeys(keys: string[], audioOnly: boolean) {
+  function downloadKeys(keys: string[], kind: VideoDownloadKind) {
     const urls = keys.map(resultUrl).filter((u): u is string => !!u);
-    if (urls.length) onDownloadVideos(urls, audioOnly);
+    if (urls.length) onDownloadVideos(urls, kind);
   }
 
   function handleTileDragStart(key: string, e: React.DragEvent) {
@@ -437,21 +442,27 @@ export function InternetView({
           ? [
               {
                 label: keys.length > 1 ? `Download ${keys.length} as MP4` : "Download MP4",
-                onClick: () => downloadKeys(keys, false),
+                onClick: () => downloadKeys(keys, "video"),
               },
               {
-                // Named for what actually lands on the device: Android
-                // gets the real container (.m4a) because converting needs
-                // ffmpeg, which isn't there.
-                label: mobile
-                  ? keys.length > 1
-                    ? `Download ${keys.length} audio files`
-                    : "Download audio"
-                  : keys.length > 1
-                    ? `Download ${keys.length} as MP3`
-                    : "Download MP3",
-                onClick: () => downloadKeys(keys, true),
+                label: keys.length > 1 ? `Download ${keys.length} as MP3` : "Download MP3",
+                onClick: () => downloadKeys(keys, "mp3"),
               },
+              // Mobile only, and the honest way to say it: YouTube's audio
+              // *is* AAC in an .m4a, so this option is the same bytes
+              // without the transcode -- faster on a phone, and lossless
+              // relative to the source, which the MP3 above can't be.
+              ...(mobile
+                ? [
+                    {
+                      label:
+                        keys.length > 1
+                          ? `Download ${keys.length} as audio (M4A)`
+                          : "Download audio (M4A, no conversion)",
+                      onClick: () => downloadKeys(keys, "m4a"),
+                    },
+                  ]
+                : []),
             ]
           : []),
       ],

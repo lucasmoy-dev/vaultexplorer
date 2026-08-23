@@ -8,10 +8,15 @@ node_modules/
 
 # Frontend build output
 dist/
-vaultexplorer/dist/
+vaultexplorer/app/dist/
 
 # Tauri generated (kept: icons, capabilities, tauri.conf.json)
 # (nothing else generated is committed)
+
+# Built APKs kept next to a project for convenience. Binaries belong in the
+# GitHub releases (which is where every app's in-app updater looks for
+# them), not in git history -- these are ~50MB each.
+**/releases/*.apk
 
 # Logs / OS
 *.log

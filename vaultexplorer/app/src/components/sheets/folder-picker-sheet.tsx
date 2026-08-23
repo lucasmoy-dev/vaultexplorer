@@ -12,11 +12,16 @@ import { FileIcon } from "../../icons";
 export function FolderPickerSheet({
   startPath,
   title,
+  confirmLabel = "Move here",
   onPick,
   onClose,
 }: {
   startPath: string;
   title: string;
+  // The picker is no longer only used for "Move to…" (folder sync picks
+  // the second folder of a pair with it), so the confirm button can't
+  // keep saying "Move here" for everyone.
+  confirmLabel?: string;
   onPick: (path: string) => void;
   onClose: () => void;
 }) {
@@ -74,7 +79,7 @@ export function FolderPickerSheet({
               still a valid destination -- which is usually exactly the one
               you just made for this. */}
           <button className="btn-primary" onClick={() => onPick(dir)}>
-            Move here
+            {confirmLabel}
           </button>
         </div>
       </div>

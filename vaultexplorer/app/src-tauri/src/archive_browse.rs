@@ -203,7 +203,11 @@ fn zip_add_dir_recursive(
     } else {
         let rel = path.strip_prefix(base).unwrap_or(path);
         let name = rel.to_string_lossy().replace('\\', "/");
-        zw.start_file(name, options).map_err(std::io::Error::other)?;
+        // Same zip64 gate as the compress path (see `zip_options_for_size`):
+        // repacking an archive that holds a 4GB+ member must not fail.
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        zw.start_file(name, crate::archive::zip_options_for_size(options, size))
+            .map_err(std::io::Error::other)?;
         std::io::copy(&mut std::fs::File::open(path)?, zw)?;
     }
     Ok(())

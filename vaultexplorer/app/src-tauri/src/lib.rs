@@ -7,7 +7,10 @@ mod autostart;
 mod archive_browse;
 mod clipboard;
 mod convert;
+#[cfg(desktop)]
+mod defaultapp;
 mod dirwalk;
+mod drive_rest;
 mod errmap;
 // Desktop-only: see the mobile-scoping note by this Cargo.toml section of
 // the same name for why these specifically can't come along to
@@ -20,6 +23,7 @@ mod freeze;
 mod git;
 mod git_sync;
 #[cfg(desktop)]
+mod folder_sync;
 mod fs_watch;
 #[cfg(desktop)]
 mod local_sync;
@@ -27,6 +31,7 @@ mod info;
 mod largefiles;
 mod machine;
 mod metadata;
+mod mp3;
 mod montage;
 mod ops;
 #[cfg(desktop)]
@@ -549,12 +554,32 @@ fn fs_dir_size(path: String) -> u64 {
     dirwalk::fs_dir_size_recursive(Path::new(&path))
 }
 
+/// Whether a path still exists on disk, for the trash commands below.
+///
+/// `symlink_metadata` rather than `exists()`: a broken symlink is a real
+/// entry that can (and should) be trashed, but `exists()` follows the link
+/// and reports it missing.
+#[cfg(desktop)]
+fn path_present(path: &str) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
 /// Move a file or folder to the OS trash/recycle bin (reversible), rather
 /// than deleting it outright -- the default "Delete" action. Permanent
 /// removal (Ctrl+Delete in the UI) still goes through `fs_delete`.
+///
+/// Already-gone paths are a no-op instead of an error: a listing on screen
+/// can name a file that something else (another app, an earlier delete, a
+/// Reorganize move) has since removed, and the raw crate error for that
+/// ("Error during a `trash` operation: FileSystem { ... NotFound ... }")
+/// surfaced as a failure for an outcome the user asked for and already
+/// has.
 #[cfg(desktop)]
 #[tauri::command]
 fn fs_trash(path: String) -> Result<(), String> {
+    if !path_present(&path) {
+        return Ok(());
+    }
     trash::delete(&path).str_err()
 }
 
@@ -589,7 +614,14 @@ async fn fs_trash_many(
             if reporter.is_cancelled() {
                 return Err("Cancelled".to_string());
             }
-            trash::delete_all(chunk).str_err()?;
+            // Skipping already-gone paths (see `fs_trash`) matters more in
+            // bulk: `delete_all` is all-or-nothing per chunk, so one stale
+            // entry in a selection of thousands used to fail its whole
+            // chunk and abort the rest of the delete.
+            let present: Vec<&String> = chunk.iter().filter(|p| path_present(p)).collect();
+            if !present.is_empty() {
+                trash::delete_all(present).str_err()?;
+            }
             done += chunk.len() as u64;
             reporter.report(done);
         }
@@ -1507,6 +1539,13 @@ pub fn run() {
         .manage(AppState::default())
         .manage(ops::OpRegistry::default())
         .manage(git_sync::GitSyncState::default())
+        // Managed on every platform, unlike the rclone-backed sync state
+        // below: this is the one cloud-sync backend that also works on
+        // Android (see drive_rest.rs), and its commands are registered
+        // unconditionally, so its state has to be too or every one of
+        // them fails at runtime on the platform it exists for.
+        .manage(drive_rest::MobileSyncState::default())
+        .manage(folder_sync::FolderSyncState::default())
         .manage(archive_browse::ArchiveMountState::default());
     // Desktop-only managed state -- see the mobile-scoping note by the
     // `mod` declarations at the top of this file.
@@ -1584,6 +1623,19 @@ pub fn run() {
                         // anyone who enabled it earlier never got it.
                         portal::ensure_env_registered();
                     }
+                    // Put the folder-MIME default back if the user ever
+                    // asked for it (see defaultapp.rs's marker). Anything
+                    // that rewrites mimeapps.list -- another file manager,
+                    // an installer running `xdg-mime default`, a stale
+                    // desktop-id from an older build of this app -- used to
+                    // quietly un-set this with nothing to notice it by, so
+                    // it is re-asserted on every launch rather than only
+                    // when the toggle is flipped.
+                    if defaultapp::was_enabled() {
+                        if let Err(e) = defaultapp::reassert() {
+                            eprintln!("default file manager: failed to re-assert: {e}");
+                        }
+                    }
                 });
             }
             #[cfg(desktop)]
@@ -1616,12 +1668,20 @@ pub fn run() {
                             Err(e) => eprintln!("portal service failed to start: {e}"),
                         }
                     });
-                    // Same "system integration" toggle also claims
-                    // org.freedesktop.FileManager1 (see filemanager1.rs) --
-                    // "Show in folder"-type actions from other apps
-                    // (Chrome's Downloads panel, OBS's "Show Recordings")
-                    // then open in VaultExplorer instead of Nautilus, for
-                    // as long as this process is running.
+                }
+                // org.freedesktop.FileManager1 (see filemanager1.rs) --
+                // "Show in folder"-type actions from other apps (Chrome's
+                // Downloads panel, OBS's "Show Recordings") then open in
+                // VaultExplorer instead of Nautilus, for as long as this
+                // process is running. Claimed for *either* integration
+                // toggle: the folder-MIME default alone doesn't cover
+                // "Show in folder", which never consults the MIME database.
+                // `was_enabled` (the recorded intent), not the current MIME
+                // state: on a launch where the state has been clobbered, the
+                // self-heal above is what fixes it, and it runs on another
+                // thread -- reading the not-yet-repaired state here would
+                // skip claiming the bus name for the whole session.
+                if portal::is_enabled() || defaultapp::was_enabled() {
                     let fm_app_handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
                         let state = fm_app_handle.state::<filemanager1::FileManagerState>();
@@ -1668,13 +1728,34 @@ pub fn run() {
                     start_background_loops(app.handle().clone());
                 }
             }
-            // NOTE: no mobile equivalent of the above -- `git_sync`'s loop
-            // shells out to the `git` binary (see git_sync.rs), which
-            // doesn't exist on Android/iOS. An earlier version of this
-            // resumed it there anyway on the mistaken premise that "git is
-            // cross-platform" (true of the Rust code, not of a `git`
-            // binary to exec); it started a loop that could only ever fail
-            // every tick. Desktop's copy lives inside start_background_loops.
+            // NOTE: most of the above has no mobile equivalent --
+            // `git_sync`'s loop shells out to the `git` binary (see
+            // git_sync.rs), which doesn't exist on Android/iOS. An earlier
+            // version of this resumed it there anyway on the mistaken
+            // premise that "git is cross-platform" (true of the Rust code,
+            // not of a `git` binary to exec); it started a loop that could
+            // only ever fail every tick. Desktop's copy lives inside
+            // start_background_loops.
+            //
+            // Google Drive sync *does* have one, though: drive_rest.rs
+            // talks to the API in-process, so its pairs can resume on
+            // launch exactly like the desktop's rclone pairs do.
+            // Not `cfg(mobile)`-gated: the pair list lives in this app's
+            // own data dir and is empty on desktop (where the UI offers
+            // rclone-backed sync instead), so this starts nothing there --
+            // and staying uncompiled would mean it only ever gets type-
+            // checked by an Android build.
+            {
+                let handle = app.handle().clone();
+                let state = app.state::<drive_rest::MobileSyncState>();
+                for pair in drive_rest::list_pairs(&handle) {
+                    drive_rest::start_loop(&handle, &state, pair);
+                }
+                let folder_state = app.state::<folder_sync::FolderSyncState>();
+                for pair in folder_sync::list_pairs(&handle) {
+                    folder_sync::start_loop(&handle, &folder_state, pair);
+                }
+            }
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -1712,8 +1793,16 @@ pub fn run() {
             fs_dir_size,
             clipboard::fs_copy_image_to_clipboard,
             clipboard::vault_copy_image_to_clipboard,
+            clipboard::clipboard_has_image,
+            clipboard::clipboard_read_image_png,
+            #[cfg(desktop)]
+            defaultapp::default_file_manager_enabled,
+            #[cfg(desktop)]
+            defaultapp::set_default_file_manager,
             thumbnail::fs_thumbnail,
             thumbnail::vault_thumbnail,
+            thumbnail::fs_pdf_page,
+            thumbnail::fs_pdf_page_count,
             #[cfg(desktop)]
             app_icon::app_icon_for_ext,
             #[cfg(desktop)]
@@ -1738,6 +1827,7 @@ pub fn run() {
             convert::fs_convert_image,
             convert::vault_convert_image,
             convert::fs_convert_media,
+            convert::fs_shrink_video,
             montage::fs_build_montage,
             convert::convert_libreoffice_available,
             convert::fs_convert_office,
@@ -1772,6 +1862,7 @@ pub fn run() {
             musicorg::organize_music,
             ytstreams::youtube_streams,
             ytstreams::download_stream,
+            mp3::audio_to_mp3,
             cast::cast_discover,
             cast::cast_play_youtube,
             #[cfg(target_os = "android")]
@@ -1911,6 +2002,20 @@ pub fn run() {
             rclone::rclone_read_conf_raw,
             #[cfg(desktop)]
             rclone::rclone_merge_conf_raw,
+            drive_rest::drive_rest_connection,
+            drive_rest::drive_rest_connect,
+            drive_rest::drive_rest_disconnect,
+            drive_rest::drive_rest_list_pairs,
+            drive_rest::drive_rest_add_pair,
+            drive_rest::drive_rest_remove_pair,
+            drive_rest::drive_rest_sync_now,
+            drive_rest::drive_rest_status,
+            drive_rest::drive_rest_syncing_now,
+            folder_sync::folder_sync_list_pairs,
+            folder_sync::folder_sync_add,
+            folder_sync::folder_sync_remove,
+            folder_sync::folder_sync_now,
+            folder_sync::folder_sync_syncing_now,
             sync::drive_list_pairs,
             sync::drive_add_pair,
             sync::drive_remove_pair,

@@ -59,7 +59,7 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { kindLabel, editorExtOf } from "./entryHelpers";
 import { EntryTile } from "./components/EntryTile";
 import { MyComputerView } from "./components/MyComputerView";
-import { InternetView, SavedInternetSearch, InternetDownloadItem } from "./components/InternetView";
+import { InternetView, SavedInternetSearch, InternetDownloadItem, VideoDownloadKind } from "./components/InternetView";
 import { SavedSearchDigest } from "./components/SavedSearchDigest";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
@@ -92,6 +92,8 @@ import {
 import {
   GitStatusSheet,
   DriveSyncSheet,
+  MobileDriveSyncSheet,
+  MobileFolderSyncSheet,
   GitSyncSheet,
   LocalSyncSheet,
   SyncthingSheet,
@@ -447,6 +449,15 @@ function Explorer({ home }: { home: string }) {
     };
     return channel;
   }
+  // Drop a progress row for an operation that has finished (or failed)
+  // without its last progress event reaching 100% -- `beginProgress`'s
+  // auto-removal only fires on `done >= total`, so a row for work that
+  // errors out, or whose final update lands just short, would otherwise
+  // sit in the Actions list forever.
+  function endProgress(channel: Channel<ProgressEvent>) {
+    const cancelId = (channel as unknown as { id: number }).id;
+    setProgressOps((prev) => prev.filter((p) => p.cancelId !== cancelId));
+  }
   // An Actions row for work that reports no percentage -- a long external
   // run (Reorganize & Clean) that used to be invisible once its sheet was
   // closed. Returns the "it finished" callback.
@@ -585,6 +596,10 @@ function Explorer({ home }: { home: string }) {
         setReauthPrompt({ root: loc.root, name: baseName(loc.root) });
       }
       hasBlurredRef.current = false;
+      // Whatever the user copied in the app they just came back from is on
+      // the clipboard now -- this is the moment Paste has to learn whether
+      // it's an image (see pasteImageFromSystemClipboard).
+      api.clipboardHasImage().then(setSysClipboardImage).catch(() => {});
     }
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
@@ -619,34 +634,66 @@ function Explorer({ home }: { home: string }) {
     api.convertLibreofficeAvailable().then(setLibreofficeAvailable).catch(() => setLibreofficeAvailable(false));
   }, []);
 
-  async function runOfficeConvert(entry: Entry, targetExt: string) {
-    try {
+  // Every "Convert To" action runs over a *selection*, not a single file --
+  // converting a folder of clips to MP4, pulling the audio out of all of
+  // them, or shrinking a whole holiday's worth of video is the normal ask,
+  // and doing it one right-click at a time was the only way before.
+  //
+  // Sequential rather than concurrent: these are ffmpeg/LibreOffice runs
+  // that already use every core, so N at once finishes no sooner and makes
+  // each individual one crawl (and N progress rows race for the panel).
+  // One item failing doesn't abandon the rest; a cancel does, since that's
+  // what cancelling a batch means.
+  type BatchCtx = { index: number; total: number; created: string[] };
+  async function runOnEach(
+    targets: Entry[],
+    work: (entry: Entry, ctx: BatchCtx) => Promise<string | null>
+  ) {
+    const created: string[] = [];
+    const failures: string[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      try {
+        const out = await work(targets[i], { index: i, total: targets.length, created });
+        if (out) created.push(out);
+      } catch (e) {
+        if (String(e) === "Cancelled") break;
+        failures.push(`${targets[i].name}: ${e}`);
+      }
+    }
+    await refresh();
+    if (created.length) setSelected(new Set(created));
+    if (failures.length) setError(failures.join("\n"));
+  }
+
+  // The label for one item's Actions row, counting position within a batch
+  // so a long run reads as "4 of 12" rather than looking stuck.
+  function batchLabel(verb: string, entry: Entry, ctx: BatchCtx): string {
+    return ctx.total > 1
+      ? `${verb} "${entry.name}" (${ctx.index + 1}/${ctx.total})`
+      : `${verb} "${entry.name}"`;
+  }
+
+  async function runOfficeConvert(targets: Entry[], targetExt: string) {
+    await runOnEach(targets, async (entry) => {
       await api.fsConvertOffice(joinPath(curDir, entry.name), curDir, targetExt);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
+      return null;
+    });
   }
 
-  async function runPdfToImages(entry: Entry) {
-    const stem = uniqueName(entry.name.replace(/\.pdf$/i, "")).replace(/\.[^.]*$/, "");
-    try {
+  async function runPdfToImages(targets: Entry[]) {
+    await runOnEach(targets, async (entry, ctx) => {
+      const stem = uniqueName(entry.name.replace(/\.pdf$/i, ""), ctx.created).replace(/\.[^.]*$/, "");
       await api.fsPdfToImages(joinPath(curDir, entry.name), curDir, stem);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
+      return null;
+    });
   }
 
-  async function runImageToPdf(entry: Entry) {
-    const destName = uniqueName(`${entry.name.replace(/\.[^.]+$/, "")}.pdf`);
-    try {
+  async function runImageToPdf(targets: Entry[]) {
+    await runOnEach(targets, async (entry, ctx) => {
+      const destName = uniqueName(`${entry.name.replace(/\.[^.]+$/, "")}.pdf`, ctx.created);
       await api.fsImageToPdf(joinPath(curDir, entry.name), joinPath(curDir, destName));
-      await refresh();
-      selectOnly(destName);
-    } catch (e) {
-      setError(String(e));
-    }
+      return destName;
+    });
   }
 
   async function runTranscribe(entry: Entry) {
@@ -667,7 +714,9 @@ function Explorer({ home }: { home: string }) {
     }
   }
   const [convertTarget, setConvertTarget] = useState<{
-    entry: Entry;
+    // A selection, not one file: the quality prompt is asked once and
+    // applied to every file in the batch.
+    entries: Entry[];
     targetExt: string;
     targetLabel: string;
     mode: "imageQuality" | "mediaQuality";
@@ -723,34 +772,51 @@ function Explorer({ home }: { home: string }) {
       .pop()!;
   }
 
-  async function runImageConvert(entry: Entry, targetExt: string, quality: number | null) {
-    const destName = uniqueName(`${entry.name.replace(/\.[^.]+$/, "")}.${targetExt}`);
-    try {
+  async function runImageConvert(targets: Entry[], targetExt: string, quality: number | null) {
+    await runOnEach(targets, async (entry, ctx) => {
+      const destName = uniqueName(`${entry.name.replace(/\.[^.]+$/, "")}.${targetExt}`, ctx.created);
+      const src = joinPath(curDir, entry.name);
+      const dest = joinPath(curDir, destName);
       inVault
-        ? await api.vaultConvertImage(joinPath(curDir, entry.name), joinPath(curDir, destName), targetExt, quality)
-        : await api.fsConvertImage(joinPath(curDir, entry.name), joinPath(curDir, destName), targetExt, quality);
-      await refresh();
-      selectOnly(destName);
-    } catch (e) {
-      setError(String(e));
-    }
+        ? await api.vaultConvertImage(src, dest, targetExt, quality)
+        : await api.fsConvertImage(src, dest, targetExt, quality);
+      return destName;
+    });
   }
 
-  async function runMediaConvert(entry: Entry, targetExt: string, quality: "high" | "medium" | "low") {
-    const destName = uniqueName(`${entry.name.replace(/\.[^.]+$/, "")}.${targetExt}`);
-    try {
-      await api.fsConvertMedia(
-        joinPath(curDir, entry.name),
-        joinPath(curDir, destName),
-        targetExt,
-        quality,
-        beginProgress(`Converting "${entry.name}"`)
-      );
-      await refresh();
-      selectOnly(destName);
-    } catch (e) {
-      setError(String(e));
-    }
+  async function runMediaConvert(targets: Entry[], targetExt: string, quality: "high" | "medium" | "low") {
+    await runOnEach(targets, async (entry, ctx) => {
+      const destName = uniqueName(`${entry.name.replace(/\.[^.]+$/, "")}.${targetExt}`, ctx.created);
+      const channel = beginProgress(batchLabel("Converting", entry, ctx));
+      try {
+        await api.fsConvertMedia(
+          joinPath(curDir, entry.name),
+          joinPath(curDir, destName),
+          targetExt,
+          quality,
+          channel
+        );
+        return destName;
+      } finally {
+        endProgress(channel);
+      }
+    });
+  }
+
+  // "Make Smaller": same video, same resolution and length, far fewer
+  // bytes. Always lands as .mp4 regardless of the source container, since
+  // that's what the HEVC/H.264 + AAC output it produces belongs in.
+  async function runShrinkVideo(targets: Entry[], level: "light" | "balanced" | "small") {
+    await runOnEach(targets, async (entry, ctx) => {
+      const destName = uniqueName(`${entry.name.replace(/\.[^.]+$/, "")}-small.mp4`, ctx.created);
+      const channel = beginProgress(batchLabel("Shrinking", entry, ctx));
+      try {
+        await api.fsShrinkVideo(joinPath(curDir, entry.name), joinPath(curDir, destName), level, channel);
+        return destName;
+      } finally {
+        endProgress(channel);
+      }
+    });
   }
 
   const IMAGE_CONVERT_TARGETS: { ext: string; label: string; lossy: boolean }[] = [
@@ -797,6 +863,26 @@ function Explorer({ home }: { home: string }) {
   const [gitSyncedPaths, setGitSyncedPaths] = useState<Set<string>>(new Set());
   const [localSyncedPaths, setLocalSyncedPaths] = useState<Set<string>>(new Set());
   const refreshSyncStatus = useCallback(() => {
+    // On mobile the pairs come from the in-process Drive client instead
+    // (drive_rest.rs) -- `drive_list_pairs` is the rclone-backed one and
+    // has nothing to report there.
+    if (mobile) {
+      api
+        .driveRestListPairs()
+        .then((list) => {
+          setDriveSyncedPaths(new Set(list.map((p) => p.local_path)));
+          setDrivePairsByPath(new Map(list.map((p) => [p.local_path, "drive"])));
+        })
+        .catch(() => {
+          setDriveSyncedPaths(new Set());
+          setDrivePairsByPath(new Map());
+        });
+      api
+        .folderSyncListPairs()
+        .then((list) => setLocalSyncedPaths(new Set(list.flatMap((p) => [p.folder_a, p.folder_b]))))
+        .catch(() => setLocalSyncedPaths(new Set()));
+      return;
+    }
     api
       .driveListPairs()
       .then((list) => {
@@ -815,7 +901,7 @@ function Explorer({ home }: { home: string }) {
       .localSyncListPairs()
       .then((list) => setLocalSyncedPaths(new Set(list.flatMap((p) => [p.folder_a, p.folder_b]))))
       .catch(() => setLocalSyncedPaths(new Set()));
-  }, []);
+  }, [mobile]);
   // Live "is a sync actually happening right now" for whichever paths are
   // sync-managed -- the badge (grid tile, sidebar favorite) swaps to a
   // spinning version of the same icon while true, the same convention
@@ -871,11 +957,27 @@ function Explorer({ home }: { home: string }) {
         api.syncthingSyncingNow().catch(() => []),
         api.driveVerifyingNow().catch(() => []),
         api.driveSyncActivity().catch(() => ({}) as Record<string, { current: string | null; count: number }>),
+        // Mobile's Drive sync keeps its own "is this pair syncing" state
+        // (drive_rest.rs), asked per pair -- there's no rclone process to
+        // ask about instead.
+        mobile
+          ? Promise.all([
+              Promise.all(
+                [...driveSyncedPaths].map((p) =>
+                  api
+                    .driveRestStatus(p)
+                    .then((st) => (st.syncing ? p : null))
+                    .catch(() => null)
+                )
+              ).then((rows) => rows.filter((p): p is string => !!p)),
+              api.folderSyncSyncingNow().catch(() => [] as string[]),
+            ]).then(([drive, folders]) => [...drive, ...folders])
+          : Promise.resolve([] as string[]),
       ]).then((results) => {
         if (cancelled) return;
         const verifying = new Set(results[4] as string[]);
         const activity = results[5] as Record<string, { current: string | null; count: number }>;
-        const next = new Set((results.slice(0, 4) as string[][]).flat());
+        const next = new Set([...(results.slice(0, 4) as string[][]).flat(), ...(results[6] as string[])]);
         const justFinished = [...prev].filter((p) => !next.has(p));
         for (const p of next) {
           // Narrate the specific file mid-transfer when the backend can name
@@ -908,8 +1010,10 @@ function Explorer({ home }: { home: string }) {
         }
       });
       for (const path of driveSyncedPaths) {
-        api
-          .driveSyncLastError(path)
+        (mobile
+          ? api.driveRestStatus(path).then((st) => st.last_error || null)
+          : api.driveSyncLastError(path)
+        )
           .then((err) => {
             if (cancelled) return;
             if (err && shownDriveErrors.get(path) !== err) {
@@ -942,7 +1046,7 @@ function Explorer({ home }: { home: string }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [driveSyncedPaths, gitSyncedPaths]);
+  }, [driveSyncedPaths, gitSyncedPaths, mobile]);
   const [sortKey, setSortKey] = useState<"name" | "date" | "size" | "kind" | "created">("name");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const selection = useSelection();
@@ -970,10 +1074,31 @@ function Explorer({ home }: { home: string }) {
   // room for one more column" actually gets it. 0 = not measured yet.
   const [gridCols, setGridCols] = useState(0);
   const [clipboard, setClipboard] = useState<Clipboard>(null);
+  // Whether the *system* clipboard is holding an image right now, which is
+  // what enables Paste with nothing cut/copied in-app. Polled on focus
+  // rather than continuously: the clipboard only realistically changes
+  // while another window has focus.
+  const [sysClipboardImage, setSysClipboardImage] = useState(false);
+  // Once at startup; the focus handler above covers every change after
+  // that. Kept out of that effect because it re-runs on every navigation,
+  // and each check reads the clipboard's full contents.
+  useEffect(() => {
+    api.clipboardHasImage().then(setSysClipboardImage).catch(() => {});
+  }, []);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchExpanded, setSearchExpanded] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchResults, setSearchResults] = useState<string[] | null>(null);
+  // Highlighted hit in the results list. Search rows are ordinary rows now
+  // (click selects, double-click opens), but they live outside `curDir`, so
+  // they can't use the folder's own `selected` name set.
+  const [searchSelected, setSearchSelected] = useState<string | null>(null);
+  // Bumped on every search kick-off and on every navigation. A search that
+  // resolves after the user already moved on (clicked a hit, hit "Up")
+  // would otherwise call setSearchResults *after* the navigation cleared
+  // it, leaving the stale results list painted over the folder the user is
+  // now in -- which looked exactly like "the folder stopped listing".
+  const searchRunRef = useRef(0);
   // Absolute path whose "Other Application…" picker is open (null = closed).
   const [openWithTarget, setOpenWithTarget] = useState<string | null>(null);
 
@@ -1088,6 +1213,11 @@ function Explorer({ home }: { home: string }) {
     fullPath: string;
     inVault: boolean;
   } | null>(null);
+  // Which folder the mobile "Sync → Google Drive" sheet is open for (the
+  // in-process Drive client, not rclone -- see drive_rest.rs).
+  const [mobileDriveTarget, setMobileDriveTarget] = useState<string | null>(null);
+  // Same, for folder-to-folder sync on mobile (folder_sync.rs).
+  const [mobileFolderSyncTarget, setMobileFolderSyncTarget] = useState<string | null>(null);
   const [iconScale, setIconScale] = useState(1);
   const [trashPath, setTrashPath] = useState<string | null>(null);
   useEffect(() => {
@@ -1620,22 +1750,34 @@ function Explorer({ home }: { home: string }) {
   // (temporal dead zone), unlike the closures inside the handler itself
   // which only run later, after the whole component has finished
   // rendering.
-  const sortedEntries = useMemo(() => {
-    const cmp: Record<typeof sortKey, (a: Entry, b: Entry) => number> = {
-      name: (a, b) => a.name.localeCompare(b.name),
-      date: (a, b) => a.mtime - b.mtime,
-      created: (a, b) => (a.created ?? 0) - (b.created ?? 0),
-      size: (a, b) => a.size - b.size,
-      kind: (a, b) => kindLabel(a).localeCompare(kindLabel(b)),
-    };
-    return [...entries].sort((a, b) => {
-      const aPinned = pinnedPaths.has(joinPath(curDir, a.name));
-      const bPinned = pinnedPaths.has(joinPath(curDir, b.name));
-      if (aPinned !== bPinned) return aPinned ? -1 : 1;
-      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-      return sortDir * cmp[sortKey](a, b);
-    });
-  }, [entries, sortKey, sortDir, pinnedPaths, curDir]);
+  // Takes the folder the entries came from, since pinning is per-path:
+  // column view sorts several folders at once with this (its columns used
+  // to sort themselves, dirs-first by name, which disagreed with the sort
+  // the rest of the app was showing and with what keyboard navigation
+  // stepped through).
+  const sortEntriesFor = useCallback(
+    (dir: string, list: Entry[]) => {
+      const cmp: Record<typeof sortKey, (a: Entry, b: Entry) => number> = {
+        name: (a, b) => a.name.localeCompare(b.name),
+        date: (a, b) => a.mtime - b.mtime,
+        created: (a, b) => (a.created ?? 0) - (b.created ?? 0),
+        size: (a, b) => a.size - b.size,
+        kind: (a, b) => kindLabel(a).localeCompare(kindLabel(b)),
+      };
+      return [...list].sort((a, b) => {
+        const aPinned = pinnedPaths.has(joinPath(dir, a.name));
+        const bPinned = pinnedPaths.has(joinPath(dir, b.name));
+        if (aPinned !== bPinned) return aPinned ? -1 : 1;
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        return sortDir * cmp[sortKey](a, b);
+      });
+    },
+    [sortKey, sortDir, pinnedPaths]
+  );
+  const sortedEntries = useMemo(
+    () => sortEntriesFor(curDir, entries),
+    [entries, curDir, sortEntriesFor]
+  );
 
   // Enter opens every selected entry, unless a sheet/menu/inline edit is
   // active or the focused element is itself a text input.
@@ -1687,6 +1829,51 @@ function Explorer({ home }: { home: string }) {
         paste();
         return;
       }
+      // Column view's own arrow keys: up/down step the current (rightmost)
+      // column, right descends into a folder, left goes back up a level --
+      // the Miller-column gestures, which the shared handler below can't
+      // express (there, left/right move within a row of icons).
+      if (
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        view === "column" &&
+        (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight")
+      ) {
+        e.preventDefault();
+        if (e.key === "ArrowLeft") {
+          goUp();
+          return;
+        }
+        const names = sortedEntries.map((en) => en.name);
+        if (names.length === 0) return;
+        const from =
+          (lastClicked && names.includes(lastClicked) ? lastClicked : null) ??
+          [...selected].find((n) => names.includes(n)) ??
+          names[0];
+        if (e.key === "ArrowRight") {
+          const en = sortedEntries.find((x) => x.name === from);
+          if (en && (en.is_dir || en.is_vault)) activate(curDir, en);
+          return;
+        }
+        const idx = names.indexOf(from);
+        const target =
+          selected.size === 0
+            ? from
+            : names[Math.min(names.length - 1, Math.max(0, idx + (e.key === "ArrowDown" ? 1 : -1)))];
+        selectOnly(target);
+        arrowAnchorRef.current = target;
+        arrowFocusRef.current = target;
+        // The preview column follows the keyboard the same way it follows a
+        // click; a folder isn't previewed (it opens as its own column).
+        const targetEntry = sortedEntries.find((x) => x.name === target);
+        if (targetEntry && !targetEntry.is_dir && !targetEntry.is_vault) {
+          withSensitive(joinPath(curDir, target), () => setPreviewEntry({ dir: curDir, entry: targetEntry }));
+        }
+        return;
+      }
+
       // Plain arrows move the single selection (Finder-style). Works even
       // with nothing selected yet -- the first press selects the anchor
       // (last-clicked, else first current selection, else the first entry).
@@ -1719,7 +1906,7 @@ function Explorer({ home }: { home: string }) {
         !e.ctrlKey &&
         !e.metaKey &&
         (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") &&
-        (view === "icon" || view === "list" || view === "listPreview")
+        (view === "icon" || view === "list" || view === "listPreview" || view === "column")
       ) {
         const names = sortedEntries.map((en) => en.name);
         if (names.length === 0) return;
@@ -2049,7 +2236,11 @@ function Explorer({ home }: { home: string }) {
       });
     }
     setLoc(target);
+    // Invalidate any search still in flight before clearing -- otherwise it
+    // lands after this and repaints the old results over the new folder.
+    searchRunRef.current++;
     setSearchResults(null);
+    setSearchSelected(null);
     setSearchQuery("");
     // Any mounted archive whose scratch directory isn't (an ancestor of)
     // where we just navigated to has been left behind -- repack it back
@@ -2416,6 +2607,60 @@ function Explorer({ home }: { home: string }) {
   // width-dependent), this groups the actual rendered tiles by their
   // offsetTop -- tiles sharing a row have the same offsetTop, regardless
   // of how many columns actually fit right now.
+  // ---- List with Preview: draggable split ----
+  // The list pane was a hard-coded 200px, which is too narrow for long
+  // filenames and too wide when the preview is the point. Dragged from the
+  // divider between the two panes (which shows itself on hover), remembered
+  // across sessions, and double-click restores the default.
+  const LIST_PANE_DEFAULT = 200;
+  const LIST_PANE_MIN = 140;
+  // What the preview pane must keep for itself, so a drag can't collapse it.
+  const PREVIEW_PANE_MIN = 320;
+  const [listPaneWidth, setListPaneWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem("vaultexplorer:list-pane-width"));
+    return Number.isFinite(saved) && saved >= LIST_PANE_MIN ? saved : LIST_PANE_DEFAULT;
+  });
+  useEffect(() => {
+    localStorage.setItem("vaultexplorer:list-pane-width", String(listPaneWidth));
+  }, [listPaneWidth]);
+  const [draggingSplit, setDraggingSplit] = useState(false);
+  const splitDragRef = useRef<{ startX: number; startWidth: number; max: number } | null>(null);
+  function onSplitMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    // The divider's parent is the split container, so its width is what
+    // bounds the drag -- computed once at mousedown rather than per move.
+    const container = e.currentTarget.parentElement;
+    const max = Math.max(LIST_PANE_MIN, (container?.clientWidth ?? 800) - PREVIEW_PANE_MIN);
+    splitDragRef.current = { startX: e.clientX, startWidth: listPaneWidth, max };
+    setDraggingSplit(true);
+  }
+  useEffect(() => {
+    if (!draggingSplit) return;
+    function onMove(e: MouseEvent) {
+      const drag = splitDragRef.current;
+      if (!drag) return;
+      const next = drag.startWidth + (e.clientX - drag.startX);
+      setListPaneWidth(Math.round(Math.min(drag.max, Math.max(LIST_PANE_MIN, next))));
+    }
+    function onUp() {
+      splitDragRef.current = null;
+      setDraggingSplit(false);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    // A drag that crosses the list or the preview must not select text or
+    // flip the cursor back mid-move.
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [draggingSplit]);
+
   function computeArrowTarget(direction: "up" | "down" | "left" | "right", fromName: string): string | null {
     const names = sortedEntries.map((en) => en.name);
     const idx = names.indexOf(fromName);
@@ -2842,12 +3087,44 @@ function Explorer({ home }: { home: string }) {
   }
 
   async function runSearch(q: string) {
+    const run = ++searchRunRef.current;
     if (q.trim() === "") {
       setSearchResults(null);
       return;
     }
     try {
-      setSearchResults(inVault ? await api.search(q) : await api.fsSearch(loc.path, q));
+      const hits = inVault ? await api.search(q) : await api.fsSearch(loc.path, q);
+      // Dropped if anything happened since this query was fired (a newer
+      // query, or a navigation -- commitLoc bumps the same counter).
+      if (run !== searchRunRef.current) return;
+      setSearchResults(hits);
+      setSearchSelected(null);
+    } catch (e) {
+      if (run !== searchRunRef.current) return;
+      setError(String(e));
+    }
+  }
+
+  // Opening a hit is exactly `activate`, the same call an ordinary row
+  // makes -- so a folder hit is entered, a file hit opens in its viewer /
+  // editor / external app, and the results stay up behind it. The Entry may
+  // not have been resolved yet (see `searchEntries`), so fall back to
+  // listing its parent, since is_dir/is_vault decide what activate does.
+  async function openSearchHit(p: string) {
+    const parent = parentPath(p);
+    const known = searchEntries[p];
+    if (known) {
+      await activate(parent, known);
+      return;
+    }
+    try {
+      const list = await listDir(parent, loc.kind);
+      const found = list.find((en) => en.name === baseName(p));
+      if (!found) {
+        setError(`"${baseName(p)}" no longer exists`);
+        return;
+      }
+      await activate(parent, found);
     } catch (e) {
       setError(String(e));
     }
@@ -2893,8 +3170,45 @@ function Explorer({ home }: { home: string }) {
       setClipboard({ paths, mode: "cut", kind: loc.kind, root: inVault ? loc.root : undefined });
     }
   }
+  // Pasting with nothing cut/copied *inside* the app, but an image sitting
+  // on the system clipboard (a screenshot, a browser's "Copy image"):
+  // write it out as a real PNG in this folder. Returns false when the
+  // clipboard held no image, so the caller can fall through.
+  async function pasteImageFromSystemClipboard(): Promise<boolean> {
+    let png: ArrayBuffer;
+    try {
+      png = await api.clipboardReadImagePng();
+    } catch {
+      // No image on the clipboard (text, files, nothing at all) -- the
+      // read is also how we find that out, so this isn't an error path.
+      setSysClipboardImage(false);
+      return false;
+    }
+    const bytes = new Uint8Array(png);
+    // Named the way a screenshot tool would: a timestamp, so pasting the
+    // same clipboard twice doesn't collide and the files sort by when they
+    // were pasted. uniqueName() still covers a same-second double paste.
+    const now = new Date();
+    const p2 = (n: number) => String(n).padStart(2, "0");
+    const stamp =
+      `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ` +
+      `${p2(now.getHours())}.${p2(now.getMinutes())}.${p2(now.getSeconds())}`;
+    const name = uniqueName(`Pasted image ${stamp}.png`);
+    const dest = joinPath(curDir, name);
+    inVault ? await api.vaultWriteBytes(dest, bytes) : await api.fsWriteBytes(dest, bytes);
+    refresh();
+    return true;
+  }
+
   async function paste() {
-    if (!clipboard) return;
+    if (!clipboard) {
+      try {
+        await pasteImageFromSystemClipboard();
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
+    }
     // Two *different* vaults, both `kind: "vault"` -- move_entry/copy_entry
     // and export_file/delete_file below all operate on whichever vault is
     // currently "active" server-side, which tracks navigation, not
@@ -2975,8 +3289,13 @@ function Explorer({ home }: { home: string }) {
       setError(String(e));
     }
   }
-  function uniqueName(base: string): string {
+  // `alsoUsed` covers names created earlier in the same batch: those files
+  // exist on disk but not yet in `entries` (one refresh happens at the end
+  // of a batch, not per item), so without it converting `a.mkv` and `a.mov`
+  // to MP4 in one go would have the second overwrite the first.
+  function uniqueName(base: string, alsoUsed?: Iterable<string>): string {
     const used = new Set(entries.map((e) => e.name));
+    for (const name of alsoUsed ?? []) used.add(name);
     if (!used.has(base)) return base;
     const dot = base.lastIndexOf(".");
     const stem = dot > 0 ? base.slice(0, dot) : base;
@@ -3661,14 +3980,19 @@ function Explorer({ home }: { home: string }) {
   // Straight to Downloads, no destination prompt (see ytdl.rs) -- each URL
   // gets its own Actions row, so several downloads read as several jobs
   // and each can be cancelled on its own.
-  function downloadInternetVideos(pageUrls: string[], audioOnly: boolean) {
+  function downloadInternetVideos(pageUrls: string[], kind: VideoDownloadKind) {
     for (const url of pageUrls) {
-      const run = mobile ? downloadOnMobile(url, audioOnly) : desktopDownload(url, audioOnly);
+      const run = mobile ? downloadOnMobile(url, kind) : desktopDownload(url, kind);
       run.then(() => refresh()).catch((e) => setError(String(e)));
     }
   }
 
-  function desktopDownload(url: string, audioOnly: boolean) {
+  function desktopDownload(url: string, kind: VideoDownloadKind) {
+    // yt-dlp (+ffmpeg) already produces a real mp3 for the audio-only
+    // case on desktop, so "mp3" and the raw-container "m4a" collapse to
+    // the same call here -- the distinction only exists on mobile, where
+    // the conversion is a second step this app does itself.
+    const audioOnly = kind !== "video";
     return api.downloadVideo(url, audioOnly, beginProgress(`Downloading ${audioOnly ? "MP3" : "MP4"}`));
   }
 
@@ -3678,19 +4002,32 @@ function Explorer({ home }: { home: string }) {
   // that already reports into Actions, and -- for video, since YouTube
   // stopped serving progressive streams -- join the two tracks with
   // Android's own MediaMuxer.
-  async function downloadOnMobile(url: string, audioOnly: boolean) {
+  async function downloadOnMobile(url: string, kind: VideoDownloadKind) {
     const streams = await api.youtubeStreams(url);
     const safe = streams.title.replace(/[/\\?%*:|"<>]/g, "-").slice(0, 120) || "video";
     const dest = joinPath(home ?? "", "Download");
-    if (audioOnly) {
+    if (kind !== "video") {
       if (!streams.audio_url) throw new Error("No audio stream available for this video.");
-      // `.m4a`, not `.mp3`: this is the real container, and converting
-      // would need ffmpeg, which Android doesn't have.
+      // What YouTube actually serves is AAC in an MP4 container (.m4a).
+      // "MP3" downloads keep it only as an intermediate and transcode it
+      // in-process (see mp3.rs) -- no ffmpeg needed, and Android has no
+      // MP3 encoder of its own to lean on. "Audio (M4A)" keeps that file
+      // as-is, which is faster and loses nothing.
+      const ext = streams.audio_ext || "m4a";
+      const audioName = `${safe}.${ext}`;
       await api.downloadStream(
         streams.audio_url,
         dest,
-        `${safe}.${streams.audio_ext || "m4a"}`,
+        audioName,
         beginProgress(`Downloading audio — ${safe}`)
+      );
+      if (kind === "m4a" || ext === "mp3") return;
+      await api.audioToMp3(
+        joinPath(dest, audioName),
+        joinPath(dest, `${safe}.mp3`),
+        streams.title,
+        true,
+        beginProgress(`Converting to MP3 — ${safe}`)
       );
       return;
     }
@@ -4115,9 +4452,10 @@ function Explorer({ home }: { home: string }) {
     const parent = parentPath(p);
     const name = baseName(p);
     const abs = inVault && loc.kind === "vault" ? joinPath(loc.root, p) : p;
-    // Search only ever returns files, but resolve the real entry (for Open,
-    // Get Info, Share) from its parent listing rather than fabricating one --
-    // is_dir/is_vault/size/mtime all matter to those actions.
+    // Search returns folders as well as files, so resolve the real entry
+    // (for Open, Get Info, Share) from its parent listing rather than
+    // fabricating one -- is_dir/is_vault/size/mtime all matter to those
+    // actions.
     const withEntry = (fn: (entry: Entry) => void) => async () => {
       try {
         const list = await listDir(parent, loc.kind);
@@ -4137,7 +4475,10 @@ function Explorer({ home }: { home: string }) {
       // equivalent to enumerate on Android.
       ...(mobile ? [] : [buildOpenWithItem(p)]),
       {
-        label: "Show in Folder",
+        // Named for what it does from a search hit, which is where this
+        // menu is mostly used: leave the results and land in the folder the
+        // hit actually lives in, with it selected.
+        label: "Go to File Location",
         onClick: () => {
           if (loc.kind === "vault") go({ kind: "vault", root: loc.root, rel: parent });
           else go({ kind: "fs", path: parent });
@@ -4389,73 +4730,112 @@ function Explorer({ home }: { home: string }) {
       });
     }
 
-    if (!many && !entry.is_dir) {
-      const kind = kindOf(entry);
-      const ext = extOf(entry);
-      if (kind === "image" && !inVault && ["png", "jpg", "jpeg", "bmp", "webp", "tiff", "tif"].includes(ext)) {
+    // Convert To works on the whole selection when it's all one kind of
+    // file (all video, all images, ...) -- "convert these twelve clips to
+    // MP4" / "pull the audio out of all of them" / "shrink all of these" is
+    // the normal shape of the ask, and this used to appear only for a
+    // single right-clicked file. A mixed selection gets no submenu: there's
+    // no target format that means the same thing for a video and a PDF.
+    const convertTargets = entries.filter((en) => targetNames.includes(en.name) && !en.is_dir);
+    const convertKinds = new Set(convertTargets.map((en) => kindOf(en)));
+    if (convertTargets.length > 0 && convertKinds.size === 1) {
+      const kind = [...convertKinds][0];
+      const exts = new Set(convertTargets.map((en) => extOf(en)));
+      // The source format is dropped from the target list only when the
+      // whole selection shares one -- with mixed extensions every target is
+      // a real conversion for at least one file in it.
+      const ext = exts.size === 1 ? [...exts][0] : "";
+      const n = convertTargets.length;
+      const convertLabel = n > 1 ? `Convert ${n} Items To` : "Convert To";
+      // Transcription is per-file work with its own model download and a
+      // long run; kept to a single selection rather than silently queueing
+      // a dozen of them.
+      const single = n === 1 ? convertTargets[0] : null;
+      if (kind === "image" && !inVault && convertTargets.every((en) => ["png", "jpg", "jpeg", "bmp", "webp", "tiff", "tif"].includes(extOf(en)))) {
         const targets = IMAGE_CONVERT_TARGETS.filter((t) => t.ext !== ext && !(ext === "jpeg" && t.ext === "jpg"));
         const convertItems: MenuItem[] = targets.map((t) => ({
           label: t.label,
           onClick: () =>
             t.lossy
-              ? setConvertTarget({ entry, targetExt: t.ext, targetLabel: t.label, mode: "imageQuality" })
-              : runImageConvert(entry, t.ext, null),
+              ? setConvertTarget({ entries: convertTargets, targetExt: t.ext, targetLabel: t.label, mode: "imageQuality" })
+              : runImageConvert(convertTargets, t.ext, null),
         }));
         // ImageMagick (`convert`) doesn't exist on Android; the raster-to-
         // raster items above stay (pure Rust, actually work there).
-        if (!mobile) convertItems.push({ label: "PDF", onClick: () => runImageToPdf(entry) });
-        moreItems.push({ type: "submenu", label: "Convert To", items: convertItems });
+        if (!mobile) convertItems.push({ label: "PDF", onClick: () => runImageToPdf(convertTargets) });
+        moreItems.push({ type: "submenu", label: convertLabel, items: convertItems });
       } else if (kind === "pdf" && !inVault) {
         // poppler's `pdftoppm` doesn't exist on Android -- no availability
         // flag to gate on the way ffmpeg/libreoffice do below since there's
         // no `which` either, so this checks the platform directly.
         const pdfItems: MenuItem[] = mobile
           ? []
-          : [{ label: "Images (JPG, one per page)", onClick: () => runPdfToImages(entry) }];
+          : [{ label: "Images (JPG, one per page)", onClick: () => runPdfToImages(convertTargets) }];
         if (libreofficeAvailable) {
-          pdfItems.push({ label: "Word Document (.docx)", onClick: () => runOfficeConvert(entry, "docx") });
+          pdfItems.push({ label: "Word Document (.docx)", onClick: () => runOfficeConvert(convertTargets, "docx") });
         }
-        if (pdfItems.length) moreItems.push({ type: "submenu", label: "Convert To", items: pdfItems });
-      } else if (["doc", "docx", "odt", "rtf"].includes(ext) && !inVault && libreofficeAvailable) {
+        if (pdfItems.length) moreItems.push({ type: "submenu", label: convertLabel, items: pdfItems });
+      } else if (convertTargets.every((en) => ["doc", "docx", "odt", "rtf"].includes(extOf(en))) && !inVault && libreofficeAvailable) {
         moreItems.push({
           type: "submenu",
-          label: "Convert To",
-          items: [{ label: "PDF", onClick: () => runOfficeConvert(entry, "pdf") }],
+          label: convertLabel,
+          items: [{ label: "PDF", onClick: () => runOfficeConvert(convertTargets, "pdf") }],
         });
       } else if (kind === "video" && !inVault && ffmpegAvailable) {
-        moreItems.push({
-          type: "submenu",
-          label: "Convert To",
-          items: [
-            ...VIDEO_CONVERT_TARGETS.filter((t) => t.ext !== ext).map((t) => ({
-              label: t.label,
-              onClick: () => setConvertTarget({ entry, targetExt: t.ext, targetLabel: t.label, mode: "mediaQuality" }),
-            })),
-            { type: "separator" },
-            {
-              label: "Extract Audio (MP3)",
-              onClick: () => setConvertTarget({ entry, targetExt: "mp3", targetLabel: "MP3", mode: "mediaQuality" }),
-            },
-            { label: "Transcribe to Text (offline)…", onClick: () => runTranscribe(entry) },
-          ],
-        });
+        const videoItems: MenuItem[] = [
+          ...VIDEO_CONVERT_TARGETS.filter((t) => t.ext !== ext).map((t) => ({
+            label: t.label,
+            onClick: () =>
+              setConvertTarget({ entries: convertTargets, targetExt: t.ext, targetLabel: t.label, mode: "mediaQuality" }),
+          })),
+          { type: "separator" },
+          {
+            // Not a format change, so it gets its own submenu inside
+            // Convert To rather than sitting among the containers: the
+            // choice here is how much quality to trade for size, not what
+            // to convert into.
+            type: "submenu",
+            label: "Make Smaller (re-encode)",
+            items: [
+              {
+                label: "Slightly smaller (best quality)",
+                onClick: () => runShrinkVideo(convertTargets, "light"),
+              },
+              {
+                label: "Much smaller (recommended)",
+                onClick: () => runShrinkVideo(convertTargets, "balanced"),
+              },
+              {
+                label: "Smallest (caps at 1080p)",
+                onClick: () => runShrinkVideo(convertTargets, "small"),
+              },
+            ],
+          },
+          { type: "separator" },
+          {
+            label: n > 1 ? `Extract Audio from ${n} Items (MP3)` : "Extract Audio (MP3)",
+            onClick: () =>
+              setConvertTarget({ entries: convertTargets, targetExt: "mp3", targetLabel: "MP3", mode: "mediaQuality" }),
+          },
+        ];
+        if (single) {
+          videoItems.push({ label: "Transcribe to Text (offline)…", onClick: () => runTranscribe(single) });
+        }
+        moreItems.push({ type: "submenu", label: convertLabel, items: videoItems });
       } else if (kind === "audio" && !inVault && ffmpegAvailable) {
         const targets = AUDIO_CONVERT_TARGETS.filter((t) => t.ext !== ext);
-        moreItems.push({
-          type: "submenu",
-          label: "Convert To",
-          items: [
-            ...targets.map((t) => ({
-              label: t.label,
-              onClick: () =>
-                t.lossy
-                  ? setConvertTarget({ entry, targetExt: t.ext, targetLabel: t.label, mode: "mediaQuality" })
-                  : runMediaConvert(entry, t.ext, "medium"),
-            })),
-            { type: "separator" as const },
-            { label: "Transcribe to Text (offline)…", onClick: () => runTranscribe(entry) },
-          ],
-        });
+        const audioItems: MenuItem[] = targets.map((t) => ({
+          label: t.label,
+          onClick: () =>
+            t.lossy
+              ? setConvertTarget({ entries: convertTargets, targetExt: t.ext, targetLabel: t.label, mode: "mediaQuality" })
+              : runMediaConvert(convertTargets, t.ext, "medium"),
+        }));
+        if (single) {
+          audioItems.push({ type: "separator" as const });
+          audioItems.push({ label: "Transcribe to Text (offline)…", onClick: () => runTranscribe(single) });
+        }
+        moreItems.push({ type: "submenu", label: convertLabel, items: audioItems });
       }
     }
 
@@ -4567,9 +4947,11 @@ function Explorer({ home }: { home: string }) {
           ? { label: "Remove from Favorites", onClick: () => removeFavorite(path) }
           : { label: "Add to Favorites", onClick: () => addFavorite(path) }
       );
-      // Every option here shells out to a binary (rclone/git/unison/
-      // syncthing) that doesn't exist on Android.
-      if (!mobile) {
+      // On desktop every provider here shells out to a binary
+      // (rclone/git/unison/syncthing); on Android none of those exist, so
+      // the submenu narrows to the one backend that works there -- Google
+      // Drive over its REST API, in-process (see drive_rest.rs).
+      if (!inVault) {
         moreItems.push(
           buildSyncSubmenu(path, {
             drivePairsByPath,
@@ -4579,6 +4961,9 @@ function Explorer({ home }: { home: string }) {
             setGitSyncTarget,
             setLocalSyncTarget,
             setSyncthingTarget,
+            mobile,
+            setMobileDriveTarget,
+            setMobileFolderSyncTarget,
           })
         );
       }
@@ -4792,7 +5177,12 @@ function Explorer({ home }: { home: string }) {
     }
     items.push(
       { type: "separator" },
-      { label: "Paste", shortcut: "⌘V", disabled: !clipboard || clipboard.kind !== loc.kind, onClick: paste }
+      {
+        label: "Paste",
+        shortcut: "⌘V",
+        disabled: (!clipboard || clipboard.kind !== loc.kind) && !sysClipboardImage,
+        onClick: paste,
+      }
     );
     {
       items.push({ type: "separator" });
@@ -5264,7 +5654,7 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
-  const canPaste = !!clipboard;
+  const canPaste = !!clipboard || sysClipboardImage;
 
   return (
     <>
@@ -5439,7 +5829,7 @@ function Explorer({ home }: { home: string }) {
                     onClick: () => organizeMusicIn(f.path),
                   },
                 ];
-                if (f.path !== "/" && !inVault && !mobile) {
+                if (f.path !== "/" && !inVault) {
                   items.push(
                     buildSyncSubmenu(f.path, {
                       drivePairsByPath,
@@ -5449,6 +5839,9 @@ function Explorer({ home }: { home: string }) {
                       setGitSyncTarget,
                       setLocalSyncTarget,
                       setSyncthingTarget,
+                      mobile,
+                      setMobileDriveTarget,
+                      setMobileFolderSyncTarget,
                     })
                   );
                 }
@@ -5932,11 +6325,14 @@ function Explorer({ home }: { home: string }) {
               results={searchResults}
               entries={searchEntries}
               inVault={inVault}
-              onOpen={(p) => {
-                if (loc.kind === "vault") go({ kind: "vault", root: loc.root, rel: parentPath(p) });
-                else go({ kind: "fs", path: parentPath(p) });
+              mobile={mobile}
+              selected={searchSelected}
+              onSelect={setSearchSelected}
+              onOpen={openSearchHit}
+              onMenu={(e, p) => {
+                setSearchSelected(p);
+                pathMenu(e, p, () => runSearch(searchQuery));
               }}
-              onMenu={(e, p) => pathMenu(e, p, () => runSearch(searchQuery))}
             />
           ) : showDigest ? (
             <SavedSearchDigest
@@ -5963,17 +6359,29 @@ function Explorer({ home }: { home: string }) {
                 dir === curDir ? entryMenu(e, entry) : pathMenu(e, joinPath(dir, entry.name))
               }
               previewEntry={previewEntry}
-              onSelectFile={(dir, entry) =>
+              selectedNames={selected}
+              curDir={curDir}
+              sortEntries={sortEntriesFor}
+              onSelectFile={(dir, entry, ev) =>
                 withSensitive(joinPath(dir, entry.name), () => {
                   setPreviewEntry({ dir, entry });
                   // Keep the REAL selection in step with the highlighted row --
                   // copy/delete/Enter/statusbar act on `selected`, and letting
                   // it lag behind the preview highlight meant they silently
                   // targeted the previously-selected file.
-                  if (dir === curDir) selectOnly(entry.name);
+                  if (dir !== curDir) return;
+                  // Ctrl/Shift-click build a multi-selection here too, the
+                  // same as the icon and list views -- a column used to
+                  // collapse to one row per click, which left Copy/Delete
+                  // unable to act on more than a single file from here.
+                  if (ev.ctrlKey || ev.metaKey) toggle(entry.name);
+                  else if (ev.shiftKey) selectRange(entry.name);
+                  else selectOnly(entry.name);
                 })
               }
               cutPaths={clipboard?.mode === "cut" && clipboard.kind === loc.kind ? clipboard.paths : undefined}
+              textEditorExts={textEditorExts}
+              onOpenInEditor={(ext) => setExtOpensInEditor(ext, true)}
             />
           ) : view === "notes" ? (
             <NotesGrid
@@ -6017,8 +6425,19 @@ function Explorer({ home }: { home: string }) {
               onMenu={(e, entry) => entryMenu(e, entry)}
             />
           ) : view === "listPreview" ? (
-            <div className="list-preview-split">
+            <div
+              className="list-preview-split"
+              style={{ ["--list-pane-width" as string]: `${listPaneWidth}px` } as React.CSSProperties}
+            >
               {renderListBody()}
+              <div
+                className={`split-resizer ${draggingSplit ? "dragging" : ""}`}
+                onMouseDown={onSplitMouseDown}
+                onDoubleClick={() => setListPaneWidth(LIST_PANE_DEFAULT)}
+                title="Drag to resize (double-click to reset)"
+                role="separator"
+                aria-orientation="vertical"
+              />
               <FilePreviewPane
                 target={previewEntry}
                 inVault={inVault}
@@ -6380,6 +6799,26 @@ function Explorer({ home }: { home: string }) {
           }}
         />
       )}
+      {mobileFolderSyncTarget && (
+        <MobileFolderSyncSheet
+          folderA={mobileFolderSyncTarget}
+          onClose={() => {
+            setMobileFolderSyncTarget(null);
+            refreshSyncStatus();
+            refresh();
+          }}
+        />
+      )}
+      {mobileDriveTarget && (
+        <MobileDriveSyncSheet
+          localPath={mobileDriveTarget}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onClose={() => {
+            setMobileDriveTarget(null);
+            refreshSyncStatus();
+          }}
+        />
+      )}
       {gitSyncTarget && (
         <GitSyncSheet
           localPath={gitSyncTarget}
@@ -6451,17 +6890,17 @@ function Explorer({ home }: { home: string }) {
       )}
       {convertTarget && (
         <ConvertSheet
-          name={convertTarget.entry.name}
+          names={convertTarget.entries.map((en) => en.name)}
           targetLabel={convertTarget.targetLabel}
           mode={convertTarget.mode}
           onCancel={() => setConvertTarget(null)}
           onSubmit={(value) => {
-            const { entry, targetExt, mode } = convertTarget;
+            const { entries: targets, targetExt, mode } = convertTarget;
             setConvertTarget(null);
             if (mode === "imageQuality") {
-              runImageConvert(entry, targetExt, Number(value));
+              runImageConvert(targets, targetExt, Number(value));
             } else {
-              runMediaConvert(entry, targetExt, value as "high" | "medium" | "low");
+              runMediaConvert(targets, targetExt, value as "high" | "medium" | "low");
             }
           }}
         />

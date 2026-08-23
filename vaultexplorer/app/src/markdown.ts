@@ -58,7 +58,7 @@ function inline(s: string): string {
 // One parsed list item. `task` is null for a plain bullet/number, or a
 // boolean (checked) for a GFM `- [ ]` / `- [x]` task item. Nesting is by
 // indentation (two spaces per level on serialize).
-type ListItem = { ordered: boolean; task: boolean | null; text: string; children: ListItem[] };
+type ListItem = { ordered: boolean; num: number; task: boolean | null; text: string; children: ListItem[] };
 
 const LIST_LINE = /^(\s*)([-*]|\d+\.)\s+(.*)$/;
 
@@ -86,7 +86,7 @@ function parseListBlock(lines: string[]): ListItem[] {
       task = tm[1].toLowerCase() === "x";
       text = tm[2];
     }
-    const item: ListItem = { ordered, task, text, children: [] };
+    const item: ListItem = { ordered, num: ordered ? parseInt(m[2], 10) || 1 : 0, task, text, children: [] };
     while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
     if (stack.length) stack[stack.length - 1].item.children.push(item);
     else roots.push(item);
@@ -120,7 +120,11 @@ function renderListForest(items: ListItem[]): string {
   const ordered = !isTaskList && items[0].ordered;
   const tag = ordered ? "ol" : "ul";
   const cls = isTaskList ? ' class="md-tasklist"' : "";
-  return `<${tag}${cls}>${items.map(renderListItem).join("")}</${tag}>`;
+  // A list that starts at something other than 1 keeps its own first
+  // number (`3. …` renders as 3., not 1.) -- the browser counts up from
+  // `start` on its own from there, and serializeList reads it back.
+  const start = ordered && items[0].num > 1 ? ` start="${items[0].num}"` : "";
+  return `<${tag}${cls}${start}>${items.map(renderListItem).join("")}</${tag}>`;
 }
 
 // ---- Fenced code blocks (```lang ... ```) ----
@@ -452,6 +456,7 @@ function serializeTable(table: HTMLElement): string {
 // their checked state read from the `data-checked` the editor toggles.
 function serializeList(list: HTMLElement, depth: number): string {
   const ordered = list.tagName === "OL";
+  const first = ordered ? parseInt(list.getAttribute("start") ?? "1", 10) || 1 : 1;
   const items = Array.from(list.children).filter((c) => c.tagName === "LI") as HTMLElement[];
   const indent = "  ".repeat(depth);
   return items
@@ -470,7 +475,7 @@ function serializeList(list: HTMLElement, depth: number): string {
         text += htmlNodeToMarkdown(c);
       }
       const isTask = li.getAttribute("data-task") === "1";
-      const bullet = ordered ? `${i + 1}.` : "-";
+      const bullet = ordered ? `${first + i}.` : "-";
       const check = isTask ? (li.getAttribute("data-checked") === "true" ? "[x] " : "[ ] ") : "";
       return `${indent}${bullet} ${check}${text.trim()}${nested}`;
     })

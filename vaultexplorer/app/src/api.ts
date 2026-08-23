@@ -180,6 +180,17 @@ export const api = {
     invoke<void>("download_stream", { url, destDir, filename, channel }),
   androidMuxVideo: (videoPath: string, audioPath: string, outPath: string) =>
     invoke<void>("android_mux_video", { videoPath, audioPath, outPath }),
+  // Decode-and-re-encode to MP3 in-process (see mp3.rs) -- what lets a
+  // phone end up with a real .mp3 instead of the .m4a YouTube serves.
+  audioToMp3: (
+    src: string,
+    dest: string,
+    title: string | null,
+    removeSource: boolean,
+    channel: Channel<ProgressEvent>
+    // Returns the path actually written -- "name (2).mp3" when something
+    // was already sitting at `dest`.
+  ) => invoke<string>("audio_to_mp3", { src, dest, title, removeSource, channel }),
   castDiscover: () => invoke<CastDevice[]>("cast_discover"),
   castPlayYoutube: (appUrl: string, videoId: string) =>
     invoke<void>("cast_play_youtube", { appUrl, videoId }),
@@ -247,6 +258,12 @@ export const api = {
   portalIsEnabled: () => invoke<boolean>("portal_is_enabled"),
   portalEnable: () => invoke<void>("portal_enable"),
   portalDisable: () => invoke<void>("portal_disable"),
+  // Owning the `inode/directory` MIME default (so folders opened from any
+  // other app land here) -- separate from the portal toggle above, which
+  // is only about Open/Save dialogs. See defaultapp.rs.
+  defaultFileManagerEnabled: () => invoke<boolean>("default_file_manager_enabled"),
+  setDefaultFileManager: (enabled: boolean) =>
+    invoke<void>("set_default_file_manager", { enabled }),
   autostartEnabled: () => invoke<boolean>("autostart_enabled"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   listAppsForPath: (path: string) =>
@@ -325,6 +342,11 @@ export const api = {
     invoke<void>("fs_copy_image_to_clipboard", { path }),
   vaultCopyImageToClipboard: (relPath: string) =>
     invoke<void>("vault_copy_image_to_clipboard", { relPath }),
+  // "Is there an image on the system clipboard?" -- kept as a bool so
+  // greying out the Paste button doesn't drag a whole screenshot across
+  // IPC. The bytes come over as an ArrayBuffer only when actually pasting.
+  clipboardHasImage: () => invoke<boolean>("clipboard_has_image"),
+  clipboardReadImagePng: () => invoke<ArrayBuffer>("clipboard_read_image_png"),
   fsClearMetadata: (paths: string[], channel: Channel<ProgressEvent>) =>
     invoke<ClearResult[]>("fs_clear_metadata", { paths, channel }),
   vaultClearMetadata: (relPaths: string[], channel: Channel<ProgressEvent>) =>
@@ -347,6 +369,12 @@ export const api = {
   fsPdfToImages: (path: string, destDir: string, destStem: string) =>
     invoke<string[]>("fs_pdf_to_images", { path, destDir, destStem }),
   fsImageToPdf: (path: string, destPath: string) => invoke<void>("fs_image_to_pdf", { path, destPath }),
+  // One rasterized PDF page as a data URI, plus the document's page count:
+  // the preview pane's PDF viewer (the webview has no PDF renderer of its
+  // own, so pages are drawn by poppler on the Rust side).
+  fsPdfPage: (path: string, page: number, maxSize: number) =>
+    invoke<string>("fs_pdf_page", { path, page, maxSize }),
+  fsPdfPageCount: (path: string) => invoke<number>("fs_pdf_page_count", { path }),
   transcribeModelDownloaded: () => invoke<boolean>("transcribe_model_downloaded"),
   transcribeDownloadModel: (channel: Channel<ProgressEvent>) =>
     invoke<void>("transcribe_download_model", { channel }),
@@ -359,6 +387,15 @@ export const api = {
     quality: "high" | "medium" | "low",
     channel: Channel<ProgressEvent>
   ) => invoke<void>("fs_convert_media", { path, destPath, targetExt, quality, channel }),
+  // Re-encode a video into a much smaller file at the same resolution and
+  // duration (HEVC/H.264 at constant quality) -- "this video doesn't need
+  // to be 4GB", as opposed to fsConvertMedia's format change.
+  fsShrinkVideo: (
+    path: string,
+    destPath: string,
+    level: "light" | "balanced" | "small",
+    channel: Channel<ProgressEvent>
+  ) => invoke<void>("fs_shrink_video", { path, destPath, level, channel }),
   fsBuildMontage: (
     visualPaths: string[],
     audioPath: string | null,
@@ -420,6 +457,32 @@ export const api = {
   driveVerifyingNow: () => invoke<string[]>("drive_verifying_now"),
   driveSyncActivity: () =>
     invoke<Record<string, { current: string | null; count: number }>>("drive_sync_activity"),
+  // Mobile Google Drive sync: same idea, none of the rclone -- there's no
+  // binary to shell out to on Android, so this talks to the Drive REST
+  // API in-process against the user's own OAuth client (see drive_rest.rs).
+  driveRestConnection: () => invoke<DriveConnection>("drive_rest_connection"),
+  driveRestConnect: (clientId: string, clientSecret: string, urlChannel: Channel<string>) =>
+    invoke<string>("drive_rest_connect", { clientId, clientSecret, urlChannel }),
+  driveRestDisconnect: () => invoke<void>("drive_rest_disconnect"),
+  driveRestListPairs: () => invoke<MobileSyncPair[]>("drive_rest_list_pairs"),
+  driveRestAddPair: (localPath: string) =>
+    invoke<MobileSyncPair>("drive_rest_add_pair", { localPath }),
+  driveRestRemovePair: (localPath: string) =>
+    invoke<void>("drive_rest_remove_pair", { localPath }),
+  driveRestSyncNow: (localPath: string, channel: Channel<ProgressEvent>) =>
+    invoke<MobileSyncOutcome>("drive_rest_sync_now", { localPath, channel }),
+  driveRestStatus: (localPath: string) =>
+    invoke<MobileSyncStatus>("drive_rest_status", { localPath }),
+  driveRestSyncingNow: () => invoke<boolean>("drive_rest_syncing_now"),
+  // Folder-to-folder sync without unison (see folder_sync.rs) -- the
+  // mobile counterpart of the localSync* calls below.
+  folderSyncListPairs: () => invoke<FolderSyncPair[]>("folder_sync_list_pairs"),
+  folderSyncAdd: (folderA: string, folderB: string) =>
+    invoke<FolderSyncPair>("folder_sync_add", { folderA, folderB }),
+  folderSyncRemove: (folder: string) => invoke<void>("folder_sync_remove", { folder }),
+  folderSyncNow: (folder: string, channel: Channel<ProgressEvent>) =>
+    invoke<FolderSyncOutcome>("folder_sync_now", { folder, channel }),
+  folderSyncSyncingNow: () => invoke<string[]>("folder_sync_syncing_now"),
   syncVerifyStates: (kind: string, dir: string, names: string[]) =>
     invoke<string[]>("sync_verify_states", { kind, dir, names }),
   fsWatchSet: (path: string | null) => invoke<void>("fs_watch_set", { path }),
@@ -478,6 +541,45 @@ export interface SyncPair {
   provider: string;
   drive_folder_name: string;
   resynced: boolean;
+}
+
+export interface DriveConnection {
+  connected: boolean;
+  account_email: string;
+}
+
+export interface MobileSyncPair {
+  local_path: string;
+  remote_folder_name: string;
+}
+
+export interface MobileSyncStatus {
+  syncing: boolean;
+  last_error: string;
+}
+
+export interface MobileSyncOutcome {
+  uploaded: number;
+  downloaded: number;
+  deleted_local: number;
+  deleted_remote: number;
+  conflicts: string[];
+  skipped: string[];
+  summary: string;
+}
+
+export interface FolderSyncPair {
+  folder_a: string;
+  folder_b: string;
+}
+
+export interface FolderSyncOutcome {
+  copied_to_a: number;
+  copied_to_b: number;
+  deleted_in_a: number;
+  deleted_in_b: number;
+  conflicts: string[];
+  summary: string;
 }
 
 export interface GitSyncPair {
