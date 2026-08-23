@@ -1,0 +1,11 @@
+# Build output
+build/
+app/build/
+.gradle/
+local.properties
+
+# Signing: the key and its passwords never go in the repo. Keep the .jks
+# safe -- a sideloaded APK can only be updated in place by one signed with
+# the identical key.
+keystore.properties
+*.jks

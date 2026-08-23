@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RecPocket</string>
+
+    <string name="section_what">Qué grabar</string>
+    <string name="source_mic">Micrófono (mi voz)</string>
+    <string name="source_playback">Salida (lo que suena)</string>
+    <string name="source_both">Las dos, mezcladas</string>
+    <string name="include_screen">Grabar también la pantalla</string>
+
+    <string name="section_quality">Calidad</string>
+    <string name="quality_audio">Audio</string>
+    <string name="quality_video">Vídeo</string>
+    <string name="quality_hint">Por defecto va comprimido: pensado para guardar llamadas sin llenar el teléfono.</string>
+
+    <string name="section_trigger">Automático</string>
+    <string name="trigger_calls">Grabar solo cuando hay una llamada de WhatsApp</string>
+    <string name="trigger_hint">Si es llamada de voz graba audio; si es videollamada graba la pantalla con el audio. Necesita acceso a las notificaciones, que es lo único que permite saber que empezó una llamada.</string>
+    <string name="trigger_grant">Dar acceso a notificaciones</string>
+
+    <string name="section_floating">Botón flotante</string>
+    <string name="floating_show">Mostrar el botón flotante</string>
+    <string name="floating_hint">Queda encima de cualquier app para empezar, parar o sacar captura. No sale en la grabación.</string>
+    <string name="floating_grant">Permitir mostrarse encima</string>
+
+    <string name="action_arm">Activar captura</string>
+    <string name="action_record">Grabar</string>
+    <string name="action_stop">Parar</string>
+    <string name="action_screenshot">Captura</string>
+    <string name="action_quit">Salir</string>
+    <string name="action_open">Abrir</string>
+    <string name="action_mic">Permitir micrófono</string>
+
+    <string name="state_idle">Listo</string>
+    <string name="state_armed">Activado, sin grabar</string>
+    <string name="state_disarmed">Se cortó el permiso de captura</string>
+    <string name="state_recording">Grabando (%1$s)</string>
+    <string name="state_mic_only">Sin permiso de captura: grabo solo el micrófono</string>
+    <string name="saved">Grabación guardada</string>
+    <string name="error_needs_arming">Primero hay que activar la captura de pantalla</string>
+    <string name="arm_hint">La captura de pantalla se pide una vez y queda lista: es lo que permite grabar la salida de audio, la pantalla y las capturas, y también que la grabación automática pueda arrancar sola.</string>
+    <string name="mic_missing">Falta el permiso de micrófono</string>
+
+    <string name="section_updates">Actualizaciones</string>
+    <string name="update_current">Versión instalada: %1$s</string>
+    <string name="update_hint">Busca la última versión publicada en el repositorio y la instala.</string>
+    <string name="action_check_updates">Buscar actualización</string>
+    <string name="action_install_update">Descargar e instalar</string>
+    <string name="update_checking">Buscando…</string>
+    <string name="update_available">Hay una nueva versión: %1$s</string>
+    <string name="update_none">Ya estás en la última (%1$s)</string>
+    <string name="update_no_apk">La versión %1$s no trae APK adjunta</string>
+    <string name="update_failed">No se pudo comprobar: %1$s</string>
+    <string name="update_downloading">Descargando…</string>
+    <string name="update_installing">Abriendo el instalador…</string>
+    <string name="update_needs_permission">Permite instalar apps desde RecPocket y volvé a intentar</string>
+</resources>

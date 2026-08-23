@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose paints the UI; the platform theme only keeps the system bars
+         sane and stays out of the way. -->
+    <style name="Theme.RecPocket" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+</resources>
