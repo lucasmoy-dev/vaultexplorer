@@ -18,3 +18,7 @@ keystore.properties
 
 /.tauri
 /tauri.settings.gradle
+
+# Kotlin compiler session scratch files, written during a build.
+.kotlin/
+**/.kotlin/
