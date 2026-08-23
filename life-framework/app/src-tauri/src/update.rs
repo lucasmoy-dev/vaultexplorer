@@ -7,7 +7,37 @@ use serde_json::Value;
 // tagged `life-framework-vX.Y.Z`. If/when the repo is renamed to
 // `personal-projects`, GitHub keeps redirecting this path, so the updater
 // keeps working without a rebuild.
-const REPO: &str = "lucasmoy-dev/vaultexplorer";
+/// Both names, because the repo is in the middle of being renamed from
+/// `vaultexplorer` to `personal-projects`. GitHub redirects a renamed repo's
+/// API, but a shipped build that knows only one name depends on that
+/// redirect surviving -- and if the old name is later taken by somebody
+/// else, it would point at a stranger's releases. Trying both means this
+/// build works before the rename and after it.
+const REPOS: [&str; 2] = ["lucasmoy-dev/personal-projects", "lucasmoy-dev/vaultexplorer"];
+
+/// The name to show in a "releases page" link: the older one, since that is
+/// what exists until the rename happens.
+const REPO: &str = REPOS[1];
+
+/// The releases list, from whichever name answers (see [`REPOS`]).
+fn fetch_releases(client: &reqwest::blocking::Client) -> Result<Vec<Value>, String> {
+    let mut last = String::new();
+    for repo in REPOS {
+        let attempt = client
+            .get(format!("https://api.github.com/repos/{repo}/releases?per_page=30"))
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.error_for_status().map_err(|e| e.to_string()))
+            .and_then(|r| r.json::<Vec<Value>>().map_err(|e| e.to_string()));
+        match attempt {
+            Ok(releases) => return Ok(releases),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
 const TAG_PREFIX: &str = "life-framework-v";
 
 #[derive(serde::Serialize)]
@@ -53,16 +83,7 @@ pub fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
-    let releases: Vec<Value> = client
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())?;
+    let releases: Vec<Value> = fetch_releases(&client)?;
 
     // Highest semver among our-prefixed, non-draft releases.
     let mut best: Option<(SemVer, Value)> = None;

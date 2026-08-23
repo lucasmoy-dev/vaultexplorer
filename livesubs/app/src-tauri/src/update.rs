@@ -16,7 +16,37 @@ use serde::Serialize;
 
 /// The monorepo's current name on GitHub. A rename to `personal-projects`
 /// keeps working through GitHub's redirect, so this needs no rebuild.
-const REPO: &str = "lucasmoy-dev/vaultexplorer";
+/// Both names, because the repo is in the middle of being renamed from
+/// `vaultexplorer` to `personal-projects`. GitHub redirects a renamed repo's
+/// API, but a shipped build that knows only one name depends on that
+/// redirect surviving -- and if the old name is later taken by somebody
+/// else, it would point at a stranger's releases. Trying both means this
+/// build works before the rename and after it.
+const REPOS: [&str; 2] = ["lucasmoy-dev/personal-projects", "lucasmoy-dev/vaultexplorer"];
+
+/// The name to show in a "releases page" link: the older one, since that is
+/// what exists until the rename happens.
+const REPO: &str = REPOS[1];
+
+/// The releases list, from whichever name answers (see [`REPOS`]).
+fn fetch_releases(client: &reqwest::blocking::Client) -> Result<Vec<serde_json::Value>, String> {
+    let mut last = String::new();
+    for repo in REPOS {
+        let attempt = client
+            .get(format!("https://api.github.com/repos/{repo}/releases?per_page=30"))
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .map_err(|e| format!("no se pudo consultar GitHub: {e}"))
+            .and_then(|r| r.error_for_status().map_err(|e| e.to_string()))
+            .and_then(|r| r.json::<Vec<serde_json::Value>>().map_err(|e| e.to_string()));
+        match attempt {
+            Ok(releases) => return Ok(releases),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
 const TAG_PREFIX: &str = "livesubs-v";
 
 type SemVer = (u64, u64, u64);
@@ -62,15 +92,7 @@ fn check(current: &str) -> Result<UpdateInfo, String> {
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
-    let releases: Vec<serde_json::Value> = client
-        .get(format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .map_err(|e| format!("no se pudo consultar GitHub: {e}"))?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())?;
+    let releases: Vec<serde_json::Value> = fetch_releases(&client)?;
 
     // Highest version among this app's own, published releases.
     let mut best: Option<(SemVer, serde_json::Value)> = None;
@@ -164,12 +186,7 @@ mod tests {
             .user_agent("livesubs-updater-test")
             .build()
             .unwrap();
-        let releases: Vec<serde_json::Value> = client
-            .get(format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
-            .send()
-            .unwrap()
-            .json()
-            .unwrap();
+        let releases: Vec<serde_json::Value> = fetch_releases(&client).expect("releases");
         let ours = releases
             .iter()
             .find(|r| {

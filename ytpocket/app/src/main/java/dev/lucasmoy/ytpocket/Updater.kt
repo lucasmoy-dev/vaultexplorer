@@ -40,7 +40,15 @@ object Updater {
      * GitHub's redirect keeps this working without a rebuild -- the same
      * note the sibling app's updater carries.
      */
-    private const val REPO = "lucasmoy-dev/vaultexplorer"
+    private val REPOS = listOf("lucasmoy-dev/personal-projects", "lucasmoy-dev/vaultexplorer")
+
+    /**
+     * The candidate that answered most recently, used for the "open the
+     * releases page" link. Defaults to the older name, since that is the one
+     * that exists until the repo is renamed.
+     */
+    @Volatile
+    private var repo = REPOS.last()
     private const val TAG_PREFIX = "ytpocket-v"
 
     data class Available(
@@ -52,21 +60,41 @@ object Updater {
         val hasUpdate: Boolean,
     )
 
-    val releasesPage: String get() = "https://github.com/$REPO/releases"
+    val releasesPage: String get() = "https://github.com/$repo/releases"
 
     /**
-     * Ask GitHub what the newest release for this app is. Blocking: callers
-     * run it off the main thread.
+     * The releases list, from whichever repo name answers.
+     *
+     * Two names because the repo is in the middle of being renamed from
+     * `vaultexplorer` to `personal-projects`. GitHub does redirect a renamed
+     * repo's API, but an installed APK that only knows one name depends on
+     * that redirect surviving -- and if the old name is ever taken by
+     * somebody else, it would start pointing at a stranger's releases.
+     * Trying both removes the ordering problem entirely: this build works
+     * before the rename and after it.
      */
-    fun check(currentVersion: String): Result<Available> = runCatching {
-        val url = URL("https://api.github.com/repos/$REPO/releases?per_page=30")
-        val connection = (url.openConnection() as HttpURLConnection).apply {
+    private fun releasesJson(): String {
+        var last: Exception? = null
+        for (candidate in REPOS) {
+            try {
+                val body = get("https://api.github.com/repos/$candidate/releases?per_page=30")
+                repo = candidate
+                return body
+            } catch (error: Exception) {
+                last = error
+            }
+        }
+        throw last ?: IllegalStateException("no se pudo consultar GitHub")
+    }
+
+    private fun get(url: String): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             setRequestProperty("Accept", "application/vnd.github+json")
             setRequestProperty("User-Agent", "ytpocket-updater")
             connectTimeout = 20_000
             readTimeout = 20_000
         }
-        val body = try {
+        return try {
             if (connection.responseCode !in 200..299) {
                 throw IllegalStateException("HTTP ${connection.responseCode}")
             }
@@ -74,8 +102,14 @@ object Updater {
         } finally {
             connection.disconnect()
         }
+    }
 
-        val releases = JSONArray(body)
+    /**
+     * Ask GitHub what the newest release for this app is. Blocking: callers
+     * run it off the main thread.
+     */
+    fun check(currentVersion: String): Result<Available> = runCatching {
+        val releases = JSONArray(releasesJson())
         var bestVersion: List<Int>? = null
         var best: org.json.JSONObject? = null
         for (index in 0 until releases.length()) {
