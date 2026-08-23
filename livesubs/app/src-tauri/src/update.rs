@@ -141,6 +141,59 @@ mod tests {
         assert_eq!(parse_semver("nonsense"), (0, 0, 0));
     }
 
+    /// Hits the real GitHub API and checks the convention actually holds:
+    /// a release tagged for *this* app exists, and it carries an APK the
+    /// Android updater can install. `#[ignore]`d because it needs the
+    /// network; run it after publishing a release:
+    ///
+    /// ```text
+    /// cargo test --release --features custom-protocol -- --ignored --nocapture release_convention
+    /// ```
+    #[test]
+    #[ignore]
+    fn release_convention_holds_on_github() {
+        // A version below anything published, so this also exercises the
+        // "there is an update" branch rather than only the lookup.
+        let info = check("0.0.1").expect("update check failed");
+        println!("latest={} page={}", info.latest, info.page_url);
+        assert!(info.has_update, "expected 0.0.1 to be behind {}", info.latest);
+        assert!(info.page_url.contains("/releases/tag/livesubs-v"), "{}", info.page_url);
+
+        // And the asset the phone needs is attached to that release.
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("livesubs-updater-test")
+            .build()
+            .unwrap();
+        let releases: Vec<serde_json::Value> = client
+            .get(format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        let ours = releases
+            .iter()
+            .find(|r| {
+                r.get("tag_name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|t| t == format!("{TAG_PREFIX}{}", info.latest))
+                    .unwrap_or(false)
+            })
+            .expect("no release with the expected tag");
+        let has_apk = ours
+            .get("assets")
+            .and_then(serde_json::Value::as_array)
+            .map(|assets| {
+                assets.iter().any(|a| {
+                    a.get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|n| n.to_ascii_lowercase().ends_with(".apk"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        assert!(has_apk, "the release for {} has no .apk asset", info.latest);
+    }
+
     #[test]
     fn double_digit_components_compare_numerically() {
         // The mistake this guards against: string comparison would put

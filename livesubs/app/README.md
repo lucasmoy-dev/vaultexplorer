@@ -24,6 +24,10 @@ menu there is **Configuración…**, **Pausar escucha** and **Salir**.
   and French, in every direction.
 - **Detects the language.** Automatic per utterance, or fixed when you
   already know (faster and more accurate).
+- **Checks for updates.** The settings window looks for `livesubs-v…`
+  releases in this repo and opens the release page; the Android app installs
+  its own APK, a desktop app should not swap its running binary out from
+  under itself.
 - **Saves the transcript.** Optional append-only text file, one line per
   utterance, with a timestamp, the source and the language.
 

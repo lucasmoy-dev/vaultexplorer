@@ -9,6 +9,21 @@ counts as a caption live in [`../core`](../core) and are compiled into the
 APK through a small JNI shim ([`jni/`](jni)). A fix to speech detection
 lands on both platforms at once, because there is only one implementation.
 
+## Install
+
+Grab the APK from the latest
+[`livesubs-v…` release](https://github.com/lucasmoy-dev/vaultexplorer/releases)
+and open it on the phone (you will have to allow installing from this
+source). Then, in the app: **Descargar modelo** → grant microphone and
+notifications → allow **drawing over other apps** → **Empezar** (the
+screen-capture dialog is what enables system audio).
+
+After that it updates itself: **Configuración → Actualizaciones** checks the
+releases in this repo, downloads the APK and hands it to the system
+installer, which asks you to confirm. Nothing installs silently — the app
+holds `REQUEST_INSTALL_PACKAGES` and needs "install unknown apps" allowed
+for it, and it opens that screen for you if it isn't.
+
 ## What it does
 
 - **Two sources, two colours.** The microphone (your voice) and playback
@@ -23,6 +38,8 @@ lands on both platforms at once, because there is only one implementation.
 - **Automatic language detection**, per utterance, or fixed when you know it.
 - **Transcript** appended to a text file you pick, one line per utterance,
   with the time, the source and the language.
+- **Updates itself** from this repo's releases (tag prefix `livesubs-v`),
+  the same convention the sibling apps use.
 - **The notification is the control panel** — pause/resume, settings, stop.
   A phone has no system tray, and an app that keeps recording with its
   window closed *must* be a foreground service with a notification, so that
