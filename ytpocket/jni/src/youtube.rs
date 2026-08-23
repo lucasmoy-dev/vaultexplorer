@@ -409,10 +409,22 @@ pub fn diagnose(video: &str) -> String {
     // later (a rotating IPv6 privacy address, a dual-stack switch), every
     // remaining request is refused.
     if let Some(egress) = crate::download::egress_ip() {
-        report.push(serde_json::json!({ "client": "-", "egress_ip": egress }));
+        report.push(serde_json::json!({
+            "client": "-",
+            "egress_ip": egress,
+            // Whether a visitor id was obtained at all, because without one
+            // YouTube answers the token-free clients with "Sign in to confirm
+            // you're not a bot" and every download falls back to a client
+            // whose URLs refuse real chunks.
+            "visitor_id": crate::innertube::visitor().map(|v| v[..8.min(v.len())].to_string()),
+        }));
     }
 
-    for client in DIRECT_CLIENTS {
+    // Both token-free clients, not just the one the app leads with: knowing
+    // that the second is also gated is what tells a failure apart from a
+    // client-specific hiccup.
+    for client in [crate::innertube::VISIONOS, crate::innertube::ANDROID_VR] {
+        let client = &client;
         report.push(match crate::innertube::player(*client, &id) {
             Ok(player) => match player.best_audio() {
                 Some(audio) => match crate::download::probe(&audio.url, client.user_agent) {

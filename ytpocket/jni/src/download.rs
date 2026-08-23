@@ -172,10 +172,16 @@ fn ranged_request(
 /// Ask for the first kilobyte, to find out whether this URL will actually
 /// serve bytes to us. Used by `resolve` before it hands a URL over.
 pub fn probe(url: &str, user_agent: &str) -> Result<(), String> {
+    // A *chunk-sized* range on purpose. Measured: URLs from a client that
+    // needs a PO token answer `bytes=0-1023` with 200 and the same URL
+    // answers `bytes=0-4194303` with 403 -- so the old 1KB probe passed
+    // exactly the streams that then failed on the first real chunk. The
+    // response body is dropped without reading it, so this still costs one
+    // round trip and not 4MB.
     let response = http()?
         .get(url)
         .header(reqwest::header::USER_AGENT, user_agent)
-        .header(reqwest::header::RANGE, "bytes=0-1023")
+        .header(reqwest::header::RANGE, format!("bytes=0-{}", CHUNK_PROBE - 1))
         .send()
         .map_err(|e| format!("no se pudo conectar: {e}"))?;
     let status = response.status();
@@ -188,6 +194,10 @@ pub fn probe(url: &str, user_agent: &str) -> Result<(), String> {
         other => format!("HTTP {other}"),
     })
 }
+
+/// The range a probe asks for: the same size the app's first real chunk asks
+/// for, because that is the request that has to be allowed.
+const CHUNK_PROBE: u64 = 4 * 1024 * 1024;
 
 /// Append one chunk of `url` to `path`, starting at `offset`.
 ///
@@ -433,6 +443,112 @@ mod root_cause_tests {
             // Not being able to resolve at all is the same practical
             // conclusion: unusable for downloads.
             Err(error) => println!("desktop resolve failed outright: {error}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+
+    /// Every live test so far downloaded a few MB. The device failed at
+    /// ~40MB. So: take a long video and pull the whole audio track through
+    /// the same chunk loop the app uses, and report where -- if anywhere --
+    /// googlevideo starts refusing. `#[ignore]`d (network, slow, ~50MB).
+    #[test]
+    #[ignore]
+    fn a_long_download_is_not_refused_part_way() {
+        let results = crate::youtube::search("full album 1 hour", 20).expect("search");
+        let pick = results
+            .iter()
+            // No duration means a livestream, which has no file to download.
+            .filter(|r| r.duration.unwrap_or(0) > 20 * 60)
+            .max_by_key(|r| r.duration.unwrap_or(0))
+            .expect("no long-enough results");
+        println!("picked {} ({:?}s) {}", pick.title, pick.duration, pick.id);
+
+        let resolved = crate::youtube::resolve(&pick.id).expect("resolve");
+        let audio = resolved.audio.as_ref().expect("audio");
+        println!("client {}, declared {} bytes", resolved.client, audio.size);
+
+        let path = std::env::temp_dir().join("ytpocket-volume-test.bin");
+        let _ = std::fs::remove_file(&path);
+        let file = path.to_string_lossy().to_string();
+
+        let total = total_size(&audio.url, &resolved.user_agent).unwrap_or(audio.size);
+        let mut done = 0u64;
+        let mut chunks = 0;
+        while done < total {
+            let want = (4 * 1024 * 1024).min(total - done);
+            match chunk(&audio.url, &file, done, want, &resolved.user_agent) {
+                Ok(0) => panic!("empty reply at {done} of {total} after {chunks} chunks"),
+                Ok(n) => {
+                    done += n;
+                    chunks += 1;
+                    if chunks % 5 == 0 {
+                        println!("  {done}/{total} bytes ({chunks} chunks)");
+                    }
+                }
+                Err(e) => panic!("refused at {done} of {total} after {chunks} chunks: {e}"),
+            }
+        }
+        println!("finished {done} bytes in {chunks} chunks");
+        assert_eq!(done, total);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod client_matrix {
+    use super::*;
+    use crate::innertube;
+
+    /// The two findings behind the 403, both asserted.
+    ///
+    /// 1. A **token-free client needs a visitor id.** Without one YouTube
+    ///    answers "Sign in to confirm you're not a bot" for anything long or
+    ///    popular, and the app fell back to a client that needs a PO token.
+    /// 2. A **1KB probe proves nothing.** Those fallback URLs answer a small
+    ///    range with 200 and a chunk-sized one with 403, which is why every
+    ///    download died on its first real chunk while the probe was happy.
+    ///
+    /// `#[ignore]`d (network).
+    #[test]
+    #[ignore]
+    fn a_visitor_id_is_what_makes_a_token_free_client_serve_bytes() {
+        // A long, popular video: the bot gate does not trigger on obscure
+        // ones, which is why smaller tests never caught this.
+        let results = crate::youtube::search("full album 1 hour", 20).expect("search");
+        let pick = results
+            .iter()
+            .filter(|r| r.duration.unwrap_or(0) > 20 * 60)
+            .max_by_key(|r| r.duration.unwrap_or(0))
+            .expect("no long-enough results");
+        println!("video: {} ({:?}s) {}", pick.title, pick.duration, pick.id);
+
+        let visitor = innertube::visitor().expect("no visitor id");
+        let with = innertube::player_as(innertube::VISIONOS, &pick.id, Some(visitor))
+            .expect("visionos refused a request carrying a visitor id");
+        let audio = with.best_audio().expect("no audio formats");
+
+        let path = std::env::temp_dir().join("ytpocket-matrix.bin");
+        let _ = std::fs::remove_file(&path);
+        let file = path.to_string_lossy().to_string();
+        let served = chunk(&audio.url, &file, 0, 4 * 1024 * 1024, innertube::VISIONOS.user_agent)
+            .expect("a real chunk was refused");
+        assert_eq!(served, 4 * 1024 * 1024, "short chunk");
+        let _ = std::fs::remove_file(&path);
+
+        // And the same request without one is refused, which is the part that
+        // was shipping. If this ever stops being true, YouTube relaxed its bot
+        // gate and the visitor id became belt-and-braces rather than load
+        // bearing -- worth knowing either way.
+        match innertube::player_as(innertube::VISIONOS, &pick.id, None) {
+            Err(refusal) => println!("without a visitor id: {refusal}"),
+            Ok(player) => println!(
+                "without a visitor id: allowed after all ({} formats)",
+                player.formats.len()
+            ),
         }
     }
 }

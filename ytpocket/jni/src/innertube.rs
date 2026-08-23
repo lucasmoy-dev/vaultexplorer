@@ -27,6 +27,7 @@
 //! idea of which clients are safe.
 
 use serde::Serialize;
+use std::sync::OnceLock;
 use serde_json::Value;
 
 /// One Innertube client's identity, as YouTube expects to see it.
@@ -61,6 +62,37 @@ pub const VISIONOS: Client = Client {
     os_version: "26.5.23O471",
 };
 
+/// The Oculus/Quest YouTube app. yt-dlp's PO-token table lists it as needing
+/// no GVS token either, and unlike `visionos` it is an Android client, so it
+/// is offered streams for anything the phone app can play. Kept as the second
+/// candidate: `visionos` does not return formats for every video.
+pub const ANDROID_VR: Client = Client {
+    label: "android_vr",
+    client_name: "ANDROID_VR",
+    client_version: "1.62.27",
+    client_name_id: 28,
+    user_agent: "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12; en_US; Quest 3 Build/SQ3A.220605.009.A1) gzip",
+    device_make: "Oculus",
+    device_model: "Quest 3",
+    os_name: "Android",
+    os_version: "12",
+};
+
+/// Safari on macOS. In yt-dlp's table this client needs a GVS PO token for
+/// progressive streams but is served **HLS** without one -- the reason it is
+/// measured here.
+pub const WEB_SAFARI: Client = Client {
+    label: "web_safari",
+    client_name: "WEB",
+    client_version: "2.20250312.04.00",
+    client_name_id: 1,
+    user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+    device_make: "Apple",
+    device_model: "",
+    os_name: "Macintosh",
+    os_version: "10_15_7",
+};
+
 #[derive(Serialize)]
 struct ClientContext<'a> {
     #[serde(rename = "clientName")]
@@ -79,6 +111,8 @@ struct ClientContext<'a> {
     os_version: &'a str,
     hl: &'a str,
     gl: &'a str,
+    #[serde(rename = "visitorData", skip_serializing_if = "Option::is_none")]
+    visitor_data: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -111,6 +145,9 @@ pub struct Format {
 }
 
 pub struct Player {
+    /// HLS master playlist, when the client is given one. Interesting because
+    /// yt-dlp's table says HLS is served without a GVS PO token.
+    pub hls: Option<String>,
     pub title: String,
     pub channel: String,
     pub duration: Option<u32>,
@@ -120,6 +157,45 @@ pub struct Player {
 
 /// Ask a client for a video's streams.
 pub fn player(client: Client, video_id: &str) -> Result<Player, String> {
+    player_as(client, video_id, visitor())
+}
+
+/// The cached visitor id, fetched once per process.
+///
+/// **This is what fixed the 403.** Without it YouTube answers a token-free
+/// client with "Sign in to confirm you're not a bot" for anything long or
+/// popular; the app then fell back to a client that needs a PO token, whose
+/// URLs serve a small range and refuse a real one. With it, `visionos`
+/// returns formats and those formats serve 4MB chunks. Measured both ways in
+/// `download::client_matrix`.
+pub fn visitor() -> Option<&'static str> {
+    static VISITOR: OnceLock<Option<String>> = OnceLock::new();
+    VISITOR.get_or_init(|| visitor_data().ok()).as_deref()
+}
+
+/// A visitor id ties the request to a session YouTube has seen before, which
+/// is what its bot heuristics look for.
+pub fn visitor_data() -> Result<String, String> {
+    let body = crate::download::http()?
+        .get("https://www.youtube.com/sw.js_data")
+        .header(reqwest::header::USER_AGENT, VISIONOS.user_agent)
+        .send()
+        .map_err(|e| e.to_string())?
+        .text()
+        .map_err(|e| e.to_string())?;
+    // The payload is a JSON array with the visitor id buried in it; it always
+    // starts with the same marker.
+    body.split('"')
+        .find(|piece| piece.starts_with("Cg") && piece.len() > 20)
+        .map(str::to_string)
+        .ok_or_else(|| "no visitor id in sw.js_data".to_string())
+}
+
+pub fn player_as(
+    client: Client,
+    video_id: &str,
+    visitor_data: Option<&str>,
+) -> Result<Player, String> {
     let body = PlayerRequest {
         context: Context {
             client: ClientContext {
@@ -132,6 +208,7 @@ pub fn player(client: Client, video_id: &str) -> Result<Player, String> {
                 os_version: client.os_version,
                 hl: "en",
                 gl: "US",
+                visitor_data,
             },
         },
         video_id,
@@ -181,6 +258,11 @@ pub fn player(client: Client, video_id: &str) -> Result<Player, String> {
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|seconds| *seconds > 0);
 
+    let hls = json
+        .pointer("/streamingData/hlsManifestUrl")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
     let mut formats = Vec::new();
     for entry in json
         .pointer("/streamingData/adaptiveFormats")
@@ -208,6 +290,7 @@ pub fn player(client: Client, video_id: &str) -> Result<Player, String> {
     }
 
     Ok(Player {
+        hls,
         title: details
             .and_then(|d| d.get("title"))
             .and_then(Value::as_str)

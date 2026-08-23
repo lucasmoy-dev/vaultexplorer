@@ -18,6 +18,10 @@ val keystoreProperties = Properties().apply {
     if (file.exists()) file.inputStream().use { stream -> load(stream) }
 }
 
+// Which ABIs the native library is built for. arm64 is the phone; x86_64 is
+// the emulator, built on demand with `-PrustAbis=x86_64`.
+val rustAbis: List<String> =
+    (findProperty("rustAbis") as String? ?: "arm64-v8a").split(",").map(String::trim)
 android {
     namespace = "dev.lucasmoy.ytpocket"
     compileSdk = 35
@@ -29,11 +33,20 @@ android {
         // and scoped storage as the only model worth targeting.
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 7
+        versionName = "0.1.6"
         // arm64 only: every phone worth running this on has been arm64 for
         // years, and a second ABI doubles build time and APK size.
-        ndk { abiFilters += "arm64-v8a" }
+        // A phone is arm64; an emulator is x86_64. Release ships arm64 only
+        // (the native library is most of the APK), and
+        // `-PrustAbis=x86_64` builds an emulator APK -- which is the only
+        // way to run the real JNI library on a real Android runtime here,
+        // with no device attached.
+        ndk { abiFilters += rustAbis }
+        // For the on-device test below: it runs the real native library, the
+        // real MediaStore and the real network on an emulator, which is the
+        // only place the whole download path can be exercised without a phone.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -104,6 +117,9 @@ dependencies {
     // unit tests, and parsing what the native side returns is exactly what
     // those tests are for.
     testImplementation("org.json:json:20240303")
+
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
 
 // ---- Rust ------------------------------------------------------------
@@ -121,7 +137,7 @@ val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs")
 
 val cargoNdkBuild by tasks.registering(Exec::class) {
     group = "build"
-    description = "Cross-compiles ytpocket-jni (YouTube + MP3) for arm64-v8a"
+    description = "Cross-compiles ytpocket-jni (YouTube + MP3) for $rustAbis"
     workingDir = rootProject.layout.projectDirectory.dir("jni").asFile
     val sdkDir = android.sdkDirectory.absolutePath
     environment("ANDROID_HOME", sdkDir)
@@ -129,12 +145,15 @@ val cargoNdkBuild by tasks.registering(Exec::class) {
     // CMake's own Android support reads the NDK location from this one.
     environment("ANDROID_NDK_ROOT", "$sdkDir/ndk/$ndkVersionForRust")
     commandLine(
-        "cargo", "ndk",
-        "-t", "arm64-v8a",
-        "--platform", "29",
-        "-o", jniLibsDir.asFile.absolutePath,
-        "build", "--release"
+        buildList {
+            add("cargo"); add("ndk")
+            rustAbis.forEach { add("-t"); add(it) }
+            add("--platform"); add("29")
+            add("-o"); add(jniLibsDir.asFile.absolutePath)
+            add("build"); add("--release")
+        }
     )
+    inputs.property("abis", rustAbis)
     inputs.dir(rootProject.layout.projectDirectory.dir("jni/src"))
     inputs.file(rootProject.layout.projectDirectory.file("jni/Cargo.toml"))
     outputs.dir(jniLibsDir)

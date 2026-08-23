@@ -85,9 +85,30 @@ app; tapping the finished notification opens the file.
       continues from the byte it stopped at** (up to six times), so a genuine
       address change costs a round trip, not the download. `MediaStore` never
       sees the partial file, so a resumed download is still one clean file.
-  - Belt and braces: `resolve` **probes** each candidate with a 1KB range
-    request before returning it, so a URL that will not serve bytes never
-    reaches the UI; and requests are tried as a `Range` header, then as
+  - **The actual cause, found by measuring instead of reasoning:** a
+    token-free client is only token-free if YouTube believes it is a client.
+    Ask `visionos` for a *long, popular* video with no **`visitorData`** in
+    the request context and the answer is "Sign in to confirm you're not a
+    bot" -- so the app fell back to `ios`, whose URLs need a PO token, and
+    those refused the download. Measured, same video, one variable:
+
+    | client | no visitor id | with a visitor id |
+    |---|---|---|
+    | `visionos` | Sign in to confirm you're not a bot | 20 formats, 4MB chunk served |
+    | `android_vr` | bot gate | bot gate |
+    | `web_safari` | video unavailable | video unavailable |
+
+    The visitor id comes from `youtube.com/sw.js_data`, is fetched once per
+    process, and now rides along on every Innertube request. Short or obscure
+    videos were never gated, which is why every earlier test passed and the
+    phone still failed.
+  - **A 1KB probe proved nothing.** `resolve` used to check a candidate with
+    a `bytes=0-1023` request; PO-token URLs answer that with 200 and answer
+    `bytes=0-4194303` with **403**. So the probe passed exactly the streams
+    that then died on their first real chunk. It now asks for a full
+    chunk-sized range and drops the body unread -- same one round trip, an
+    answer that means something.
+  - Belt and braces: requests are tried as a `Range` header, then as
     `&range=` query parameters, then with a playback nonce, because
     googlevideo has served all three shapes over the years.
 - **Filenames.** The point of the app, so the rules live in Rust with tests
@@ -120,6 +141,12 @@ jni/    Rust: YouTube search (rustypipe), stream resolution (a direct
 app/    Kotlin + Compose: one screen, a foreground service for downloads,
         MediaMuxer, MediaStore, and the in-app updater.
 ```
+
+A note on what the client list is for: **`visionos` (plus a visitor id) is
+what works**, and rustypipe's clients are fallbacks that mostly cannot
+download. They stay because a client that resolves is still useful for
+metadata and because YouTube's enforcement changes month to month -- but the
+probe now tells the truth about them.
 
 `rustypipe` is the same extractor (and version) the sibling
 [vaultexplorer](../vaultexplorer) app already ships on Android — a known-good
@@ -166,6 +193,16 @@ cargo test --release -- --ignored --nocapture download_and_transcode
 # Live: the chunked native download, byte-exact against Content-Range
 cargo test --release -- --ignored --nocapture chunked_download
 
+# Live: the bug that three releases failed to fix -- a token-free client
+# needs a visitor id, and a chunk-sized range is the only probe worth
+# trusting
+cargo test --release -- --ignored --nocapture a_visitor_id_is_what_makes
+
+# Live, and slow (~400MB): a *long* video's audio, whole, through the same
+# chunk loop the app uses. Short videos fit in one chunk, which is how a
+# mid-download refusal went unnoticed.
+cargo test --release -- --ignored --nocapture a_long_download
+
 # Live: the address invariant -- the URL is signed for the IP we call from,
 # and a fresh URL can continue a download the old one stopped serving. These
 # two are the 0.1.5 regression guards.
@@ -179,11 +216,35 @@ cargo test --release -- --ignored --nocapture a_web_client_url_is_refused
 # The JNI boundary itself, from a real JVM, against real YouTube
 ./tools/harness/run.sh "search terms"
 
-# Kotlin's own logic, and Android API misuse
+# Kotlin's own logic (including the resume loop, with an injected fetcher
+# that refuses on cue), and Android API misuse
 cd .. && gradle :app:testDebugUnitTest :app:lintRelease
 ```
 
-The last two are the ones that earn their keep: the harness is the only
+And the one that needs a running Android, on an emulator when no phone is
+attached — the real native library, the platform muxer, `MediaStore` and the
+real network, end to end:
+
+```bash
+sdkmanager --install "emulator" "system-images;android-35;google_apis;x86_64"
+emulator -avd <your avd> -no-window -no-audio -gpu swiftshader_indirect &
+
+# arm64 is the phone, x86_64 the emulator; the ABI is a build flag so the
+# release APK stays arm64-only
+gradle :app:connectedDebugAndroidTest -PrustAbis=x86_64
+```
+
+That test deliberately picks the **longest, most popular** result it can
+find: it downloaded a 6h52m album, transcoded it, and checked the MP3's own
+duration against what YouTube reported (24723s vs 24724s). Both halves of
+that matter — long, because the failure only appeared past the first chunk,
+and popular, because the bot gate only trips on those.
+
+Note that a software-GPU emulator is too slow to draw Compose in time and
+throws an ANR dialog when the app is launched by hand; the instrumented test
+draws nothing and is unaffected.
+
+The unit tests and lint earn their keep too: the harness is the only
 check that the JNI symbol names and the JSON contract line up (the failure
 mode on a phone is a silent `UnsatisfiedLinkError`), and `lint` is what
 caught a muxer bug — `MediaExtractor`'s sample flags and
@@ -196,9 +257,11 @@ configuration and produced files that do not play.
 - **YouTube changes and this breaks.** That is the nature of an extractor;
   the fix is usually a `rustypipe` bump. The live tests above are the canary.
 - **arm64 only**, and Android 10+ (`MediaStore`'s pending-file flow).
-- **Not tested on a physical device by its author** — no phone was attached
-  when it was built. Everything above the platform APIs is verified as
-  described; the first run on a phone is still the first run on a phone.
+- **Not tested on a physical phone by its author** — no phone was attached
+  when it was built. It *is* tested on a real Android runtime: an x86_64
+  emulator runs the whole path (see below), and the native side is tested
+  against real YouTube from two networks. What an emulator cannot reproduce
+  is a carrier network, which is where the 403 story began.
 - **Downloading from YouTube is against their terms of service.** This is a
   personal tool for keeping copies of things you could already play; that
   decision is the user's.
