@@ -189,12 +189,16 @@ class DownloadService : LifecycleService() {
         // No outer restart any more: the fetch resumes in place. A rotating
         // phone IP invalidates the URL, not the bytes already on disk, so
         // re-resolving and continuing beats downloading the first 40MB again.
-        Downloads.fetch(stream.url, target, resolved.userAgent, stream.size, report) {
-            update(getString(R.string.download_retrying, title), from)
-            val fresh = runCatching { Native.resolveVideo(videoId) }.getOrNull() ?: return@fetch null
-            val refreshed = pick(fresh) ?: return@fetch null
-            refreshed.url to fresh.userAgent
-        }
+        Downloads.fetch(
+            stream.url, target, resolved.userAgent, stream.size, report,
+            refresh = {
+                update(getString(R.string.download_retrying, title), from)
+                val fresh = runCatching { Native.resolveVideo(videoId) }.getOrNull()
+                    ?: return@fetch null
+                val refreshed = pick(fresh) ?: return@fetch null
+                refreshed.url to fresh.userAgent
+            },
+        )
     }
 
     // ---- notification -------------------------------------------------

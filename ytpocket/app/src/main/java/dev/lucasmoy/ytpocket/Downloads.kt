@@ -62,6 +62,17 @@ object Downloads {
      */
     private const val MAX_REFRESHES = 6
 
+    /**
+     * Asks for `length` bytes starting at `offset`, appends them to the file
+     * at `path`, and answers how many arrived. The real one is the native
+     * download (`jni/src/download.rs`); a test supplies its own, which is the
+     * only way to exercise the retry loop below -- a mid-transfer refusal
+     * cannot be provoked on demand from real googlevideo.
+     */
+    fun interface ChunkFetcher {
+        fun fetch(url: String, path: String, offset: Long, length: Long, userAgent: String): Long
+    }
+
     fun fetch(
         url: String,
         target: File,
@@ -76,6 +87,10 @@ object Downloads {
          * from where it stopped instead of starting over.
          */
         refresh: (() -> Pair<String, String>?)? = null,
+        /** Overridden only by tests; see [ChunkFetcher]. */
+        fetcher: ChunkFetcher = ChunkFetcher(Native::fetchChunk),
+        /** Overridden only by tests: the declared size of the stream. */
+        sizeOf: (String, String) -> Long = Native::sizeOf,
     ) {
         target.parentFile?.mkdirs()
         // Appending is how the native side writes, so a fresh download must
@@ -85,7 +100,7 @@ object Downloads {
         var currentUrl = url
         var currentAgent = userAgent
         var refreshes = 0
-        val total = runCatching { Native.sizeOf(url, userAgent) }.getOrDefault(0L)
+        val total = runCatching { sizeOf(url, userAgent) }.getOrDefault(0L)
             .takeIf { it > 0 } ?: expectedSize
         var done = 0L
         // Bounded by the known size, and never asking for a range that starts
@@ -97,7 +112,7 @@ object Downloads {
         while (total <= 0L || done < total) {
             val remaining = if (total > 0L) total - done else CHUNK
             val written = try {
-                Native.fetchChunk(
+                fetcher.fetch(
                     currentUrl,
                     target.absolutePath,
                     done,
