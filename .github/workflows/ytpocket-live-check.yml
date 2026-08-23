@@ -1,0 +1,35 @@
+name: ytpocket live check
+
+# Manual only. Its job is to answer a question no laptop can: YouTube enforces
+# its "proof of origin" token *per network*, so a download that works from a
+# home connection can be refused with 403 elsewhere -- which is exactly what
+# kept happening on a phone. A GitHub runner has a datacenter IP, the harshest
+# network YouTube serves, which makes it a usable stand-in for reproducing the
+# failure and, more importantly, for proving a fix.
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: YouTube video id or URL
+        required: false
+        default: dQw4w9WgXcQ
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ytpocket/jni/target
+          key: ytpocket-jni-${{ hashFiles('ytpocket/jni/Cargo.toml') }}
+
+      - name: Which clients work from this network, and does a download finish
+        working-directory: ytpocket/jni
+        run: cargo run --release --example diag -- "${{ inputs.video }}"
