@@ -68,13 +68,32 @@ object Downloads {
         val total = runCatching { Native.sizeOf(url, userAgent) }.getOrDefault(0L)
             .takeIf { it > 0 } ?: expectedSize
         var done = 0L
-        while (true) {
-            val written = Native.fetchChunk(url, target.absolutePath, done, CHUNK, userAgent)
+        // Bounded by the known size, and never asking for a range that starts
+        // past the end of the file. The old loop only stopped on an empty
+        // reply, so after the last (short) chunk it always made one extra
+        // request beyond EOF -- which googlevideo can answer with 403 rather
+        // than 416. That turned a download that had *already finished* into
+        // "YouTube rechazó la descarga a mitad".
+        while (total <= 0L || done < total) {
+            val remaining = if (total > 0L) total - done else CHUNK
+            val written = Native.fetchChunk(
+                url,
+                target.absolutePath,
+                done,
+                minOf(CHUNK, remaining),
+                userAgent,
+            )
             if (written <= 0L) break
             done += written
             if (total > 0) onProgress((done.toFloat() / total).coerceIn(0f, 1f))
         }
         if (done <= 0L) throw IllegalStateException("la descarga vino vacía")
+        if (total > 0L && done < total) {
+            // Short of the declared size means the transfer was cut, not that
+            // the file is smaller than advertised: better to fail here than to
+            // hand a truncated MP3 to the music player.
+            throw IllegalStateException("la descarga quedó incompleta ($done de $total bytes)")
+        }
         onProgress(1f)
     }
 

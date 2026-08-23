@@ -47,6 +47,85 @@ pub(crate) fn http() -> Result<&'static reqwest::blocking::Client, String> {
         .map_err(|e| e.clone())
 }
 
+/// How to ask googlevideo for a byte range.
+///
+/// There is more than one way, and which one is accepted has turned out to
+/// depend on the network: a `Range` header is the obvious HTTP thing, while
+/// YouTube's own DASH players put the range in the **query string** and add a
+/// `cpn` (client playback nonce) that identifies the playback session. When a
+/// download is refused mid-transfer on one network and works on another, the
+/// shape of the request is the first thing worth varying -- so all three are
+/// implemented and can be measured (see the `diag` example) instead of
+/// guessed at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RangeMode {
+    /// `Range: bytes=a-b`.
+    Header,
+    /// `&range=a-b` appended to the URL, the way a DASH player does it.
+    Query,
+    /// `&range=a-b&cpn=…`, which is what a real client sends.
+    QueryWithNonce,
+}
+
+impl RangeMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            RangeMode::Header => "header",
+            RangeMode::Query => "query",
+            RangeMode::QueryWithNonce => "query+cpn",
+        }
+    }
+}
+
+/// The mode used by default. Kept in one place so a measurement can change
+/// the app's behaviour by changing one line.
+pub const DEFAULT_RANGE_MODE: RangeMode = RangeMode::Header;
+
+/// A client playback nonce: 16 characters from the alphabet YouTube's own
+/// players use. Generated once per process, like a playback session.
+fn playback_nonce() -> &'static str {
+    static NONCE: OnceLock<String> = OnceLock::new();
+    NONCE.get_or_init(|| {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+        // No rand dependency for 16 characters: the point is that it is
+        // unique per session, not that it is unpredictable.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut state = seed as u64 | 1;
+        (0..16)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ALPHABET[(state >> 33) as usize % ALPHABET.len()] as char
+            })
+            .collect()
+    })
+}
+
+/// Build the request for one range, in the given shape.
+fn ranged_request(
+    url: &str,
+    offset: u64,
+    end: u64,
+    user_agent: &str,
+    mode: RangeMode,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    let client = http()?;
+    Ok(match mode {
+        RangeMode::Header => client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, user_agent)
+            .header(reqwest::header::RANGE, format!("bytes={offset}-{end}")),
+        RangeMode::Query => client
+            .get(format!("{url}&range={offset}-{end}"))
+            .header(reqwest::header::USER_AGENT, user_agent),
+        RangeMode::QueryWithNonce => client
+            .get(format!("{url}&range={offset}-{end}&cpn={}", playback_nonce()))
+            .header(reqwest::header::USER_AGENT, user_agent),
+    })
+}
+
 /// Ask for the first kilobyte, to find out whether this URL will actually
 /// serve bytes to us. Used by `resolve` before it hands a URL over.
 pub fn probe(url: &str, user_agent: &str) -> Result<(), String> {
@@ -79,11 +158,35 @@ pub fn chunk(
     max_bytes: u64,
     user_agent: &str,
 ) -> Result<u64, String> {
+    // Try the other request shapes before giving up on this chunk.
+    //
+    // Which shape googlevideo accepts has proven to be network-dependent, and
+    // the cost of being wrong is a failed download rather than a slow one --
+    // so a refusal retries the same bytes asked for a different way. All three
+    // succeed from every network measured so far; this exists for the network
+    // where one of them does not.
+    let mut last = String::new();
+    for mode in [DEFAULT_RANGE_MODE, RangeMode::Query, RangeMode::QueryWithNonce] {
+        match chunk_with(url, path, offset, max_bytes, user_agent, mode) {
+            Ok(written) => return Ok(written),
+            Err(error) => last = format!("{} ({})", error, mode.label()),
+        }
+    }
+    Err(last)
+}
+
+/// [`chunk`], with the request shape spelled out -- for measuring which
+/// shape a given network accepts.
+pub fn chunk_with(
+    url: &str,
+    path: &str,
+    offset: u64,
+    max_bytes: u64,
+    user_agent: &str,
+    mode: RangeMode,
+) -> Result<u64, String> {
     let end = offset + max_bytes - 1;
-    let response = http()?
-        .get(url)
-        .header(reqwest::header::USER_AGENT, user_agent)
-        .header(reqwest::header::RANGE, format!("bytes={offset}-{end}"))
+    let response = ranged_request(url, offset, end, user_agent, mode)?
         .send()
         .map_err(|e| format!("no se pudo conectar: {e}"))?;
     let status = response.status();

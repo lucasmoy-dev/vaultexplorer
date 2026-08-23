@@ -146,11 +146,11 @@ class DownloadService : LifecycleService() {
             update(getString(R.string.download_saving, displayName), 0.97f)
             val uri = Downloads.publish(this, finished, displayName, audio = wantMp3)
             progress.value = null
-            lastResult.value = Result(displayName, uri, null)
+            lastResult.value = Result("$displayName · ${resolved.client}", uri, null)
             notifyDone(displayName, uri, wantMp3)
         } catch (error: Throwable) {
             progress.value = null
-            val message = error.message ?: error::class.java.simpleName
+            val message = (error.message ?: error::class.java.simpleName) + " · v" + BuildConfig.VERSION_NAME
             lastResult.value = Result(label, null, message)
             notifyFailed(label, message)
         } finally {

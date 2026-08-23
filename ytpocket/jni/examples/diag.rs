@@ -17,6 +17,39 @@ fn main() {
     };
     println!("client={} title={}", resolved.client, resolved.title);
 
+    // Which request shape does this network accept? Measured rather than
+    // assumed: the first chunks of the *video* stream, once per shape, since
+    // a refusal mid-transfer is what keeps happening in the wild.
+    println!("=== range request shapes ===");
+    if let Some(stream) = resolved.video.as_ref() {
+        for mode in [
+            ytpocket::download::RangeMode::Header,
+            ytpocket::download::RangeMode::Query,
+            ytpocket::download::RangeMode::QueryWithNonce,
+        ] {
+            let path = std::env::temp_dir().join(format!("mode-{}.bin", mode.label()));
+            let _ = std::fs::remove_file(&path);
+            let p = path.to_string_lossy().to_string();
+            let mut done = 0u64;
+            let mut verdict = "ok".to_string();
+            for _ in 0..3 {
+                match ytpocket::download::chunk_with(
+                    &stream.url, &p, done, 4 * 1024 * 1024, &resolved.user_agent, mode,
+                ) {
+                    Ok(0) => break,
+                    Ok(n) => done += n,
+                    Err(error) => {
+                        verdict = error;
+                        break;
+                    }
+                }
+            }
+            println!("mode {:<10} {done} bytes -> {verdict}", mode.label());
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    println!("=== full downloads (default shape) ===");
     let path = std::env::temp_dir().join("diag.bin");
     for (label, stream) in [("audio", resolved.audio), ("video", resolved.video)] {
         let Some(stream) = stream else {

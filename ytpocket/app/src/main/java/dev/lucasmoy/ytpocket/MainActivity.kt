@@ -146,12 +146,25 @@ class MainActivity : ComponentActivity() {
         MaterialTheme {
             Surface(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp)) {
-                    Text(
-                        stringResource(R.string.app_name),
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            stringResource(R.string.app_name),
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // On screen on purpose: three bug reports in a row were
+                        // about versions that had already been fixed, and there
+                        // was no way to tell from the app which one was running.
+                        Text(
+                            "v${BuildConfig.VERSION_NAME}",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
 
                     OutlinedTextField(
                         value = query,
