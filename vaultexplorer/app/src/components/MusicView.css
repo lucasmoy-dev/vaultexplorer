@@ -1,0 +1,276 @@
+/* MusicView -- the library list plus the transport bar that stays put.
+
+   The bar is `position: sticky` at the bottom of the view rather than fixed
+   to the window: this view lives inside the app's own layout (sidebar,
+   breadcrumb), and a fixed bar would sit on top of them. */
+
+.music-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  gap: 8px;
+}
+
+.music-toolbar,
+.music-folders {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 2px;
+}
+
+.music-toolbar-spacer {
+  flex: 1;
+}
+
+.music-action,
+.music-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border, #d8d8dd);
+  background: var(--surface, #fff);
+  color: inherit;
+  cursor: pointer;
+}
+
+.music-action:hover:not(:disabled),
+.music-folder:hover {
+  background: var(--hover, rgba(0, 0, 0, 0.05));
+}
+
+.music-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.music-action.primary {
+  font-weight: 600;
+}
+
+.music-action.on,
+.music-folder.on {
+  border-color: var(--accent, #3b82f6);
+  color: var(--accent, #3b82f6);
+}
+
+.music-count {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.music-note,
+.music-error {
+  font-size: 12px;
+  padding: 8px 2px;
+  opacity: 0.75;
+}
+
+.music-error {
+  color: var(--danger, #d33);
+  opacity: 1;
+}
+
+.music-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.music-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.music-row:hover {
+  background: var(--hover, rgba(0, 0, 0, 0.05));
+}
+
+.music-row.current {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+}
+
+.music-row-index {
+  width: 26px;
+  flex: none;
+  font-size: 11px;
+  opacity: 0.55;
+  text-align: right;
+}
+
+.music-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.music-row-title,
+.music-row-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-row-title {
+  font-size: 13px;
+}
+
+.music-row-sub {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.music-row-plays,
+.music-row-time {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- the bar ---------------------------------------------------------- */
+
+.music-bar {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "art text controls"
+    "seek seek seek";
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border, #d8d8dd);
+  background: var(--surface, #fff);
+}
+
+.music-bar-art {
+  grid-area: art;
+  width: 42px;
+  height: 42px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--hover, rgba(0, 0, 0, 0.06));
+}
+
+.music-bar-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.music-bar-text {
+  grid-area: text;
+  min-width: 0;
+}
+
+.music-bar-title,
+.music-bar-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-bar-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.music-bar-sub {
+  font-size: 11px;
+  opacity: 0.65;
+}
+
+.music-bar-controls {
+  grid-area: controls;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.music-bar-controls button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.music-bar-controls button:hover:not(:disabled) {
+  background: var(--hover, rgba(0, 0, 0, 0.08));
+}
+
+.music-bar-controls button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.music-bar-play {
+  background: var(--accent, #3b82f6) !important;
+  color: #fff;
+}
+
+.music-bar-seek {
+  grid-area: seek;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.music-bar-seek input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* On a phone the transport matters more than the metadata: bigger buttons,
+   and the folder chips scroll sideways instead of wrapping into three rows
+   that eat the list. */
+@media (max-width: 700px) {
+  .music-folders {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .music-folder {
+    flex: none;
+  }
+
+  .music-bar-controls button {
+    width: 42px;
+    height: 42px;
+  }
+
+  .music-row {
+    padding: 11px 10px;
+  }
+}

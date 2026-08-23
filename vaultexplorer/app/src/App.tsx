@@ -65,6 +65,7 @@ import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
 import { NotesGrid } from "./components/NotesGrid";
 import { LibraryShelf } from "./components/LibraryShelf";
+import { MusicView } from "./components/MusicView";
 import { ContactsGrid, ContactEditForm } from "./components/ContactsGrid";
 import { serializeVCard, emptyVCard } from "./vcard";
 import { ColumnView } from "./components/ColumnView";
@@ -2616,6 +2617,9 @@ function Explorer({ home }: { home: string }) {
   const LIST_PANE_MIN = 140;
   // What the preview pane must keep for itself, so a drag can't collapse it.
   const PREVIEW_PANE_MIN = 320;
+  // Bumped after the tag updater runs, so the library is re-read and shows
+  // the titles that were just written.
+  const [musicReloadKey, setMusicReloadKey] = useState(0);
   const [listPaneWidth, setListPaneWidth] = useState<number>(() => {
     const saved = Number(localStorage.getItem("vaultexplorer:list-pane-width"));
     return Number.isFinite(saved) && saved >= LIST_PANE_MIN ? saved : LIST_PANE_DEFAULT;
@@ -3844,6 +3848,37 @@ function Explorer({ home }: { home: string }) {
   // Files each track under Artist/Year - Album/NN - Title, filling in
   // whatever the tags don't know from MusicBrainz. Anything it can't
   // identify stays exactly where it is.
+  // Fills in what the tags don't say -- title, artist, album, year, track
+  // number and the album cover -- from MusicBrainz and the Cover Art
+  // Archive, writing into the files and moving nothing. The counterpart to
+  // organizeMusicIn, which moves files and leaves their tags alone.
+  async function updateMusicDataIn(path: string) {
+    try {
+      const updates = await api.updateMusicTags(
+        path,
+        beginProgress(`Updating song data in "${baseName(path)}"`)
+      );
+      const changed = updates.filter((u) => u.changed.length > 0);
+      refresh();
+      setMusicReloadKey((k) => k + 1);
+      if (updates.length === 0) {
+        setError("No audio files in this folder.");
+        return;
+      }
+      // Naming the commonest reason is worth more than a count: "no
+      // matches" and "MusicBrainz is busy" need different things from the
+      // user.
+      const reason = updates.find((u) => u.skipped && !u.skipped.includes("ya estaba"))?.skipped;
+      setError(
+        changed.length === 0
+          ? `Nothing to fill in${reason ? ` -- ${reason}` : ""}.`
+          : `Updated ${changed.length} of ${updates.length} track${updates.length === 1 ? "" : "s"}.`
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function organizeMusicIn(path: string) {
     try {
       const moved = await api.organizeMusic(path, beginProgress(`Organizing music in "${baseName(path)}"`));
@@ -5065,6 +5100,16 @@ function Explorer({ home }: { home: string }) {
       // pass at the idea, not a finished look.
       { key: "library", label: "Library" },
     ];
+    // A folder of audio read as songs rather than files: tags, folders, play
+    // counts, and a queue that advances on its own. Handing a track to the
+    // system player instead (which is what opening one does) is fine for one
+    // song and useless for an album -- the system player is given one file
+    // and knows nothing about the next.
+    //
+    // Not offered inside a vault: the files there are encrypted on disk, so
+    // there are no tags to read and nothing a media element can play. An
+    // option that can only say "no music here" is worse than no option.
+    if (!inVault) options.push({ key: "music", label: "Music" });
     const items: MenuItem[] = options.map((o) => ({
       label: view === o.key && !showDigest ? `✓ ${o.label}` : o.label,
       // Picking a view here is the one consistent escape hatch this app
@@ -5828,6 +5873,12 @@ function Explorer({ home }: { home: string }) {
                     label: "Reorganize Music…",
                     onClick: () => organizeMusicIn(f.path),
                   },
+                  // The counterpart: fills in the tags (title, artist,
+                  // album, year, cover) from MusicBrainz and moves nothing.
+                  {
+                    label: "Update song data…",
+                    onClick: () => updateMusicDataIn(f.path),
+                  },
                 ];
                 if (f.path !== "/" && !inVault) {
                   items.push(
@@ -6415,6 +6466,12 @@ function Explorer({ home }: { home: string }) {
               onActivateOther={(entry) => activate(curDir, entry)}
               onMenu={(e, entry) => entryMenu(e, entry)}
               onFilesChanged={refresh}
+            />
+          ) : view === "music" ? (
+            <MusicView
+              key={`${curDir}:${musicReloadKey}`}
+              root={curDir}
+              onUpdateTags={updateMusicDataIn}
             />
           ) : view === "library" ? (
             <LibraryShelf

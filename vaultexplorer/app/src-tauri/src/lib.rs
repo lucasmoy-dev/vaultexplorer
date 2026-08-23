@@ -22,9 +22,18 @@ mod filemanager1;
 mod freeze;
 mod git;
 mod git_sync;
-#[cfg(desktop)]
+// Folder sync is a phone feature as much as a desktop one -- syncing a
+// folder with Drive is the whole reason it exists on a phone -- so it is
+// *not* desktop-gated.
 mod folder_sync;
+#[cfg(desktop)]
 mod fs_watch;
+// Android gets a stub with the same shape, aliased to the same name so the
+// command list stays one list; see fs_watch_stub.rs.
+#[cfg(not(desktop))]
+mod fs_watch_stub;
+#[cfg(not(desktop))]
+use fs_watch_stub as fs_watch;
 #[cfg(desktop)]
 mod local_sync;
 mod info;
@@ -48,6 +57,7 @@ mod verify;
 mod terminal;
 mod cast;
 mod mediaserver;
+mod music;
 mod musicorg;
 mod ytstreams;
 mod webfind;
@@ -1860,6 +1870,10 @@ pub fn run() {
             webfind::download_web_result,
             mediaserver::media_url,
             musicorg::organize_music,
+            music::music_library,
+            music::music_played,
+            music::music_art,
+            music::update_music_tags,
             ytstreams::youtube_streams,
             ytstreams::download_stream,
             mp3::audio_to_mp3,

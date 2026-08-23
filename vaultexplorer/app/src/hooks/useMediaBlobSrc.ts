@@ -21,6 +21,12 @@ export function useMediaBlobSrc(src: string): string {
     setResolved(src);
     (async () => {
       if (!(await isMobilePlatformCached())) return;
+      // Only the asset:// protocol has the stall described above. The local
+      // media server (see mediaserver.rs) answers byte ranges properly over
+      // plain HTTP, and buffering a whole file through it would cost a
+      // 10MB round trip per track -- which on a music queue is a pause
+      // between every song.
+      if (src.startsWith("http://127.0.0.1") || src.startsWith("http://localhost")) return;
       try {
         const res = await fetch(src);
         if (!res.ok) return;

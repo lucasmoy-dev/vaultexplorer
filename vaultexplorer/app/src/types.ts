@@ -12,7 +12,7 @@ export type Loc = { kind: "fs"; path: string } | { kind: "vault"; root: string; 
 export type Clipboard =
   | { paths: string[]; mode: "copy" | "cut"; kind: Loc["kind"]; root?: string }
   | null;
-export type View = "icon" | "list" | "column" | "listPreview" | "notes" | "contacts" | "library";
+export type View = "icon" | "list" | "column" | "listPreview" | "notes" | "contacts" | "library" | "music";
 export type ProgressOp = {
   id: number;
   label: string;

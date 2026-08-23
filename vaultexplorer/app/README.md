@@ -25,6 +25,10 @@ React).
   lost.
 - **Secure delete**: real overwrite-based shredding, not just unlink.
 - **Freeze**: mark a folder read-only at the filesystem level.
+- **Music**: a folder of audio read as songs -- tags, folders, play counts,
+  a queue that advances on its own, cover art, and "fill in the missing tags
+  from the internet" (MusicBrainz + the Cover Art Archive). See
+  [Music view](#music-view).
 - **Extras**: inline text/markdown editor, audio transcription, image/video
   tools, git status in the sidebar, terminal integration (desktop).
 - **Mobile (Android)**: full vault browsing/encryption, in-app text editor,
@@ -60,6 +64,33 @@ Building from source drops its own installer/APK where noted (below); a
 local `releases/` folder (already gitignored) is a convenient place to keep
 the latest one handy without it ending up in git history.
 
+## Verifying
+
+```bash
+# Rust: vaults, sync journals, naming, the music library and tag writing
+cd app/src-tauri && cargo test --release
+
+# Live (network): MusicBrainz identifies a recording and the Cover Art
+# Archive has its cover
+cargo test --release -- --ignored --nocapture musicbrainz_and
+
+# The Music view's own rules (queue advance, ordering, folder counts), which
+# are pure functions for exactly this reason
+cd ../.. && npx tsc app/src/musicQueue.ts --outDir /tmp/mq --module esnext \
+  --target es2022 --moduleResolution bundler --skipLibCheck \
+  && cp app/src/musicQueue.spec.mjs /tmp/mq/ \
+  && echo '{"type":"module"}' > /tmp/mq/package.json \
+  && node /tmp/mq/musicQueue.spec.mjs
+
+# Types and the production bundle
+cd app && npx tsc --noEmit && npx vite build
+```
+
+One known failure that is about this machine rather than the code:
+`syncthing::tests::device_and_folder_pairing_syncs_a_real_file` expects
+`syncthing generate` to write a `tcp://` listen address, and the Debian
+build installed here writes `default` instead.
+
 ## Building from source
 
 Desktop (Linux):
@@ -84,6 +115,52 @@ Requires the Android SDK/NDK set up for Tauri mobile (see the
 [Tauri mobile prerequisites](https://v2.tauri.app/start/prerequisites/#android)).
 Produces an `.apk` under
 `src-tauri/gen/android/app/build/outputs/apk/`.
+
+## Music view
+
+Pick **Music** in the view switcher and the current folder stops being a list
+of files and becomes a library: titles and artists from the tags (file names
+where there are none), the sub-folders that contain audio as a switcher
+across the top, "Reproducir todo", and "Más escuchadas" -- which is a real
+play count, kept in the app's own data (`src-tauri/src/music.rs`) rather than
+in browser storage, because a library outlives a WebView's idea of local
+storage.
+
+Three things it does deliberately, each of them a bug report against the
+player this replaced:
+
+- **The queue advances by itself.** A media element handed a new `src` loads
+  it and *waits* -- so the queue remembers that it was playing and calls
+  `play()` on the next track rather than assuming the element will. That is
+  the difference between "it stops after every song" and an album playing
+  through with the phone in a pocket.
+- **The list does not jump.** One `<audio>` element for the whole session,
+  above the list; changing track changes its `src` and nothing else. The list
+  is never rebuilt or scrolled on a track change, so the scroll position
+  stays where it was left.
+- **One set of controls.** No `controls` attribute -- letting the WebView draw
+  its own transport on top of the app's is where a duplicate next button
+  comes from. The controls people expect *outside* the app (the notification,
+  the lock screen, headset buttons) come from the Media Session API, wired to
+  this same queue, so the system's next button moves this player rather than
+  being a second one.
+
+**Actualizar datos** (in the Music toolbar) is the tag filler: it identifies
+each track on MusicBrainz and writes back what the file was missing --
+title, artist, album, year, track number and the album cover from the Cover
+Art Archive -- and moves nothing. Fields that are already set are left alone;
+a track it cannot identify is left exactly as it was. It is the counterpart
+to **Reorganize Music**, which moves files into `Artist/Year - Album` and
+leaves their tags alone.
+
+Two things learned the hard way there, both now asserted by tests: asking
+MusicBrainz for a famous song returns ten bootleg live recordings before the
+studio one (so candidates are ranked, and live/video/demo variants are
+penalised), and the year worth writing is the release *group's* first release
+date -- otherwise a 2021 anniversary pressing makes a 1991 song look like a
+2021 one. MusicBrainz also answers "server busy" with a 200 and a JSON error
+field, which used to read as "no match"; it is now reported as what it is,
+and the walk stops instead of hammering a service that just asked it not to.
 
 ## Mobile scope
 

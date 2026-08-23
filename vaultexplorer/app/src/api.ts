@@ -175,6 +175,13 @@ export const api = {
   internetRoot: () => invoke<string>("internet_root"),
   organizeMusic: (root: string, channel: Channel<ProgressEvent>) =>
     invoke<OrganizedTrack[]>("organize_music", { root, channel }),
+  // Music view: the library, play counts, cover art, and filling in tags
+  // from MusicBrainz (see src-tauri/src/music.rs).
+  musicLibrary: (root: string) => invoke<MusicTrack[]>("music_library", { root }),
+  musicPlayed: (path: string) => invoke<number>("music_played", { path }),
+  musicArt: (path: string) => invoke<string | null>("music_art", { path }),
+  updateMusicTags: (root: string, channel: Channel<ProgressEvent>) =>
+    invoke<TagUpdate[]>("update_music_tags", { root, channel }),
   youtubeStreams: (pageUrl: string) => invoke<YoutubeStreams>("youtube_streams", { pageUrl }),
   downloadStream: (url: string, destDir: string, filename: string, channel: Channel<ProgressEvent>) =>
     invoke<void>("download_stream", { url, destDir, filename, channel }),
@@ -640,6 +647,36 @@ export interface LargeFilesEvent {
   files: LargeFile[];
   scanned: number;
   done: boolean;
+}
+
+/** One playable file, as the Music view sees it. */
+export interface MusicTrack {
+  path: string;
+  name: string;
+  /** Folder relative to the scanned root; "" is the root itself. */
+  folder: string;
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  year: number | null;
+  track_no: number | null;
+  duration_secs: number | null;
+  has_art: boolean;
+  plays: number;
+}
+
+/** What "Update song data" did to one file. */
+export interface TagUpdate {
+  path: string;
+  name: string;
+  /** Fields that were filled in, in the words shown to the user. */
+  changed: string[];
+  /** Why nothing changed, when nothing did. */
+  skipped: string | null;
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  year: number | null;
 }
 
 export interface OrganizedTrack {
