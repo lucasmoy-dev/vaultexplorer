@@ -32,6 +32,8 @@ public class Harness {
         // The nasty cases, since this is the app's promise.
         System.out.println("SLASHES  " + n.fileName("AC/DC: Back In Black? \"live\"", "mp3"));
         System.out.println("EMPTY    " + n.fileName("   ", "mp3"));
+        // The same report the app's "Diagnóstico" button produces.
+        System.out.println("DIAGNOSE " + n.diagnose(id));
         System.out.println("OK");
     }
 

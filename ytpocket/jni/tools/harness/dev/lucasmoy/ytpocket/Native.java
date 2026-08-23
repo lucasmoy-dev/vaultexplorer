@@ -11,6 +11,7 @@ public final class Native {
     public static final Native INSTANCE = new Native();
 
     public native void initCache(String dir);
+    public native String diagnose(String video);
     public native String search(String query, int limit);
     public native String resolve(String video);
     public native String fileName(String title, String ext);

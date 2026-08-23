@@ -8,6 +8,7 @@
 //! there is no ffmpeg to shell out to.
 pub mod bridge;
 pub mod download;
+pub mod innertube;
 pub mod mp3;
 pub mod naming;
 pub mod youtube;

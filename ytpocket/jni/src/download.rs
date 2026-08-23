@@ -29,7 +29,7 @@ use std::time::Duration;
 /// One client for the whole process: connection reuse is most of why the
 /// chunked download is fast, and building a client per chunk would throw
 /// that away (plus a fresh TLS handshake each time).
-fn http() -> Result<&'static reqwest::blocking::Client, String> {
+pub(crate) fn http() -> Result<&'static reqwest::blocking::Client, String> {
     static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {

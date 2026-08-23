@@ -46,6 +46,22 @@ fn text(env: &mut JNIEnv, value: &JString) -> Result<String, String> {
     env.get_string(value).map(|s| s.into()).map_err(|e| e.to_string())
 }
 
+/// Per-client report: what resolved, what would actually download. Exists so
+/// a failure on a phone the author cannot reach becomes a fact instead of a
+/// guess.
+#[no_mangle]
+pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_diagnose(
+    mut env: JNIEnv,
+    _class: JClass,
+    video: JString,
+) -> jstring {
+    let video = match text(&mut env, &video) {
+        Ok(value) => value,
+        Err(error) => return respond(&mut env, Err(error)),
+    };
+    guarded(&mut env, || Ok(youtube::diagnose(&video)))
+}
+
 /// Tell the native side where it may write.
 ///
 /// Not optional: rustypipe's cache defaults to the process's working

@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
         var results by remember { mutableStateOf<List<Native.Hit>>(emptyList()) }
         var searching by remember { mutableStateOf(false) }
         var message by remember { mutableStateOf("") }
+        var report by remember { mutableStateOf("") }
         val progress by DownloadService.current.collectAsState()
         val lastResult by DownloadService.last.collectAsState()
 
@@ -170,6 +171,57 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                     )
+
+                    // Diagnostics: which YouTube client works from *this*
+                    // network. A 403 depends on where the phone is, so this is
+                    // the only way to tell what is actually happening on a
+                    // device the author cannot reach.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(
+                            enabled = !searching,
+                            onClick = {
+                                val target = query.trim().ifEmpty { results.firstOrNull()?.id.orEmpty() }
+                                if (target.isEmpty()) {
+                                    message = getString(R.string.diag_need_target)
+                                    return@TextButton
+                                }
+                                report = getString(R.string.diag_running)
+                                lifecycleScope.launch {
+                                    val outcome = withContext(Dispatchers.IO) {
+                                        runCatching { Native.diagnostics(target) }
+                                    }
+                                    report = outcome.getOrElse { "error: ${it.message}" }
+                                }
+                            },
+                        ) { Text(stringResource(R.string.action_diagnose)) }
+                        if (report.isNotEmpty()) {
+                            TextButton(onClick = {
+                                startActivity(
+                                    Intent.createChooser(
+                                        Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, report)
+                                        },
+                                        getString(R.string.action_share_report),
+                                    )
+                                )
+                            }) { Text(stringResource(R.string.action_share_report)) }
+                        }
+                    }
+                    if (report.isNotEmpty()) {
+                        androidx.compose.foundation.text.selection.SelectionContainer {
+                            Text(
+                                report,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 6.dp),
+                            )
+                        }
+                    }
 
                     if (searching) {
                         Row(

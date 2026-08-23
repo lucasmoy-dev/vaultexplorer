@@ -12,6 +12,10 @@
     <string name="action_mp3">MP3</string>
     <string name="action_mp4">MP4</string>
     <string name="action_open">Abrir</string>
+    <string name="action_diagnose">Diagnóstico</string>
+    <string name="action_share_report">Compartir informe</string>
+    <string name="diag_running">Comprobando cada cliente de YouTube…</string>
+    <string name="diag_need_target">Escribe una búsqueda o pega un enlace primero.</string>
 
     <string name="channel_downloads">Descargas en curso</string>
     <string name="channel_finished">Descargas terminadas</string>

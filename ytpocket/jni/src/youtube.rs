@@ -196,8 +196,17 @@ pub fn video_id_of(text: &str) -> Option<String> {
     (!last.is_empty() && last.len() <= 24).then(|| last.to_string())
 }
 
-/// Clients to try, in order, until one returns streams that actually serve
-/// bytes.
+/// The clients that need no PO token, spoken to directly (see
+/// `innertube.rs`). Tried first, because these are the ones that keep
+/// working on a network where YouTube enforces the token -- which is exactly
+/// where 0.1.1 and 0.1.2 failed with 403.
+const DIRECT_CLIENTS: &[crate::innertube::Client] = &[crate::innertube::VISIONOS];
+
+/// rustypipe's clients, as a fallback for when the direct ones fail.
+///
+/// Every one of these is on yt-dlp's "PO token required for streams" list, so
+/// they may resolve and then be refused -- which is why nothing here is
+/// returned without probing it first.
 ///
 /// **Desktop, DesktopMusic and Mobile are deliberately absent.** Since
 /// August 2024 YouTube requires a PO token for streams from its web-based
@@ -220,6 +229,17 @@ const CLIENT_ATTEMPTS: usize = 2;
 
 pub fn resolve(video: &str) -> Result<Resolved, String> {
     let id = video_id_of(video).ok_or("eso no parece un vídeo de YouTube")?;
+    let mut refusals = Vec::new();
+
+    // The token-free clients first. If one of these works, YouTube's PO
+    // token enforcement cannot touch this download at all.
+    for client in DIRECT_CLIENTS {
+        match resolve_direct(*client, &id) {
+            Ok(resolved) => return Ok(resolved),
+            Err(error) => refusals.push(error),
+        }
+    }
+
     let runtime = runtime()?;
     let pipe = client()?;
     let mut last_error = String::new();
@@ -260,6 +280,7 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
             Some(Err(error)) => {
                 refused = refused || error.contains("403");
                 last_error = format!("{client:?}: {error}");
+                refusals.push(last_error.clone());
             }
             None => last_error = format!("el cliente {client:?} no devolvió audio"),
         }
@@ -268,12 +289,13 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
         // Separate messages because the fixes are different: a refusal is
         // YouTube saying no to this network or this app, while everything
         // else is usually a transient failure worth retrying.
+        let detail = refusals.join(" | ");
         return Err(if refused {
             format!(
-                "YouTube rechazó la descarga de este vídeo desde esta red (403).                  Prueba con otro vídeo o vuelve a intentarlo más tarde. [{last_error}]"
+                "YouTube rechazó la descarga desde esta red (403). Pulsa «Diagnóstico» para ver qué cliente falla. [{detail}]"
             )
         } else {
-            format!("no se pudieron obtener los streams ({last_error})")
+            format!("no se pudieron obtener los streams ({detail})")
         });
     };
 
@@ -318,6 +340,121 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
         client: format!("{used_client:?}").to_lowercase(),
         user_agent,
     })
+}
+
+
+/// Resolve through a direct (token-free) client, probing before returning.
+fn resolve_direct(client: crate::innertube::Client, id: &str) -> Result<Resolved, String> {
+    let player = crate::innertube::player(client, id)?;
+    if player.is_live {
+        return Err(format!(
+            "{}: es un directo, y YouTube no sirve archivos descargables para directos",
+            client.label
+        ));
+    }
+    let audio = player
+        .best_audio()
+        .ok_or_else(|| format!("{}: sin pista de audio", client.label))?;
+    // Same rule as everywhere else: a URL that will not serve bytes must
+    // never reach the user as though it would.
+    crate::download::probe(&audio.url, client.user_agent)
+        .map_err(|e| format!("{}: {e}", client.label))?;
+
+    Ok(Resolved {
+        id: id.to_string(),
+        title: player.title.clone(),
+        channel: player.channel.clone(),
+        duration: player.duration,
+        audio: Some(Stream {
+            // Audio in an MP4 container is an .m4a as far as every player and
+            // file manager is concerned.
+            ext: if audio.codec.starts_with("mp4a") {
+                "m4a".to_string()
+            } else {
+                container_of(&audio.mime, "webm")
+            },
+            url: audio.url.clone(),
+            codec: audio.codec.clone(),
+            bitrate: audio.bitrate,
+            height: 0,
+            size: audio.size,
+        }),
+        video: player.best_video().map(|video| Stream {
+            url: video.url.clone(),
+            ext: container_of(&video.mime, "mp4"),
+            codec: video.codec.clone(),
+            bitrate: video.bitrate,
+            height: video.height,
+            size: video.size,
+        }),
+        client: client.label.to_string(),
+        user_agent: client.user_agent.to_string(),
+    })
+}
+
+/// Try every client and report exactly what each one did, as JSON.
+///
+/// This exists because the failure that mattered most could not be reproduced
+/// by its author: downloads worked from one network and were refused with 403
+/// on a phone. Guessing across that gap is expensive; a button that answers
+/// "visionos: ok, ios: 403" turns it into a fact.
+pub fn diagnose(video: &str) -> String {
+    let Some(id) = video_id_of(video) else {
+        return serde_json::json!([{ "client": "-", "resolve": "no es un vídeo de YouTube" }])
+            .to_string();
+    };
+    let mut report = Vec::new();
+
+    for client in DIRECT_CLIENTS {
+        report.push(match crate::innertube::player(*client, &id) {
+            Ok(player) => match player.best_audio() {
+                Some(audio) => match crate::download::probe(&audio.url, client.user_agent) {
+                    Ok(()) => serde_json::json!({
+                        "client": client.label, "resolve": "ok", "download": "ok",
+                        "codec": audio.codec, "kbps": audio.bitrate / 1000,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "client": client.label, "resolve": "ok", "download": error,
+                    }),
+                },
+                None => serde_json::json!({
+                    "client": client.label, "resolve": "ok", "download": "sin audio",
+                }),
+            },
+            Err(error) => serde_json::json!({ "client": client.label, "resolve": error }),
+        });
+    }
+
+    if let (Ok(runtime), Ok(pipe)) = (runtime(), client()) {
+        for client in CLIENTS {
+            let label = format!("{client:?}").to_lowercase();
+            report.push(
+                match runtime.block_on(async { pipe.query().player_from_client(&id, *client).await })
+                {
+                    Ok(player) => {
+                        let user_agent = pipe.query().user_agent(*client).to_string();
+                        match player.audio_streams.iter().max_by_key(|s| s.bitrate) {
+                            Some(audio) => match crate::download::probe(&audio.url, &user_agent) {
+                                Ok(()) => serde_json::json!({
+                                    "client": label, "resolve": "ok", "download": "ok",
+                                    "kbps": audio.bitrate / 1000,
+                                }),
+                                Err(error) => serde_json::json!({
+                                    "client": label, "resolve": "ok", "download": error,
+                                }),
+                            },
+                            None => serde_json::json!({
+                                "client": label, "resolve": "ok", "download": "sin audio",
+                            }),
+                        }
+                    }
+                    Err(error) => serde_json::json!({ "client": label, "resolve": error.to_string() }),
+                },
+            );
+        }
+    }
+
+    serde_json::Value::Array(report).to_string()
 }
 
 #[cfg(test)]

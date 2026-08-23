@@ -44,15 +44,23 @@ app; tapping the finished notification opens the file.
   read as one sequential stream timed out at 30s; the same file fetched as
   4MB `Range` chunks arrives in about two seconds. Both the app and the
   end-to-end test fetch in chunks for that reason.
-- **403 Forbidden, the interesting one.** 0.1.1 downloaded fine from a
-  laptop and was refused on a phone. Two causes, both now handled:
-  - Since August 2024 YouTube requires a **PO token** for streams from its
-    *web* clients (Desktop, Mobile) — the resolve succeeds and the download
-    is then refused with 403. Generating one needs a simulated browser
-    (rustypipe delegates it to a separate CLI binary), which a phone app
-    cannot carry, so those clients are no longer allowed to mint download
-    URLs at all. Only iOS, TV and Android are, and iOS is preferred because
-    it needs neither a token nor signature deobfuscation.
+- **403 Forbidden, the interesting one.** 0.1.1 and 0.1.2 downloaded fine
+  from a laptop and were refused on a phone. Causes, in the order they were
+  found:
+  - **PO tokens.** YouTube requires a "proof of origin" token for stream
+    URLs from most of its clients, and *enforces it per network* — which is
+    why the same build worked here and failed there. yt-dlp's client table
+    (the best-maintained source for this) currently marks the token as
+    required for `web`, `mweb`, `web_safari`, `android` **and `ios`**. Only
+    four clients need none: `tv`, `tv_downgraded`, `web_embedded` and
+    `visionos` — and of those, only **`visionos`** also needs no JavaScript
+    player, i.e. its stream URLs arrive ready to use with no signature
+    deobfuscation. So this app talks to `visionos` directly (see
+    `jni/src/innertube.rs`, a hand-rolled Innertube player request) and keeps
+    rustypipe's clients only as probed fallbacks. Generating a token is the
+    other way out and is not available on-device without running BotGuard in
+    a WebView, which is a possible future addition rather than a dependency
+    this carries today.
   - A googlevideo URL is minted **for the client that asked for it**, so
     downloading with a different HTTP stack (Kotlin's `HttpURLConnection`,
     with its own headers, TLS and possibly a different IP family) can be
@@ -75,12 +83,20 @@ app; tapping the finished notification opens the file.
   complete, so no music player indexes a half download.
 - **Livestreams** have no file to download; their buttons are disabled and
   the row says so, instead of failing three steps later.
+- **A "Diagnóstico" button**, because a 403 depends on the network the phone
+  is on and cannot be reproduced from a laptop. It asks every client in turn
+  and reports what each one did — `[{"client":"visionos","resolve":"ok",
+  "download":"ok"},{"client":"ios","download":"YouTube rechazó (403)"},…]` —
+  with a share button, so a failure somewhere else becomes a fact rather than
+  a guessing game.
 
 ## Layout
 
 ```
-jni/    Rust: YouTube search + stream resolution (rustypipe), filename rules,
-        AAC -> MP3 (symphonia + LAME). One .so, no C++ runtime needed.
+jni/    Rust: YouTube search (rustypipe), stream resolution (a direct
+        Innertube client for the token-free `visionos`, rustypipe as
+        fallback), the download itself, filename rules, and AAC -> MP3
+        (symphonia + LAME). One .so, no C++ runtime needed.
 app/    Kotlin + Compose: one screen, a foreground service for downloads,
         MediaMuxer, MediaStore, and the in-app updater.
 ```

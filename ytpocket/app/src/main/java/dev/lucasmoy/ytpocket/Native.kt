@@ -37,6 +37,7 @@ object Native {
     }
 
     private external fun initCache(dir: String)
+    private external fun diagnose(video: String): String?
     private external fun search(query: String, limit: Int): String?
     private external fun resolve(video: String): String?
     private external fun fileName(title: String, ext: String): String?
@@ -143,6 +144,19 @@ object Native {
             client = obj.optString("client"),
             userAgent = obj.optString("user_agent"),
         )
+    }
+
+    /**
+     * What every YouTube client says about this video, as JSON: whether it
+     * resolved, and whether its stream would actually serve bytes.
+     *
+     * Here because a 403 depends on the network you are on, and the author of
+     * this app cannot reach yours. Sharing this output turns "it fails" into
+     * "visionos: ok, ios: 403".
+     */
+    fun diagnostics(video: String): String {
+        requireLibrary()
+        return diagnose(video) ?: "sin respuesta"
     }
 
     /** Total bytes of a stream, or 0 when the server won't say. */
