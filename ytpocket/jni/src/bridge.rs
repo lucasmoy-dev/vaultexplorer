@@ -95,6 +95,25 @@ pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_search(
     })
 }
 
+/// The next page of the search already running. Empty when YouTube has no
+/// more to give, which is how the list knows to stop asking.
+#[no_mangle]
+pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_searchMore(
+    mut env: JNIEnv,
+    _class: JClass,
+    query: JString,
+    limit: jni::sys::jint,
+) -> jstring {
+    let query = match text(&mut env, &query) {
+        Ok(value) => value,
+        Err(error) => return respond(&mut env, Err(error)),
+    };
+    guarded(&mut env, || {
+        let hits = youtube::search_more(&query, limit.max(1) as usize)?;
+        serde_json::to_string(&hits).map_err(|e| e.to_string())
+    })
+}
+
 #[no_mangle]
 pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_resolve(
     mut env: JNIEnv,

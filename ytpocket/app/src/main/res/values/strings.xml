@@ -49,4 +49,7 @@
     <string name="action_install_update">Actualizar a %1$s</string>
     <string name="action_releases">Ver releases</string>
     <string name="action_downloading">Descargando… %1$d%%</string>
+    <string name="action_tools">Opciones</string>
+    <string name="action_close">Cerrar</string>
+    <string name="no_more_results">No hay más resultados</string>
 </resources>

@@ -17,6 +17,7 @@
 //!    default order retry through the broken ones on every call.
 
 use rustypipe::client::{ClientType, RustyPipe};
+use rustypipe::model::paginator::Paginator;
 use rustypipe::model::{AudioCodec, VideoCodec, VideoItem};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -145,20 +146,8 @@ fn thumbnail_of(item: &VideoItem) -> String {
         .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", item.id))
 }
 
-pub fn search(query: &str, limit: usize) -> Result<Vec<SearchHit>, String> {
-    let query = query.trim();
-    if query.is_empty() {
-        return Ok(Vec::new());
-    }
-    let runtime = runtime()?;
-    let pipe = client()?;
-    let results = runtime
-        .block_on(async { pipe.query().search::<VideoItem, _>(query).await })
-        .map_err(|e| format!("la búsqueda falló: {e}"))?;
-
-    Ok(results
-        .items
-        .items
+fn hits_of(items: Vec<VideoItem>, limit: usize) -> Vec<SearchHit> {
+    items
         .into_iter()
         .take(limit)
         .map(|item| SearchHit {
@@ -170,7 +159,68 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<SearchHit>, String> {
             views: item.view_count,
             published: item.publish_date_txt,
         })
-        .collect())
+        .collect()
+}
+
+/// Where the current search left off, so scrolling to the bottom can ask for
+/// the next page.
+///
+/// A YouTube search is a cursor, not a list: the continuation token is only
+/// valid for the search that produced it (and carries its own visitor data),
+/// so it cannot be rebuilt from the query string. One slot is enough -- the
+/// UI has one search at a time -- and the query is kept alongside it so a
+/// stale "load more" after a new search is ignored rather than mixing two
+/// result sets.
+static PAGE: Mutex<Option<(String, Paginator<VideoItem>)>> = Mutex::new(None);
+
+pub fn search(query: &str, limit: usize) -> Result<Vec<SearchHit>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let runtime = runtime()?;
+    let pipe = client()?;
+    let results = runtime
+        .block_on(async { pipe.query().search::<VideoItem, _>(query).await })
+        .map_err(|e| format!("la búsqueda falló: {e}"))?;
+
+    let paginator = results.items;
+    let hits = hits_of(paginator.items.clone(), limit);
+    *PAGE.lock().unwrap_or_else(|e| e.into_inner()) = Some((query.to_string(), paginator));
+    Ok(hits)
+}
+
+/// The next page of the search `query` returned, or an empty list once
+/// YouTube stops offering one.
+pub fn search_more(query: &str, limit: usize) -> Result<Vec<SearchHit>, String> {
+    let query = query.trim();
+    let runtime = runtime()?;
+    let pipe = client()?;
+
+    // Taken out of the slot for the duration of the request: an await while
+    // holding the lock would block a second scroll, and the paginator is
+    // replaced by its successor anyway.
+    let current = {
+        let mut slot = PAGE.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.take() {
+            Some((cached, paginator)) if cached == query => paginator,
+            // A different search is in the box now, or there was never one:
+            // nothing to continue.
+            other => {
+                *slot = other;
+                return Ok(Vec::new());
+            }
+        }
+    };
+
+    let next = runtime
+        .block_on(async { current.next(pipe.query()).await })
+        .map_err(|e| format!("no se pudieron cargar más resultados: {e}"))?;
+
+    let Some(next) = next else { return Ok(Vec::new()) };
+    let hits = hits_of(next.items.clone(), limit);
+    *PAGE.lock().unwrap_or_else(|e| e.into_inner()) = Some((query.to_string(), next));
+    Ok(hits)
 }
 
 /// Accepts a bare video id or any watch/share URL, since a link pasted from
@@ -552,5 +602,28 @@ mod tests {
         // AVC, so Android's muxer and every device decoder can handle it.
         assert_eq!(video.codec, "avc1", "expected H.264, got {}", video.codec);
         assert_eq!(video.ext, "mp4");
+    }
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    /// Live: a second page arrives, and it is not the first page again.
+    /// `#[ignore]`d (network).
+    #[test]
+    #[ignore]
+    fn scrolling_asks_youtube_for_more_results() {
+        let first = super::search("lofi", 20).expect("search");
+        assert!(first.len() > 5, "only {} results", first.len());
+        let second = super::search_more("lofi", 20).expect("more");
+        assert!(!second.is_empty(), "no second page");
+
+        let first_ids: std::collections::HashSet<_> = first.iter().map(|h| &h.id).collect();
+        let repeats = second.iter().filter(|h| first_ids.contains(&h.id)).count();
+        println!("page 1: {}, page 2: {}, repeated: {repeats}", first.len(), second.len());
+        assert!(repeats * 2 < second.len(), "the second page is mostly the first one again");
+
+        // A "load more" belonging to a search that is no longer on screen is
+        // ignored rather than answered with the wrong results.
+        assert!(super::search_more("something else entirely", 20).expect("stale").is_empty());
     }
 }

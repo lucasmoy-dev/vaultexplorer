@@ -20,6 +20,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -78,6 +81,14 @@ class MainActivity : ComponentActivity() {
         var searching by remember { mutableStateOf(false) }
         var message by remember { mutableStateOf("") }
         var report by remember { mutableStateOf("") }
+        // Paging state. `exhausted` matters: YouTube stops offering a
+        // continuation eventually, and without it the list would ask for the
+        // next page on every scroll for the rest of the session.
+        var loadingMore by remember { mutableStateOf(false) }
+        var exhausted by remember { mutableStateOf(false) }
+        var searched by remember { mutableStateOf("") }
+        var showTools by remember { mutableStateOf(false) }
+        val listState = androidx.compose.foundation.lazy.rememberLazyListState()
         val progress by DownloadService.current.collectAsState()
         val lastResult by DownloadService.last.collectAsState()
 
@@ -107,6 +118,8 @@ class MainActivity : ComponentActivity() {
             val text = query.trim()
             if (text.isEmpty()) return
             searching = true
+            exhausted = false
+            searched = text
             message = ""
             lifecycleScope.launch {
                 val outcome = withContext(Dispatchers.IO) {
@@ -143,6 +156,44 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        fun loadMore() {
+            if (loadingMore || exhausted || searching) return
+            loadingMore = true
+            lifecycleScope.launch {
+                val outcome = withContext(Dispatchers.IO) {
+                    runCatching { Native.moreVideos(searched) }
+                }
+                loadingMore = false
+                outcome.fold(
+                    onSuccess = { more ->
+                        // Empty means YouTube has no continuation left, not
+                        // that something went wrong.
+                        if (more.isEmpty()) exhausted = true
+                        else results = results + more.filter { fresh ->
+                            // YouTube does repeat itself across pages
+                            // occasionally, and a duplicate key crashes a
+                            // LazyColumn.
+                            results.none { it.id == fresh.id }
+                        }
+                    },
+                    onFailure = {
+                        exhausted = true
+                        message = getString(R.string.search_failed, it.message ?: "")
+                    },
+                )
+            }
+        }
+
+        // Ask for the next page shortly before the bottom, so scrolling never
+        // stops on an empty screen.
+        LaunchedEffect(listState, searched) {
+            snapshotFlow {
+                listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            }.collect { lastVisible ->
+                if (results.isNotEmpty() && lastVisible >= results.size - 4) loadMore()
+            }
+        }
+
         MaterialTheme {
             Surface(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp)) {
@@ -156,14 +207,13 @@ class MainActivity : ComponentActivity() {
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.weight(1f),
                         )
-                        // On screen on purpose: three bug reports in a row were
-                        // about versions that had already been fixed, and there
-                        // was no way to tell from the app which one was running.
-                        Text(
-                            "v${BuildConfig.VERSION_NAME}",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        // Everything that is not "find a video and get the
+                        // file" lives behind this: the results list now pages
+                        // forever, so the bottom of the screen belongs to
+                        // results and nothing else.
+                        TextButton(onClick = { showTools = true }) {
+                            Text(stringResource(R.string.action_tools))
+                        }
                     }
 
                     OutlinedTextField(
@@ -184,57 +234,6 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                     )
-
-                    // Diagnostics: which YouTube client works from *this*
-                    // network. A 403 depends on where the phone is, so this is
-                    // the only way to tell what is actually happening on a
-                    // device the author cannot reach.
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        TextButton(
-                            enabled = !searching,
-                            onClick = {
-                                val target = query.trim().ifEmpty { results.firstOrNull()?.id.orEmpty() }
-                                if (target.isEmpty()) {
-                                    message = getString(R.string.diag_need_target)
-                                    return@TextButton
-                                }
-                                report = getString(R.string.diag_running)
-                                lifecycleScope.launch {
-                                    val outcome = withContext(Dispatchers.IO) {
-                                        runCatching { Native.diagnostics(target) }
-                                    }
-                                    report = outcome.getOrElse { "error: ${it.message}" }
-                                }
-                            },
-                        ) { Text(stringResource(R.string.action_diagnose)) }
-                        if (report.isNotEmpty()) {
-                            TextButton(onClick = {
-                                startActivity(
-                                    Intent.createChooser(
-                                        Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_TEXT, report)
-                                        },
-                                        getString(R.string.action_share_report),
-                                    )
-                                )
-                            }) { Text(stringResource(R.string.action_share_report)) }
-                        }
-                    }
-                    if (report.isNotEmpty()) {
-                        androidx.compose.foundation.text.selection.SelectionContainer {
-                            Text(
-                                report,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(bottom = 6.dp),
-                            )
-                        }
-                    }
 
                     if (searching) {
                         Row(
@@ -315,13 +314,141 @@ class MainActivity : ComponentActivity() {
                     }
 
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(results, key = { it.id }) { hit -> ResultRow(hit) }
-                        item { UpdateSection() }
+                        if (loadingMore) {
+                            item {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                ) { CircularProgressIndicator(modifier = Modifier.size(20.dp)) }
+                            }
+                        }
+                        if (exhausted && results.isNotEmpty()) {
+                            item {
+                                Text(
+                                    stringResource(R.string.no_more_results),
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                )
+                            }
+                        }
                     }
                 }
+
+                if (showTools) {
+                    ToolsSheet(
+                        report = report,
+                        onReport = { report = it },
+                        target = { query.trim().ifEmpty { results.firstOrNull()?.id.orEmpty() } },
+                        onClose = { showTools = false },
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Diagnostics and updates, on their own screen.
+     *
+     * They used to sit under the results list, which stopped working the
+     * moment the list started paging: there is no "under" a list that keeps
+     * growing.
+     */
+    @Composable
+    private fun ToolsSheet(
+        report: String,
+        onReport: (String) -> Unit,
+        target: () -> String,
+        onClose: () -> Unit,
+    ) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        stringResource(R.string.action_tools),
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onClose) { Text(stringResource(R.string.action_close)) }
+                }
+                // On screen on purpose: three bug reports in a row were about
+                // versions that had already been fixed, and there was no way
+                // to tell from the app which one was running.
+                Text(
+                    stringResource(R.string.update_current, BuildConfig.VERSION_NAME),
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 10.dp),
+                )
+                    // Diagnostics: which YouTube client works from *this*
+                // network. A 403 depends on where the phone is, so this is
+                // the only way to tell what is actually happening on a
+                // device the author cannot reach.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    var running by remember { mutableStateOf(false) }
+                    TextButton(
+                        enabled = !running,
+                        onClick = {
+                            val target = target()
+                            if (target.isEmpty()) {
+                                onReport(getString(R.string.diag_need_target))
+                                return@TextButton
+                            }
+                            onReport(getString(R.string.diag_running))
+                            running = true
+                            lifecycleScope.launch {
+                                val outcome = withContext(Dispatchers.IO) {
+                                    runCatching { Native.diagnostics(target) }
+                                }
+                                running = false
+                                onReport(outcome.getOrElse { "error: ${it.message}" })
+                            }
+                        },
+                    ) { Text(stringResource(R.string.action_diagnose)) }
+                    if (report.isNotEmpty()) {
+                        TextButton(onClick = {
+                            startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, report)
+                                    },
+                                    getString(R.string.action_share_report),
+                                )
+                            )
+                        }) { Text(stringResource(R.string.action_share_report)) }
+                    }
+                }
+                if (report.isNotEmpty()) {
+                    androidx.compose.foundation.text.selection.SelectionContainer {
+                        Text(
+                            report,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 6.dp),
+                        )
+                    }
+                }
+                UpdateSection()
             }
         }
     }

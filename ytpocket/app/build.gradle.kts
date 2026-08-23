@@ -33,8 +33,8 @@ android {
         // and scoped storage as the only model worth targeting.
         minSdk = 29
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.1.6"
+        versionCode = 8
+        versionName = "0.1.7"
         // arm64 only: every phone worth running this on has been arm64 for
         // years, and a second ABI doubles build time and APK size.
         // A phone is arm64; an emulator is x86_64. Release ships arm64 only

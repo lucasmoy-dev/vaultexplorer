@@ -24,6 +24,10 @@ YouTube app — it lands in the search box). Then **MP3** or **MP4** on the
 result you want. The download runs in a notification, so you can leave the
 app; tapping the finished notification opens the file.
 
+Scrolling to the bottom of the results asks YouTube for the next page and
+keeps going. That is why diagnostics and updates live behind **Opciones**,
+top right: a list that never ends has no bottom to put them under.
+
 ## What is actually hard here, and how it's handled
 
 - **YouTube stopped serving progressive streams.** No client gets a file
@@ -118,6 +122,12 @@ app; tapping the finished notification opens the file.
   - Belt and braces: requests are tried as a `Range` header, then as
     `&range=` query parameters, then with a playback nonce, because
     googlevideo has served all three shapes over the years.
+- **Paging.** A YouTube search is a cursor, not a list: the continuation
+  token belongs to the search that produced it and carries its own visitor
+  data, so it cannot be rebuilt from the query string. It therefore lives on
+  the native side (`jni/src/youtube.rs`), keyed by query so a stale "load
+  more" from a search that is no longer on screen is ignored rather than
+  answered with the wrong results.
 - **Filenames.** The point of the app, so the rules live in Rust with tests
   (`jni/src/naming.rs`): `/ \ : * ? " < > |` become dashes ("AC/DC" reads
   "AC-DC", not "ACDC"), control characters and repeated whitespace collapse,
@@ -209,6 +219,9 @@ cargo test --release -- --ignored --nocapture a_visitor_id_is_what_makes
 # chunk loop the app uses. Short videos fit in one chunk, which is how a
 # mid-download refusal went unnoticed.
 cargo test --release -- --ignored --nocapture a_long_download
+
+# Live: a second page of results arrives, and is not the first page again
+cargo test --release -- --ignored --nocapture scrolling_asks
 
 # Live: the address invariant -- the URL is signed for the IP we call from,
 # and a fresh URL can continue a download the old one stopped serving. These

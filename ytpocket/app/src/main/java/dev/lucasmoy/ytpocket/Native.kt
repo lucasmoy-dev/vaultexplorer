@@ -39,6 +39,7 @@ object Native {
     private external fun initCache(dir: String)
     private external fun diagnose(video: String): String?
     private external fun search(query: String, limit: Int): String?
+    private external fun searchMore(query: String, limit: Int): String?
     private external fun resolve(video: String): String?
     private external fun fileName(title: String, ext: String): String?
     private external fun totalSize(url: String, userAgent: String): String?
@@ -110,9 +111,23 @@ object Native {
     )
 
     /** Search, or throw with the message the native side reported. */
-    fun searchVideos(query: String, limit: Int = 25): List<Hit> {
+    fun searchVideos(query: String, limit: Int = 25): List<Hit> =
+        hitsFrom(search(query, limit), "la búsqueda no devolvió nada")
+
+    /**
+     * The next page of the search already running, or an empty list when
+     * there is none.
+     *
+     * A YouTube search is a cursor: the continuation token belongs to the
+     * search that produced it and lives on the native side, so this takes the
+     * query only to confirm it is still the search on screen.
+     */
+    fun moreVideos(query: String, limit: Int = 25): List<Hit> =
+        hitsFrom(searchMore(query, limit), "la búsqueda no devolvió nada")
+
+    private fun hitsFrom(raw: String?, missing: String): List<Hit> {
         requireLibrary()
-        val raw = search(query, limit) ?: throw IllegalStateException("la búsqueda no devolvió nada")
+        val raw = raw ?: throw IllegalStateException(missing)
         raw.errorOrNull()?.let { throw IllegalStateException(it) }
         val array = JSONArray(raw)
         return (0 until array.length()).mapNotNull { index ->
