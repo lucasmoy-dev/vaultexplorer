@@ -1,0 +1,15 @@
+local.properties
+.gradle
+build
+app/build
+app/src/main/jniLibs
+jni/target
+.idea
+keystore.properties
+*.jks
+
+# rustypipe writes a cache of YouTube's player JS next to whatever process
+# runs it; it is a runtime artifact, not source.
+rustypipe_cache.json
+**/rustypipe_cache.json
+jni/tools/harness/classes

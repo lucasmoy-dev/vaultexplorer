@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">YT Pocket</string>
+
+    <string name="search_label">Buscar en YouTube o pegar un enlace</string>
+    <string name="action_search">Buscar</string>
+    <string name="searching">Buscando…</string>
+    <string name="no_results">Sin resultados.</string>
+    <string name="search_failed">No se pudo buscar: %1$s</string>
+    <string name="live_not_downloadable">Un directo no se puede descargar</string>
+
+    <string name="action_mp3">MP3</string>
+    <string name="action_mp4">MP4</string>
+    <string name="action_open">Abrir</string>
+
+    <string name="channel_downloads">Descargas en curso</string>
+    <string name="channel_finished">Descargas terminadas</string>
+    <string name="download_preparing">Preparando: %1$s</string>
+    <string name="download_resolving">Buscando los streams…</string>
+    <string name="download_resolving_short">Preparando: %1$s</string>
+    <string name="download_audio">Audio</string>
+    <string name="download_video">Vídeo %1$dp</string>
+    <string name="download_converting">Convirtiendo a MP3: %1$s</string>
+    <string name="download_converting_short">Convirtiendo a MP3…</string>
+    <string name="download_muxing">Uniendo vídeo y audio: %1$s</string>
+    <string name="download_muxing_short">Uniendo vídeo y audio…</string>
+    <string name="download_saving">Guardando %1$s</string>
+    <string name="download_done">Descarga terminada</string>
+    <string name="download_failed">La descarga falló</string>
+    <string name="error_no_audio">Este vídeo no tiene pista de audio descargable.</string>
+    <string name="error_no_video">Este vídeo no tiene pista de vídeo descargable.</string>
+
+    <string name="section_updates">Actualizaciones</string>
+    <string name="update_current">Versión instalada: %1$s</string>
+    <string name="update_hint">Se publica como release en GitHub (etiqueta ytpocket-vX.Y.Z) con el APK adjunto. Al actualizar, el instalador de Android te pedirá confirmación.</string>
+    <string name="update_checking">Buscando actualizaciones…</string>
+    <string name="update_available">Hay una versión nueva: %1$s</string>
+    <string name="update_no_apk">Hay versión %1$s, pero esa release no trae APK.</string>
+    <string name="update_none">Estás al día (%1$s).</string>
+    <string name="update_failed">No se pudo comprobar: %1$s</string>
+    <string name="update_need_permission">Permite «instalar apps desconocidas» para YT Pocket (se acaba de abrir en Ajustes) y vuelve a pulsar.</string>
+    <string name="update_confirm">Confirma la instalación en la pantalla del sistema.</string>
+    <string name="action_check_updates">Buscar actualizaciones</string>
+    <string name="action_install_update">Actualizar a %1$s</string>
+    <string name="action_releases">Ver releases</string>
+    <string name="action_downloading">Descargando… %1$d%%</string>
+</resources>

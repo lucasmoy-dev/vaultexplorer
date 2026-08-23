@@ -1,0 +1,48 @@
+[package]
+name = "ytpocket-jni"
+version = "0.1.0"
+description = "YouTube search, stream resolution and MP3 encoding for the YT Pocket Android app"
+edition = "2021"
+
+[lib]
+name = "ytpocket"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The extractor NewPipe's approach is built on, in Rust. Same crate (and
+# same version) the sibling vaultexplorer app already ships on Android, so
+# this is a known-good combination rather than a new bet.
+rustypipe = { version = "0.11", default-features = false, features = ["rustls-tls-webpki-roots"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "net", "macros"] }
+# AAC (what YouTube serves) in, MP3 out: Android has no MP3 encoder and no
+# ffmpeg to shell out to, so the transcode happens here. Same pair
+# vaultexplorer uses for the same job.
+symphonia = { version = "0.5", default-features = false, features = ["isomp4", "aac"] }
+mp3lame-encoder = "0.2"
+lofty = "0.24"
+
+# Test-only: the app downloads with Kotlin's own HTTP stack, but the
+# end-to-end test here has to fetch a real stream to prove the whole chain
+# (resolve -> download -> transcode -> tagged MP3 named after the video).
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# rustypipe pulls in QuickJS (rquickjs) to deobfuscate stream URLs, and
+# rquickjs ships no pre-generated bindings for aarch64-linux-android --
+# `bindgen` makes it generate them against the NDK headers at build time.
+# Declared here rather than used directly: features are additive, so this
+# turns the feature on for rustypipe's own copy. (Learned the hard way in
+# vaultexplorer; see the same note there.)
+rquickjs = { version = "0.9", features = ["bindgen"] }
+
+# A phone is not a laptop, and an unoptimised whisper-sized C dependency is
+# unusable; the .so ships in the APK either way.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
