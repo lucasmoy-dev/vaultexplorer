@@ -22,6 +22,8 @@ export interface SharedFolder {
   bytes: number;
   files: number;
   conflicts: number;
+  bytesPerSecond: number;
+  readOnly: boolean;
 }
 
 export interface OfferedFolder {
@@ -54,6 +56,7 @@ export interface Settings {
   downloadLimitKbps: number;
   keepVersions: number;
   engineVersion: string;
+  language: "es" | "en";
 }
 
 export interface CodePreview {
@@ -71,11 +74,7 @@ export interface Destination {
   explanation: string;
 }
 
-export interface PairingWindow {
-  folderId: string;
-  folderLabel: string;
-  secondsLeft: number;
-}
+
 
 export const api = {
   readiness: () => invoke<Readiness>("readiness"),
@@ -88,9 +87,10 @@ export const api = {
   redeemCode: (code: string, localPath: string) => invoke<void>("redeem_code", { code, localPath }),
   resolveDestination: (chosen: string, label: string, pick?: Pick) =>
     invoke<Destination>("resolve_destination", { chosen, label, pick: pick ?? null }),
-  pairingWindow: () => invoke<PairingWindow | null>("pairing_window"),
-  closePairingWindow: () => invoke<void>("close_pairing_window"),
+  setFolderReadOnly: (folderId: string, readOnly: boolean) =>
+    invoke<void>("set_folder_read_only", { folderId, readOnly }),
   forgetUnusedDevices: () => invoke<string[]>("forget_unused_devices"),
+  reportCameraProblem: (detail: string) => invoke<void>("report_camera_problem", { detail }),
   suggestedPath: (label: string) => invoke<string>("suggested_path", { label }),
   acceptInvitation: (invitation: Invitation, localPath: string | null) =>
     invoke<void>("accept_invitation", { invitation, localPath }),
@@ -112,6 +112,14 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value.toFixed(value < 10 ? 1 : 0).replace(".", ",")} ${units[unit]}`;
+}
+
+/** A transfer rate a person can read, e.g. "2,4 MB/s". */
+export function formatRate(bytesPerSecond: number): string {
+  if (bytesPerSecond <= 0) return "";
+  const mb = bytesPerSecond / 1_000_000;
+  if (mb >= 1) return `${mb.toFixed(1).replace(".", ",")} MB/s`;
+  return `${Math.round(bytesPerSecond / 1000)} kB/s`;
 }
 
 /** The tail of a device ID, so two devices with the same name are still telling apart. */

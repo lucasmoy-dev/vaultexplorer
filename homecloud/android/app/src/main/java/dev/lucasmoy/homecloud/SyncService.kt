@@ -30,6 +30,7 @@ class SyncService : Service() {
         Thread {
             engine.start()
                 .onSuccess {
+                    tellCoreWhereThingsGo()
                     nameThisPhone()
                     notify("Sincronizando tus carpetas")
                 }
@@ -59,6 +60,19 @@ class SyncService : Service() {
      * connect. `Build.MODEL` is not perfect, but it is never a lie and never
      * the same word for everyone.
      */
+    /**
+     * Folders accepted without anyone being asked need somewhere to land, and
+     * the app's own preferences need somewhere to live. Only the platform knows
+     * either path, so it hands both to the core once the engine is up.
+     */
+    private fun tellCoreWhereThingsGo() {
+        runCatching {
+            val root = java.io.File(android.os.Environment.getExternalStorageDirectory(), "HomeCloud")
+            root.mkdirs()
+            Repo.setRoots(root.absolutePath, java.io.File(filesDir, "homecloud.json").absolutePath)
+        }
+    }
+
     private fun nameThisPhone() {
         runCatching {
             val fallback = listOf(Build.MANUFACTURER, Build.MODEL)

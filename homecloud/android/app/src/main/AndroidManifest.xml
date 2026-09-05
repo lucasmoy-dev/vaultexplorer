@@ -29,7 +29,7 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@android:drawable/stat_notify_sync"
+        android:icon="@mipmap/ic_launcher"
         android:label="HomeCloud"
         android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"

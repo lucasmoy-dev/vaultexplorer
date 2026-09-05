@@ -76,7 +76,6 @@ fun HomeScreen() {
     val scope = rememberCoroutineScope()
     var folders by remember { mutableStateOf<List<SharedFolder>>(emptyList()) }
     var invitations by remember { mutableStateOf<List<Invitation>>(emptyList()) }
-    var pairing by remember { mutableStateOf<PairingWindow?>(null) }
     var ready by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -90,11 +89,9 @@ fun HomeScreen() {
         runCatching {
             val f = Repo.folders()
             val i = Repo.invitations()
-            val w = Repo.pairingWindow()
             withContext(Dispatchers.Main) {
                 folders = f
                 invitations = i
-                pairing = w
                 ready = true
                 openFolder = openFolder?.let { open -> f.find { it.id == open.id } }
             }
@@ -124,28 +121,6 @@ fun HomeScreen() {
             error?.let {
                 Banner(tone = MaterialTheme.colorScheme.error) {
                     Text(it, Modifier.clickable { error = null })
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-
-            pairing?.let { window ->
-                Banner(tone = MaterialTheme.colorScheme.primary) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Schedule, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Esperando a que otro dispositivo entre en «${window.folderLabel}». " +
-                                "Quedan ${(window.secondsLeft + 59) / 60} min.",
-                            Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        TextButton(onClick = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) { runCatching { Repo.closePairingWindow() } }
-                                refresh()
-                            }
-                        }) { Text("Ya está") }
-                    }
                 }
                 Spacer(Modifier.height(8.dp))
             }
@@ -382,11 +357,20 @@ private fun FolderRow(folder: SharedFolder, onClick: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Text(
-            stateLabel(folder.state),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                stateLabel(folder.state),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (folder.bytesPerSecond > 0) {
+                Text(
+                    formatRate(folder.bytesPerSecond),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -405,18 +389,7 @@ private fun StatusDot(state: FolderState) {
 private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val qr = rememberQr(code)
-    var secondsLeft by remember { mutableStateOf<Long?>(null) }
     var copied by remember { mutableStateOf(false) }
-
-    // The window is open for as long as this is on screen, so it is counted
-    // down here rather than left as something the user has to know about.
-    LaunchedEffect(Unit) {
-        while (true) {
-            val window = withContext(Dispatchers.IO) { runCatching { Repo.pairingWindow() }.getOrNull() }
-            secondsLeft = window?.secondsLeft
-            delay(1000)
-        }
-    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -472,14 +445,12 @@ private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
                     }
                 }
 
-                secondsLeft?.let {
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "Entrará solo, sin que aceptes nada más, durante ${countdown(it)}.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Quien lo use entrará solo, sin que aceptes nada más.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "Cualquiera con este código puede entrar en «$label». No lo publiques.",
@@ -509,12 +480,6 @@ private fun shareCode(context: Context, label: String, code: String) {
     runCatching {
         context.startActivity(Intent.createChooser(intent, "Compartir el código"))
     }
-}
-
-private fun countdown(seconds: Long): String {
-    val minutes = seconds / 60
-    val rest = seconds % 60
-    return if (minutes == 0L) "$rest s" else "$minutes:${rest.toString().padStart(2, '0')} min"
 }
 
 @Composable
@@ -725,6 +690,24 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                     }
                 }
                 Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = folder.readOnly,
+                        onCheckedChange = { wanted ->
+                            scope.engineCall(onError, onDismiss) {
+                                Repo.setFolderReadOnly(folder.id, wanted)
+                            }
+                        },
+                    )
+                    Column {
+                        Text("Solo lectura", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Recibe los cambios de los demás, pero nunca envía los suyos.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 TextButton(onClick = {
                     scope.launch {
                         val outcome = withContext(Dispatchers.IO) {
@@ -815,6 +798,18 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
                             )
                         }
                     }
+                    Spacer(Modifier.height(14.dp))
+                    Text("Idioma", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("es" to "Español", "en" to "Inglés").forEach { (code, name) ->
+                            FilterChip(
+                                selected = current.language == code,
+                                onClick = { settings = current.copy(language = code) },
+                                label = { Text(name) },
+                            )
+                        }
+                    }
+
                     Spacer(Modifier.height(14.dp))
                     Text("Dispositivos olvidados", style = MaterialTheme.typography.labelMedium)
                     Text(

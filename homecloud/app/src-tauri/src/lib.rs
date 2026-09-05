@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use homecore::destination::{self, Pick};
-use homecore::model::{Invitation, PairingWindow, Settings, SharedFolder, ThisDevice};
+use homecore::model::{Invitation, Settings, SharedFolder, ThisDevice};
 use homecore::supervisor::{engine_binary, Engine};
 use homecore::PairingCode;
 use serde::Serialize;
@@ -68,6 +68,8 @@ async fn launch_engine(state: &AppState) {
             // A device with no name shows up on other people's screens as a
             // meaningless ID, so give it one on first run.
             let _ = engine.client.ensure_device_name(&default_device_name()).await;
+            engine.client.set_auto_accept_root(state.default_root.clone());
+            engine.client.set_preferences_path(state.engine_home.join("homecloud.json"));
             *state.engine.write().await = Some(engine);
         }
         Err(e) => *state.startup_problem.write().await = Some(plain(e)),
@@ -203,20 +205,10 @@ async fn resolve_destination(chosen: String, label: String, pick: Option<String>
     })
 }
 
-/// Whether a handed-out code is still letting devices in, and for how long.
+/// Makes a folder one that receives but never sends, or two-way again.
 #[tauri::command]
-async fn pairing_window(state: State<'_, AppState>) -> UiResult<Option<PairingWindow>> {
-    let guard = state.engine.read().await;
-    Ok(guard.as_ref().and_then(|engine| engine.client.pairing_window()))
-}
-
-#[tauri::command]
-async fn close_pairing_window(state: State<'_, AppState>) -> UiResult<()> {
-    let guard = state.engine.read().await;
-    if let Some(engine) = guard.as_ref() {
-        engine.client.close_pairing_window();
-    }
-    Ok(())
+async fn set_folder_read_only(state: State<'_, AppState>, folder_id: String, read_only: bool) -> UiResult<()> {
+    with_engine!(state, |client| client.set_folder_read_only(&folder_id, read_only))
 }
 
 /// Drops devices that share nothing here any more — the identities left behind
@@ -309,10 +301,14 @@ fn enable_camera(window: &tauri::WebviewWindow) {
         UserMediaPermissionRequestExt, WebViewExt,
     };
 
-    let _ = window.with_webview(|webview| {
+    let applied = window.with_webview(|webview| {
         let view = webview.inner();
-        if let Some(settings) = WebViewExt::settings(&view) {
-            settings.set_enable_media_stream(true);
+        match WebViewExt::settings(&view) {
+            Some(settings) => {
+                settings.set_enable_media_stream(true);
+                eprintln!("homecloud: camera enabled in the webview settings");
+            }
+            None => eprintln!("homecloud: the webview exposed no settings; the camera will not open"),
         }
         view.connect_permission_request(|_, request| {
             let is_camera = request
@@ -326,6 +322,35 @@ fn enable_camera(window: &tauri::WebviewWindow) {
             true
         });
     });
+    if let Err(e) = applied {
+        eprintln!("homecloud: could not reach the webview to enable the camera: {e}");
+    }
+}
+
+/// Records what the camera did, or would not do.
+///
+/// A failure inside the webview reaches nobody: the app is normally launched
+/// from a menu, so stderr goes nowhere a person will ever look. Writing it
+/// beside the app's own data means the answer survives closing the window and
+/// can be read afterwards.
+#[tauri::command]
+fn report_camera_problem(state: State<'_, AppState>, detail: String) {
+    eprintln!("homecloud: camera: {detail}");
+    let line = format!(
+        "{}  {detail}\n",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default()
+    );
+    if let Some(parent) = state.engine_home.parent() {
+        let _ = std::fs::create_dir_all(parent);
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(parent.join("camera.log"))
+            .map(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -393,9 +418,9 @@ pub fn run() {
             preview_code,
             redeem_code,
             resolve_destination,
-            pairing_window,
-            close_pairing_window,
+            set_folder_read_only,
             forget_unused_devices,
+            report_camera_problem,
             suggested_path,
             accept_invitation,
             decline_invitation,

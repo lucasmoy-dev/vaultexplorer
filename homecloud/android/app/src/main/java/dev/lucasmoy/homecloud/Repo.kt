@@ -76,11 +76,19 @@ object Repo {
         return (0 until dropped.length()).map { dropped.getString(it) }
     }
 
-    fun pairingWindow(): PairingWindow? =
-        (Native.request("pairingWindow") as? JSONObject)?.let { PairingWindow.from(it) }
+    fun setFolderReadOnly(folderId: String, readOnly: Boolean) {
+        Native.request(
+            "setFolderReadOnly",
+            JSONObject().put("folderId", folderId).put("readOnly", readOnly),
+        )
+    }
 
-    fun closePairingWindow() {
-        Native.request("closePairingWindow")
+    /** Tells the core where it may put folders it accepts on its own. */
+    fun setRoots(autoAcceptRoot: String, preferences: String) {
+        Native.request(
+            "setRoots",
+            JSONObject().put("autoAcceptRoot", autoAcceptRoot).put("preferences", preferences),
+        )
     }
 
     /** What choosing `chosen` for a folder called `label` would actually do. */

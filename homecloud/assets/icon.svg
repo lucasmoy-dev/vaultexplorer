@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- HomeCloud's mark: two arrows going round, which is what syncing is, on
+       the rounded square Android and the desktop both expect. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round">
+    <path d="M150 214a112 112 0 0 1 190-52"/>
+    <path d="M362 298a112 112 0 0 1-190 52"/>
+  </g>
+  <path d="M344 108v72h-72z" fill="#FFFFFF"/>
+  <path d="M168 404v-72h72z" fill="#FFFFFF"/>
+</svg>

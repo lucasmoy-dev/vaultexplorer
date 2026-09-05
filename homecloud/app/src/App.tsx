@@ -4,12 +4,12 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   api,
   formatBytes,
+  formatRate,
   peerSummary,
   shortId,
   type CodePreview,
   type Destination,
   type Invitation,
-  type PairingWindow,
   type Readiness,
   type SharedFolder,
 } from "./api";
@@ -18,7 +18,6 @@ import { PairingCard } from "./PairingCard";
 import { SettingsSheet } from "./SettingsSheet";
 import { QrScanner } from "./QrScanner";
 import {
-  ClockIcon,
   CloseIcon,
   FolderIcon,
   GearIcon,
@@ -46,7 +45,6 @@ export default function App() {
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [folders, setFolders] = useState<SharedFolder[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
-  const [pairing, setPairing] = useState<PairingWindow | null>(null);
   const [screen, setScreen] = useState<Screen>({ name: "list" });
   const [error, setError] = useState<string | null>(null);
 
@@ -55,14 +53,9 @@ export default function App() {
     setReadiness(status);
     if (!status.ready) return;
     try {
-      const [f, i, w] = await Promise.all([
-        api.listFolders(),
-        api.listInvitations(),
-        api.pairingWindow(),
-      ]);
+      const [f, i] = await Promise.all([api.listFolders(), api.listInvitations()]);
       setFolders(f);
       setInvitations(i);
-      setPairing(w);
       // Keep an open folder sheet in step with what the engine now reports.
       setScreen((current) =>
         current.name === "folder"
@@ -134,27 +127,6 @@ export default function App() {
         </div>
       )}
 
-      {pairing && (
-        <div className="banner banner-open">
-          <p className="banner-text">
-            <ClockIcon />
-            Esperando a que otro dispositivo entre en «<strong>{pairing.folderLabel}</strong>».
-            Quedan {Math.ceil(pairing.secondsLeft / 60)} min.
-          </p>
-          <div className="banner-actions">
-            <button
-              className="btn btn-small"
-              onClick={async () => {
-                await api.closePairingWindow();
-                void refresh();
-              }}
-            >
-              Ya está
-            </button>
-          </div>
-        </div>
-      )}
-
       {invitations.map((invitation) => (
         <InvitationBanner
           key={invitation.fromDeviceId + (invitation.folder?.id ?? "")}
@@ -183,7 +155,12 @@ export default function App() {
                     {formatBytes(folder.bytes)} · {peerSummary(folder.peers)}
                   </span>
                 </span>
-                <span className="folder-state">{stateLabel(folder.state)}</span>
+                <span className="folder-state">
+                  {stateLabel(folder.state)}
+                  {folder.bytesPerSecond > 0 && (
+                    <span className="folder-rate">{formatRate(folder.bytesPerSecond)}</span>
+                  )}
+                </span>
               </button>
               {folder.conflicts > 0 && (
                 <p className="conflict-note">
@@ -539,6 +516,25 @@ function FolderSheet({
           ))}
         </ul>
       )}
+
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={folder.readOnly}
+          onChange={async (e) => {
+            try {
+              await api.setFolderReadOnly(folder.id, e.target.checked);
+              onChanged();
+            } catch (err) {
+              onError(String(err));
+            }
+          }}
+        />
+        <span>
+          Solo lectura
+          <em>Recibe los cambios de los demás, pero nunca envía los suyos.</em>
+        </span>
+      </label>
 
       <div className="sheet-actions">
         <button className="btn" onClick={showCode}>

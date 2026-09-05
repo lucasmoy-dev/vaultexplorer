@@ -46,6 +46,8 @@ data class SharedFolder(
     val bytes: Long,
     val files: Long,
     val conflicts: Long,
+    val bytesPerSecond: Long,
+    val readOnly: Boolean,
 ) {
     companion object {
         fun from(json: JSONObject) = SharedFolder(
@@ -57,6 +59,8 @@ data class SharedFolder(
             bytes = json.getLong("bytes"),
             files = json.getLong("files"),
             conflicts = json.getLong("conflicts"),
+            bytesPerSecond = json.optLong("bytesPerSecond"),
+            readOnly = json.optBoolean("readOnly"),
         )
     }
 }
@@ -94,6 +98,7 @@ data class Settings(
     val downloadLimitKbps: Int,
     val keepVersions: Int,
     val engineVersion: String,
+    val language: String,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("deviceName", deviceName)
@@ -103,6 +108,7 @@ data class Settings(
         put("downloadLimitKbps", downloadLimitKbps)
         put("keepVersions", keepVersions)
         put("engineVersion", engineVersion)
+        put("language", language)
     }
 
     companion object {
@@ -114,6 +120,7 @@ data class Settings(
             downloadLimitKbps = json.getInt("downloadLimitKbps"),
             keepVersions = json.getInt("keepVersions"),
             engineVersion = json.optString("engineVersion"),
+            language = json.optString("language", "es"),
         )
     }
 }
@@ -140,15 +147,11 @@ data class Destination(val path: String, val pick: String, val explanation: Stri
     }
 }
 
-/** A code is out and this device is still letting whoever redeems it in. */
-data class PairingWindow(val folderId: String, val folderLabel: String, val secondsLeft: Long) {
-    companion object {
-        fun from(json: JSONObject) = PairingWindow(
-            folderId = json.getString("folderId"),
-            folderLabel = json.getString("folderLabel"),
-            secondsLeft = json.getLong("secondsLeft"),
-        )
-    }
+/** A transfer rate a person can read, e.g. "2,4 MB/s". */
+fun formatRate(bytesPerSecond: Long): String {
+    if (bytesPerSecond <= 0) return ""
+    val mb = bytesPerSecond / 1_000_000.0
+    return if (mb >= 1) String.format("%.1f MB/s", mb) else "${bytesPerSecond / 1000} kB/s"
 }
 
 /** The head of a device ID: what tells two devices with the same name apart. */

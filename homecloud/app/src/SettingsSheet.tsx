@@ -71,6 +71,17 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
       </label>
       <p className="hint">Es el nombre que ven los demás dispositivos al conectarse.</p>
 
+      <label className="field">
+        <span>Idioma</span>
+        <select
+          value={settings.language}
+          onChange={(e) => edit({ language: e.target.value as "es" | "en" })}
+        >
+          <option value="es">Español</option>
+          <option value="en">Inglés</option>
+        </select>
+      </label>
+
       <hr className="rule" />
       <p className="section">Avanzado</p>
 

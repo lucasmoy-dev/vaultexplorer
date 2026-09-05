@@ -203,10 +203,20 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
 
             "forgetUnusedDevices" => to_value(client.forget_unused_devices().await)?,
 
-            "pairingWindow" => serde_json::to_value(client.pairing_window()).map_err(plain)?,
+            "setFolderReadOnly" => {
+                let read_only = args["readOnly"].as_bool().ok_or("missing readOnly")?;
+                client
+                    .set_folder_read_only(&arg!(args, "folderId"), read_only)
+                    .await
+                    .map_err(plain)?;
+                Value::Null
+            }
 
-            "closePairingWindow" => {
-                client.close_pairing_window();
+            // The phone tells the core where it may put a folder it accepts on
+            // its own, and where to keep what the engine cannot.
+            "setRoots" => {
+                client.set_auto_accept_root(std::path::PathBuf::from(arg!(args, "autoAcceptRoot")));
+                client.set_preferences_path(std::path::PathBuf::from(arg!(args, "preferences")));
                 Value::Null
             }
 

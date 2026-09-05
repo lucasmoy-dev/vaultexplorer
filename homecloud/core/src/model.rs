@@ -50,6 +50,12 @@ pub struct SharedFolder {
     /// Conflicting copies Syncthing kept because two devices edited at once.
     /// Non-zero means there is something for the user to look at.
     pub conflicts: u64,
+    /// How fast bytes are moving right now, zero when nothing is. Shown under
+    /// the percentage, because "syncing 43%" says nothing about whether it is
+    /// about to finish or has stalled.
+    pub bytes_per_second: u64,
+    /// Takes changes from the other devices but never sends its own.
+    pub read_only: bool,
 }
 
 /// Someone is asking to share something with this device.
@@ -69,19 +75,6 @@ pub struct Invitation {
 pub struct OfferedFolder {
     pub id: String,
     pub label: String,
-}
-
-/// A code is out there and this device is still letting in whoever redeems it.
-///
-/// Shown on screen for as long as it lasts. An open door nobody can see is the
-/// kind of convenience that turns into a surprise, so the interface counts it
-/// down and offers to close it early.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairingWindow {
-    pub folder_id: String,
-    pub folder_label: String,
-    pub seconds_left: u64,
 }
 
 /// This device's own identity, as shown on the pairing screen.
@@ -115,4 +108,8 @@ pub struct Settings {
     pub keep_versions: u32,
     /// Version of the bundled engine, for bug reports.
     pub engine_version: String,
+    /// The interface language: "es" or "en". Kept with the rest of the settings
+    /// so it survives a reinstall along with everything else, rather than in
+    /// browser storage the phone does not have.
+    pub language: String,
 }

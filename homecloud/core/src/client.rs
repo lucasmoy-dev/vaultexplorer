@@ -5,16 +5,15 @@
 //! implementation detail that stops at this module's edge.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    FolderState, Invitation, OfferedFolder, PairingWindow, Peer, Settings, SharedFolder, ThisDevice,
+    FolderState, Invitation, OfferedFolder, Peer, Settings, SharedFolder, ThisDevice,
 };
 use crate::pairing::PairingCode;
 
@@ -22,28 +21,13 @@ pub struct Syncthing {
     base: String,
     api_key: String,
     http: reqwest::Client,
-    /// The folder a code was just handed out for, and until when.
-    ///
-    /// This is what makes "say yes once" true. Without it the device that
-    /// *wrote* the code has never heard of the device that redeems it, so when
-    /// the second one connects the first sees a stranger and asks its owner to
-    /// approve — the same pairing, presented backwards, on the device that
-    /// started it. See `admit_expected`.
-    expecting: Mutex<Option<Expectation>>,
+    /// Where a folder accepted without asking anyone is put.
+    auto_accept_root: Mutex<Option<PathBuf>>,
+    /// Where HomeCloud's own preferences live. The engine has nowhere to keep
+    /// anything it does not understand, and the interface language is one of
+    /// those things.
+    preferences_path: Mutex<Option<PathBuf>>,
 }
-
-struct Expectation {
-    folder_id: String,
-    folder_label: String,
-    until: Instant,
-}
-
-/// How long a handed-out code keeps letting devices in.
-///
-/// Long enough to walk to the other device and scan, short enough that a code
-/// left on screen and forgotten stops being an open door. The window is shown
-/// on screen while it lasts, counting down, so it is never a silent state.
-const PAIRING_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 /// A conflict scan gives up past this many entries. A folder large enough to
 /// hit the cap is one where an exact count is not worth the disk churn on
@@ -56,104 +40,135 @@ impl Syncthing {
             base: base.into(),
             api_key: api_key.into(),
             http: reqwest::Client::new(),
-            expecting: Mutex::new(None),
+            auto_accept_root: Mutex::new(None),
+            preferences_path: Mutex::new(None),
         }
     }
 
-    // ---- the pairing window --------------------------------------------
+    // ---- letting other devices in --------------------------------------
 
-    /// Opens the window: for the next few minutes, a device arriving with this
-    /// folder's code is let in without asking again.
-    fn expect_pairing(&self, folder_id: &str, folder_label: &str) {
-        if let Ok(mut slot) = self.expecting.lock() {
-            *slot = Some(Expectation {
-                folder_id: folder_id.to_string(),
-                folder_label: folder_label.to_string(),
-                until: Instant::now() + PAIRING_WINDOW,
-            });
-        }
-    }
-
-    /// What the interface shows while a code is live, so the open window is
-    /// visible rather than implied. `None` once it has closed.
-    pub fn pairing_window(&self) -> Option<PairingWindow> {
-        let slot = self.expecting.lock().ok()?;
-        let expectation = slot.as_ref()?;
-        let left = expectation.until.checked_duration_since(Instant::now())?;
-        Some(PairingWindow {
-            folder_id: expectation.folder_id.clone(),
-            folder_label: expectation.folder_label.clone(),
-            seconds_left: left.as_secs(),
-        })
-    }
-
-    /// Closes it early, for when the user puts the code away.
-    pub fn close_pairing_window(&self) {
-        if let Ok(mut slot) = self.expecting.lock() {
-            *slot = None;
-        }
-    }
-
-    /// Takes the expectation if it is still valid, dropping it if it has run out.
-    fn live_expectation(&self) -> Option<(String, String)> {
-        let mut slot = self.expecting.lock().ok()?;
-        match slot.as_ref() {
-            Some(e) if e.until > Instant::now() => {
-                Some((e.folder_id.clone(), e.folder_label.clone()))
-            }
-            Some(_) => {
-                *slot = None;
-                None
-            }
-            None => None,
-        }
-    }
-
-    /// Lets in the device the open code was meant for.
+    /// Says yes to everything waiting, without asking anyone.
     ///
-    /// Only ever admits to the one folder the code was written for, and only
-    /// while the window is open: a device that turns up uninvited still becomes
-    /// an invitation its owner has to answer.
+    /// Pairing is something the user started by carrying a code from one device
+    /// to the other. Being asked to confirm it again on the far device is a
+    /// question they already answered, and it arrives phrased backwards: the
+    /// device that handed out the code is asked whether to trust the one that
+    /// took it. So both halves are taken automatically — a device that turns up
+    /// is trusted, and a folder it offers is joined.
     ///
-    /// Returns how many were admitted so the interface can say so.
-    pub async fn admit_expected(&self) -> Result<usize> {
-        let Some((folder_id, folder_label)) = self.live_expectation() else {
-            return Ok(0);
-        };
-
-        let pending = self.get("/rest/cluster/pending/devices").await?;
-        let Some(entries) = pending.as_object() else {
-            return Ok(0);
-        };
-
+    /// This is a deliberate trade, and the reason folder passwords exist. A
+    /// device ID is not a secret: it travels in the announcements every device
+    /// broadcasts on the network. What stops a stranger is that a code they
+    /// cannot read is a code they cannot redeem.
+    ///
+    /// Returns how many were let in, so the interface can say what happened
+    /// rather than let things appear by themselves.
+    pub async fn admit_everything(&self) -> Result<usize> {
         let mut admitted = 0;
-        for (device_id, detail) in entries {
-            let name = detail["name"]
-                .as_str()
-                .filter(|n| !n.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| short_id(device_id));
 
-            if !self.knows_device(device_id).await? {
-                self.post(
-                    "/rest/config/devices",
-                    json!({ "deviceID": device_id, "name": name }),
-                )
-                .await?;
+        let pending_devices = self.get("/rest/cluster/pending/devices").await?;
+        if let Some(entries) = pending_devices.as_object() {
+            for (device_id, detail) in entries {
+                let name = detail["name"]
+                    .as_str()
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| short_id(device_id));
+                if !self.knows_device(device_id).await? {
+                    self.post(
+                        "/rest/config/devices",
+                        json!({ "deviceID": device_id, "name": name }),
+                    )
+                    .await?;
+                }
+                let _ = self
+                    .delete(&format!("/rest/cluster/pending/devices?device={device_id}"))
+                    .await;
+                admitted += 1;
             }
-            self.join_folder(&folder_id, &folder_label, None, device_id).await?;
-            let _ = self
-                .delete(&format!("/rest/cluster/pending/devices?device={device_id}"))
-                .await;
-            let _ = self
-                .delete(&format!(
-                    "/rest/cluster/pending/folders?folder={folder_id}&device={device_id}"
-                ))
-                .await;
-            admitted += 1;
         }
+
+        // A folder already here is the other half of a pairing this device
+        // started, and joining only adds the newcomer to it. One that is new
+        // needs somewhere to live, so it lands under the same roof as anything
+        // else taken from a code.
+        let pending_folders = self.get("/rest/cluster/pending/folders").await?;
+        if let Some(folders) = pending_folders.as_object() {
+            for (folder_id, entry) in folders {
+                let Some(offers) = entry["offeredBy"].as_object() else {
+                    continue;
+                };
+                for (device_id, detail) in offers {
+                    let label = detail["label"].as_str().unwrap_or(folder_id).to_string();
+                    let destination = self.landing_place(&label);
+                    if let Err(e) = self
+                        .join_folder(folder_id, &label, destination.as_deref(), device_id)
+                        .await
+                    {
+                        // One folder that cannot be taken must not stop the rest.
+                        eprintln!("homecloud: could not accept {label}: {e}");
+                        continue;
+                    }
+                    let _ = self
+                        .delete(&format!(
+                            "/rest/cluster/pending/folders?folder={folder_id}&device={device_id}"
+                        ))
+                        .await;
+                    admitted += 1;
+                }
+            }
+        }
+
         Ok(admitted)
     }
+
+    /// Where HomeCloud keeps what the engine cannot.
+    pub fn set_preferences_path(&self, path: PathBuf) {
+        if let Ok(mut slot) = self.preferences_path.lock() {
+            *slot = Some(path);
+        }
+    }
+
+    fn read_preferences(&self) -> Value {
+        let Ok(slot) = self.preferences_path.lock() else {
+            return json!({});
+        };
+        slot.as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_else(|| json!({}))
+    }
+
+    fn write_preference(&self, key: &str, value: Value) {
+        let mut prefs = self.read_preferences();
+        prefs[key] = value;
+        if let Ok(slot) = self.preferences_path.lock() {
+            if let Some(path) = slot.as_ref() {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, prefs.to_string());
+            }
+        }
+    }
+
+    /// Tells the client where folders it accepts on its own should go. Set by
+    /// the platform, which is the only part that knows where a user's files
+    /// live.
+    pub fn set_auto_accept_root(&self, root: PathBuf) {
+        if let Ok(mut slot) = self.auto_accept_root.lock() {
+            *slot = Some(root);
+        }
+    }
+
+    /// Where an automatically accepted folder goes when this device does not
+    /// have it already. `None` leaves the join to fail rather than invent a
+    /// path nobody chose.
+    fn landing_place(&self, label: &str) -> Option<String> {
+        let root = self.auto_accept_root.lock().ok()?.clone()?;
+        Some(root.join(sanitised(label)).to_string_lossy().into_owned())
+    }
+
 
     async fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
         let url = format!("{}{}", self.base, path);
@@ -313,6 +328,9 @@ impl Syncthing {
             devices.iter().map(|d| (d.device_id.as_str(), d.name.as_str())).collect();
         let connected = self.connected_devices().await?;
         let me = self.this_device().await?.id;
+        // One reading for every folder: the engine reports transfer rates for
+        // the device as a whole, not per folder.
+        let (down, up) = self.transfer_rates().await;
 
         let mut out = Vec::with_capacity(configured.len());
         for folder in configured {
@@ -333,11 +351,16 @@ impl Syncthing {
                 })
                 .collect();
 
+            let syncing = matches!(folder_state(&folder, &status, &peers), FolderState::Syncing { .. });
             out.push(SharedFolder {
                 state: folder_state(&folder, &status, &peers),
                 conflicts: count_conflicts(Path::new(&folder.path)),
                 bytes: status["globalBytes"].as_u64().unwrap_or(0),
                 files: status["globalFiles"].as_u64().unwrap_or(0),
+                // Only while something is actually moving: a rate left on
+                // screen next to a finished folder reads as a rate for it.
+                bytes_per_second: if syncing { down.max(up) } else { 0 },
+                read_only: folder.folder_type == "receiveonly",
                 peers,
                 id: folder.id,
                 label: folder.label,
@@ -345,6 +368,33 @@ impl Syncthing {
             });
         }
         Ok(out)
+    }
+
+    /// Bytes per second in and out, as the engine has measured them.
+    ///
+    /// Best effort: a rate that cannot be read is reported as zero rather than
+    /// failing the whole folder listing, which happens every second and a half.
+    async fn transfer_rates(&self) -> (u64, u64) {
+        let Ok(status) = self.get("/rest/system/connections").await else {
+            return (0, 0);
+        };
+        let total = &status["total"];
+        (
+            total["inBytesPerSecond"].as_f64().unwrap_or(0.0).max(0.0) as u64,
+            total["outBytesPerSecond"].as_f64().unwrap_or(0.0).max(0.0) as u64,
+        )
+    }
+
+    /// Turns a folder into one that receives changes but never sends its own,
+    /// or back again. Everything is two-way unless someone says otherwise.
+    pub async fn set_folder_read_only(&self, folder_id: &str, read_only: bool) -> Result<()> {
+        let folder_type = if read_only { "receiveonly" } else { "sendreceive" };
+        self.patch(
+            &format!("/rest/config/folders/{folder_id}"),
+            json!({ "type": folder_type }),
+        )
+        .await?;
+        Ok(())
     }
 
     async fn connected_devices(&self) -> Result<Vec<String>> {
@@ -382,8 +432,6 @@ impl Syncthing {
             }),
         )
         .await?;
-
-        self.expect_pairing(&folder_id, label);
 
         Ok(PairingCode {
             device_id: me.id,
@@ -440,8 +488,6 @@ impl Syncthing {
             .find(|f| f.id == folder_id)
             .ok_or_else(|| Error::Engine(format!("no folder called {folder_id}")))?;
 
-        self.expect_pairing(&folder.id, &folder.label);
-
         Ok(PairingCode {
             device_id: me.id,
             device_name: me.name,
@@ -489,6 +535,12 @@ impl Syncthing {
             download_limit_kbps: options["maxRecvKbps"].as_u64().unwrap_or(0) as u32,
             keep_versions: keep_from_versioning(&defaults["versioning"]),
             engine_version: version,
+            language: self
+                .read_preferences()["language"]
+                .as_str()
+                .filter(|l| *l == "es" || *l == "en")
+                .unwrap_or("es")
+                .to_string(),
         })
     }
 
@@ -512,6 +564,10 @@ impl Syncthing {
             }),
         )
         .await?;
+
+        if settings.language == "es" || settings.language == "en" {
+            self.write_preference("language", json!(settings.language));
+        }
 
         self.set_keep_versions(settings.keep_versions).await
     }
@@ -630,7 +686,7 @@ impl Syncthing {
         // The device this app just wrote a code for is not a stranger, so it is
         // let in here rather than surfacing as a prompt the user already answered
         // by handing the code over in the first place.
-        let _ = self.admit_expected().await;
+        let _ = self.admit_everything().await;
 
         let pending_devices = self.get("/rest/cluster/pending/devices").await?;
         let pending_folders = self.get("/rest/cluster/pending/folders").await?;
@@ -755,6 +811,10 @@ struct FolderConfig {
     id: String,
     label: String,
     path: String,
+    /// Syncthing's own word for the direction: `sendreceive` both ways,
+    /// `receiveonly` for a folder this device never sends changes from.
+    #[serde(rename = "type", default)]
+    folder_type: String,
     #[serde(default)]
     paused: bool,
     #[serde(default)]
@@ -868,6 +928,17 @@ fn random_secret() -> String {
     const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut rng = rand::thread_rng();
     (0..40).map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char).collect()
+}
+
+/// A label arriving from another device must never become a path separator.
+fn sanitised(label: &str) -> String {
+    let cleaned: String = label
+        .trim()
+        .chars()
+        .map(|c| if std::path::is_separator(c) || c == '\0' { '-' } else { c })
+        .collect();
+    let cleaned = cleaned.trim_matches('.').trim().to_string();
+    if cleaned.is_empty() { "Carpeta".to_string() } else { cleaned }
 }
 
 fn short_id(device_id: &str) -> String {
