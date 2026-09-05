@@ -1,0 +1,4 @@
+# Engine binaries are fetched or built by scripts/, never committed: they are
+# ~27 MB per architecture.
+app/src-tauri/resources/
+android/app/src/main/jniLibs/

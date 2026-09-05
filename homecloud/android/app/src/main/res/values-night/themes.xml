@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose paints the surfaces; this only stops the window flashing white
+         before the first frame on a phone in dark mode. -->
+    <style name="Theme.HomeCloud" parent="android:Theme.Material.NoActionBar" />
+</resources>

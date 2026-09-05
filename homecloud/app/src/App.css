@@ -1,0 +1,270 @@
+:root {
+  --bg: #f6f6f7;
+  --surface: #ffffff;
+  --text: #14161a;
+  --muted: #6b7280;
+  --line: #e3e4e8;
+  --accent: #2f6df6;
+  --ok: #1ea672;
+  --busy: #2f6df6;
+  --bad: #d6493b;
+  --idle: #a8adb7;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --surface: #1e2127;
+    --text: #eceef2;
+    --muted: #9aa1ad;
+    --line: #2b2f37;
+    --accent: #5b8dff;
+    --idle: #666d78;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+  gap: 12px;
+}
+
+.app.centered { align-items: center; justify-content: center; }
+
+.topbar { display: flex; align-items: baseline; justify-content: space-between; }
+.topbar h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+.device-name { color: var(--muted); font-size: 12px; }
+
+/* ---- status dots: the app's whole status vocabulary ---- */
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: inline-block;
+}
+.dot-ok { background: var(--ok); }
+.dot-busy { background: var(--busy); animation: pulse 1.4s ease-in-out infinite; }
+.dot-bad { background: var(--bad); }
+.dot-idle { background: var(--idle); }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .dot-busy { animation: none; }
+  .spinner { animation-duration: 3s; }
+}
+
+/* ---- folder list ---- */
+.folders { list-style: none; margin: 0; padding: 0; flex: 1; overflow-y: auto; }
+.folders > li { margin-bottom: 8px; }
+
+.folder {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.folder:hover { border-color: var(--accent); }
+
+.folder-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.folder-label { font-weight: 560; }
+.folder-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-state { color: var(--muted); font-size: 12px; flex: 0 0 auto; }
+
+.conflict-note {
+  margin: 4px 0 0 34px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---- empty state ---- */
+.empty { flex: 1; display: flex; flex-direction: column; justify-content: center; text-align: center; padding: 0 20px; }
+.empty-title { font-weight: 560; margin: 0 0 6px; }
+.empty-body { color: var(--muted); margin: 0; }
+
+/* ---- banners ---- */
+.banner {
+  border-radius: 11px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.banner-ask { display: flex; align-items: center; gap: 12px; border-color: var(--accent); }
+.banner-bad { border-color: var(--bad); color: var(--bad); cursor: pointer; }
+.banner-text { margin: 0; flex: 1; }
+.banner-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+
+/* ---- buttons ---- */
+.btn {
+  padding: 9px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-small { padding: 6px 11px; font-size: 13px; }
+.btn-quiet { border-color: transparent; background: transparent; color: var(--muted); }
+.btn-danger { border-color: var(--bad); color: var(--bad); }
+
+.actions { display: flex; gap: 8px; }
+.actions .btn { flex: 1; }
+
+/* ---- sheets ---- */
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.sheet {
+  width: 100%;
+  max-height: 92%;
+  overflow-y: auto;
+  background: var(--surface);
+  border-radius: 16px 16px 0 0;
+  padding: 16px;
+  border-top: 1px solid var(--line);
+}
+.sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.sheet-head h2 { font-size: 16px; margin: 0; }
+.sheet-body { display: flex; flex-direction: column; gap: 10px; }
+.sheet-line { margin: 0; display: flex; align-items: center; gap: 8px; }
+.sheet-actions { display: flex; flex-direction: column; gap: 7px; margin-top: 6px; }
+
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.problem { color: var(--bad); margin: 0; }
+
+.peers { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.peers li { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.peers .muted { margin-left: auto; font-size: 12px; }
+
+/* ---- pairing ---- */
+.pairing { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.pairing-lead { margin: 0; color: var(--muted); }
+.pairing-qr { width: 224px; height: 224px; border-radius: 10px; background: #fff; padding: 8px; }
+.pairing-qr-empty { display: grid; place-items: center; color: var(--muted); background: var(--bg); }
+.pairing-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  word-break: break-all;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  width: 100%;
+}
+.pairing-note { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* ---- join form ---- */
+.join { display: flex; flex-direction: column; gap: 12px; }
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.field textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px;
+  resize: vertical;
+}
+.preview { margin: 0; }
+.path-picker {
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 11px;
+  cursor: pointer;
+  word-break: break-all;
+}
+.path-picker:hover { border-color: var(--accent); }
+
+/* ---- startup ---- */
+.starting { display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); }
+.spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- settings ---- */
+.gear {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+}
+.gear:hover { color: var(--text); background: var(--surface); }
+
+.settings { display: flex; flex-direction: column; gap: 10px; }
+.settings .field input,
+.settings .field select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 11px;
+}
+.settings .field input:focus,
+.settings .field select:focus { outline: none; border-color: var(--accent); }
+
+.hint { margin: -4px 0 2px; font-size: 12px; color: var(--muted); }
+.hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.section { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.rule { border: none; border-top: 1px solid var(--line); margin: 6px 0; }
+.pair { display: flex; gap: 8px; }
+.pair .field { flex: 1; }
+
+.toggle { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.toggle input { margin-top: 2px; flex: 0 0 auto; accent-color: var(--accent); width: 15px; height: 15px; }
+.toggle span { display: flex; flex-direction: column; gap: 2px; }
+.toggle em { font-style: normal; font-size: 12px; color: var(--muted); }

@@ -1,0 +1,9 @@
+.gradle/
+build/
+local.properties
+app/build/
+# Both native pieces are built, not committed: the Rust bridge by Gradle and
+# the engine by scripts/fetch-engine.sh.
+app/src/main/jniLibs/
+keystore.properties
+*.jks

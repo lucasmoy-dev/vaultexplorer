@@ -1,0 +1,16 @@
+[package]
+name = "homecloud-jni"
+version = "0.1.0"
+description = "JNI bridge so the Android app drives the same sync core as the desktop"
+edition = "2021"
+
+[lib]
+name = "homecloud"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "net", "macros"] }
+homecore = { path = "../../core" }
