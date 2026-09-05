@@ -29,7 +29,10 @@ class SyncService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("Arrancando…"))
         Thread {
             engine.start()
-                .onSuccess { notify("Sincronizando tus carpetas") }
+                .onSuccess {
+                    nameThisPhone()
+                    notify("Sincronizando tus carpetas")
+                }
                 .onFailure { notify(it.message ?: "El motor de sincronización no arrancó") }
         }.start()
     }
@@ -46,6 +49,26 @@ class SyncService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /**
+     * Gives the phone a name other devices can tell apart.
+     *
+     * The engine falls back to the system hostname, and on Android that is
+     * `localhost` on every device ever made. Two phones then look identical in
+     * the one place it matters: deciding whether to trust the one asking to
+     * connect. `Build.MODEL` is not perfect, but it is never a lie and never
+     * the same word for everyone.
+     */
+    private fun nameThisPhone() {
+        runCatching {
+            val fallback = listOf(Build.MANUFACTURER, Build.MODEL)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
+                .trim()
+                .ifEmpty { "Mi teléfono" }
+            Repo.ensureDeviceName(fallback.replaceFirstChar(Char::titlecase))
+        }
+    }
 
     private fun createChannel() {
         val channel = NotificationChannel(

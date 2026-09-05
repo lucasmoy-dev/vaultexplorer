@@ -5,6 +5,9 @@ coreKtx = "1.15.0"
 lifecycle = "2.8.7"
 activityCompose = "1.9.3"
 composeBom = "2024.11.00"
+zxingCore = "3.5.3"
+zxingEmbedded = "4.3.0"
+composeMaterialIcons = "1.7.5"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -16,6 +19,13 @@ androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
 androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-material-icons = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "composeMaterialIcons" }
+# Writes the QR on this screen. Pure Java, no camera, no services.
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
+# Reads one from the camera. Chosen over ML Kit because it is self-contained:
+# no Play Services, no model download, and it works on a phone that has never
+# seen the Play Store -- which is every phone HomeCloud is sideloaded onto.
+zxing-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

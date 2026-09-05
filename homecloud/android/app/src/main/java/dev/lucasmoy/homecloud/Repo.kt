@@ -61,4 +61,32 @@ object Repo {
     fun stopSharing(folderId: String) {
         Native.request("stopSharing", JSONObject().put("folderId", folderId))
     }
+
+    /**
+     * Names this device if the engine gave it one that says nothing.
+     *
+     * Android reports its hostname as `localhost`, so without this every phone
+     * introduces itself to every other device by the same meaningless word.
+     */
+    fun ensureDeviceName(fallback: String): String =
+        Native.request("ensureDeviceName", JSONObject().put("fallback", fallback)) as String
+
+    fun forgetUnusedDevices(): List<String> {
+        val dropped = Native.request("forgetUnusedDevices") as JSONArray
+        return (0 until dropped.length()).map { dropped.getString(it) }
+    }
+
+    fun pairingWindow(): PairingWindow? =
+        (Native.request("pairingWindow") as? JSONObject)?.let { PairingWindow.from(it) }
+
+    fun closePairingWindow() {
+        Native.request("closePairingWindow")
+    }
+
+    /** What choosing `chosen` for a folder called `label` would actually do. */
+    fun resolveDestination(chosen: String, label: String, pick: String? = null): Destination {
+        val args = JSONObject().put("chosen", chosen).put("label", label)
+        if (pick != null) args.put("pick", pick)
+        return Destination.from(Native.request("resolveDestination", args) as JSONObject)
+    }
 }

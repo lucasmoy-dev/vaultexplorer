@@ -6,19 +6,44 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
-use crate::model::{FolderState, Invitation, OfferedFolder, Peer, Settings, SharedFolder, ThisDevice};
+use crate::model::{
+    FolderState, Invitation, OfferedFolder, PairingWindow, Peer, Settings, SharedFolder, ThisDevice,
+};
 use crate::pairing::PairingCode;
 
 pub struct Syncthing {
     base: String,
     api_key: String,
     http: reqwest::Client,
+    /// The folder a code was just handed out for, and until when.
+    ///
+    /// This is what makes "say yes once" true. Without it the device that
+    /// *wrote* the code has never heard of the device that redeems it, so when
+    /// the second one connects the first sees a stranger and asks its owner to
+    /// approve — the same pairing, presented backwards, on the device that
+    /// started it. See `admit_expected`.
+    expecting: Mutex<Option<Expectation>>,
 }
+
+struct Expectation {
+    folder_id: String,
+    folder_label: String,
+    until: Instant,
+}
+
+/// How long a handed-out code keeps letting devices in.
+///
+/// Long enough to walk to the other device and scan, short enough that a code
+/// left on screen and forgotten stops being an open door. The window is shown
+/// on screen while it lasts, counting down, so it is never a silent state.
+const PAIRING_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 /// A conflict scan gives up past this many entries. A folder large enough to
 /// hit the cap is one where an exact count is not worth the disk churn on
@@ -31,7 +56,103 @@ impl Syncthing {
             base: base.into(),
             api_key: api_key.into(),
             http: reqwest::Client::new(),
+            expecting: Mutex::new(None),
         }
+    }
+
+    // ---- the pairing window --------------------------------------------
+
+    /// Opens the window: for the next few minutes, a device arriving with this
+    /// folder's code is let in without asking again.
+    fn expect_pairing(&self, folder_id: &str, folder_label: &str) {
+        if let Ok(mut slot) = self.expecting.lock() {
+            *slot = Some(Expectation {
+                folder_id: folder_id.to_string(),
+                folder_label: folder_label.to_string(),
+                until: Instant::now() + PAIRING_WINDOW,
+            });
+        }
+    }
+
+    /// What the interface shows while a code is live, so the open window is
+    /// visible rather than implied. `None` once it has closed.
+    pub fn pairing_window(&self) -> Option<PairingWindow> {
+        let slot = self.expecting.lock().ok()?;
+        let expectation = slot.as_ref()?;
+        let left = expectation.until.checked_duration_since(Instant::now())?;
+        Some(PairingWindow {
+            folder_id: expectation.folder_id.clone(),
+            folder_label: expectation.folder_label.clone(),
+            seconds_left: left.as_secs(),
+        })
+    }
+
+    /// Closes it early, for when the user puts the code away.
+    pub fn close_pairing_window(&self) {
+        if let Ok(mut slot) = self.expecting.lock() {
+            *slot = None;
+        }
+    }
+
+    /// Takes the expectation if it is still valid, dropping it if it has run out.
+    fn live_expectation(&self) -> Option<(String, String)> {
+        let mut slot = self.expecting.lock().ok()?;
+        match slot.as_ref() {
+            Some(e) if e.until > Instant::now() => {
+                Some((e.folder_id.clone(), e.folder_label.clone()))
+            }
+            Some(_) => {
+                *slot = None;
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Lets in the device the open code was meant for.
+    ///
+    /// Only ever admits to the one folder the code was written for, and only
+    /// while the window is open: a device that turns up uninvited still becomes
+    /// an invitation its owner has to answer.
+    ///
+    /// Returns how many were admitted so the interface can say so.
+    pub async fn admit_expected(&self) -> Result<usize> {
+        let Some((folder_id, folder_label)) = self.live_expectation() else {
+            return Ok(0);
+        };
+
+        let pending = self.get("/rest/cluster/pending/devices").await?;
+        let Some(entries) = pending.as_object() else {
+            return Ok(0);
+        };
+
+        let mut admitted = 0;
+        for (device_id, detail) in entries {
+            let name = detail["name"]
+                .as_str()
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| short_id(device_id));
+
+            if !self.knows_device(device_id).await? {
+                self.post(
+                    "/rest/config/devices",
+                    json!({ "deviceID": device_id, "name": name }),
+                )
+                .await?;
+            }
+            self.join_folder(&folder_id, &folder_label, None, device_id).await?;
+            let _ = self
+                .delete(&format!("/rest/cluster/pending/devices?device={device_id}"))
+                .await;
+            let _ = self
+                .delete(&format!(
+                    "/rest/cluster/pending/folders?folder={folder_id}&device={device_id}"
+                ))
+                .await;
+            admitted += 1;
+        }
+        Ok(admitted)
     }
 
     async fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -84,6 +205,59 @@ impl Syncthing {
             .and_then(|d| d["name"].as_str().map(str::to_string))
             .unwrap_or_default();
         Ok(ThisDevice { id, name })
+    }
+
+    /// Gives this device a name on first run if it does not have a usable one.
+    ///
+    /// A device with no name shows up on other people's screens as a raw ID, and
+    /// on Android the engine falls back to the system hostname, which is
+    /// `localhost` on every phone ever made. Two phones then look identical in
+    /// the one place it matters — deciding whether to trust one — so anything
+    /// that carries no information is replaced.
+    pub async fn ensure_device_name(&self, fallback: &str) -> Result<String> {
+        let me = self.this_device().await?;
+        if is_a_real_name(&me.name) {
+            return Ok(me.name);
+        }
+        let fallback = fallback.trim();
+        let chosen = if fallback.is_empty() { "Mi dispositivo" } else { fallback };
+        self.set_this_device_name(chosen).await?;
+        Ok(chosen.to_string())
+    }
+
+    /// Drops devices that no longer share anything with this one.
+    ///
+    /// Reinstalling an app mints a new identity, so the old one lingers for ever
+    /// in a list where it is indistinguishable from the live one. Nothing is
+    /// deleted from disk and no folder changes: these are entries for devices
+    /// that already sync nothing here.
+    ///
+    /// Returns the names dropped, so the interface can say what it did.
+    pub async fn forget_unused_devices(&self) -> Result<Vec<String>> {
+        let me = self.this_device().await?.id;
+        let folders: Vec<FolderConfig> =
+            serde_json::from_value(self.get("/rest/config/folders").await?)?;
+        let devices: Vec<DeviceConfig> =
+            serde_json::from_value(self.get("/rest/config/devices").await?)?;
+
+        let in_use: std::collections::HashSet<&str> = folders
+            .iter()
+            .flat_map(|f| f.devices.iter().map(|d| d.device_id.as_str()))
+            .collect();
+
+        let mut dropped = Vec::new();
+        for device in &devices {
+            if device.device_id == me || in_use.contains(device.device_id.as_str()) {
+                continue;
+            }
+            self.delete(&format!("/rest/config/devices/{}", device.device_id)).await?;
+            dropped.push(if device.name.is_empty() {
+                short_id(&device.device_id)
+            } else {
+                format!("{} ({})", device.name, short_id(&device.device_id))
+            });
+        }
+        Ok(dropped)
     }
 
     pub async fn set_this_device_name(&self, name: &str) -> Result<()> {
@@ -209,6 +383,8 @@ impl Syncthing {
         )
         .await?;
 
+        self.expect_pairing(&folder_id, label);
+
         Ok(PairingCode {
             device_id: me.id,
             device_name: me.name,
@@ -263,6 +439,9 @@ impl Syncthing {
             .into_iter()
             .find(|f| f.id == folder_id)
             .ok_or_else(|| Error::Engine(format!("no folder called {folder_id}")))?;
+
+        self.expect_pairing(&folder.id, &folder.label);
+
         Ok(PairingCode {
             device_id: me.id,
             device_name: me.name,
@@ -448,6 +627,11 @@ impl Syncthing {
     /// Everything waiting for a yes or no: unknown devices that dialled in, and
     /// folders that known devices have offered.
     pub async fn invitations(&self) -> Result<Vec<Invitation>> {
+        // The device this app just wrote a code for is not a stranger, so it is
+        // let in here rather than surfacing as a prompt the user already answered
+        // by handing the code over in the first place.
+        let _ = self.admit_expected().await;
+
         let pending_devices = self.get("/rest/cluster/pending/devices").await?;
         let pending_folders = self.get("/rest/cluster/pending/folders").await?;
         let known: Vec<DeviceConfig> = serde_json::from_value(self.get("/rest/config/devices").await?)?;
@@ -688,6 +872,18 @@ fn random_secret() -> String {
 
 fn short_id(device_id: &str) -> String {
     device_id.split('-').next().unwrap_or(device_id).to_string()
+}
+
+/// Whether a device name tells a person anything.
+///
+/// The engine's own fallbacks do not: on a phone it reports the system
+/// hostname, and every Android device calls itself `localhost`.
+fn is_a_real_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && !name.eq_ignore_ascii_case("localhost")
+        && !name.eq_ignore_ascii_case("android")
+        && !name.eq_ignore_ascii_case("unknown")
 }
 
 /// Counts the copies Syncthing kept when two devices changed the same file.

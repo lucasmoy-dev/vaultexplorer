@@ -71,6 +71,19 @@ pub struct OfferedFolder {
     pub label: String,
 }
 
+/// A code is out there and this device is still letting in whoever redeems it.
+///
+/// Shown on screen for as long as it lasts. An open door nobody can see is the
+/// kind of convenience that turns into a surprise, so the interface counts it
+/// down and offers to close it early.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingWindow {
+    pub folder_id: String,
+    pub folder_label: String,
+    pub seconds_left: u64,
+}
+
 /// This device's own identity, as shown on the pairing screen.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -3,6 +3,11 @@
 Sync a folder between your own devices. Point one device at another with a code
 or a QR, say yes once, and the folder stays the same on both from then on.
 
+"Once" is literal: the device that hands out a code accepts whoever redeems it
+for the next ten minutes, counted down on screen, and only into that one folder.
+A device that turns up without a code is still an invitation someone has to
+answer.
+
 Two-way by default. Nothing goes through anyone's server: devices talk to each
 other directly, and the files are encrypted in transit.
 
@@ -30,6 +35,15 @@ scripts/   Fetches and builds the engine binaries, which are not committed.
 The desktop and the phone link against the *same* `core`, so a pairing code
 written by one is read by the other by construction rather than by two
 implementations agreeing.
+
+Both apps draw the pairing QR and both can read one with the camera, so pairing
+never depends on typing a hundred characters into a phone.
+
+Where a folder lands is asked, never assumed: choosing a directory that already
+carries the folder's name syncs that directory, and choosing anything else
+creates the folder inside it. The interface says which of the two is about to
+happen before you commit, because the difference is invisible until it is
+spelled out.
 
 iOS cannot run a background daemon or reach files outside its sandbox, so
 automatic folder sync is not possible there. If it ever happens it will be

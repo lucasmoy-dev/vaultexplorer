@@ -13,7 +13,19 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import android.os.Environment
+import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -61,6 +73,7 @@ fun HomeScreen() {
     val scope = rememberCoroutineScope()
     var folders by remember { mutableStateOf<List<SharedFolder>>(emptyList()) }
     var invitations by remember { mutableStateOf<List<Invitation>>(emptyList()) }
+    var pairing by remember { mutableStateOf<PairingWindow?>(null) }
     var ready by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -74,9 +87,11 @@ fun HomeScreen() {
         runCatching {
             val f = Repo.folders()
             val i = Repo.invitations()
+            val w = Repo.pairingWindow()
             withContext(Dispatchers.Main) {
                 folders = f
                 invitations = i
+                pairing = w
                 ready = true
                 openFolder = openFolder?.let { open -> f.find { it.id == open.id } }
             }
@@ -106,6 +121,28 @@ fun HomeScreen() {
             error?.let {
                 Banner(tone = MaterialTheme.colorScheme.error) {
                     Text(it, Modifier.clickable { error = null })
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
+            pairing?.let { window ->
+                Banner(tone = MaterialTheme.colorScheme.primary) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Schedule, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Esperando a que otro dispositivo entre en «${window.folderLabel}». " +
+                                "Quedan ${(window.secondsLeft + 59) / 60} min.",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        TextButton(onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) { runCatching { Repo.closePairingWindow() } }
+                                refresh()
+                            }
+                        }) { Text("Ya está") }
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
             }
@@ -161,9 +198,13 @@ fun HomeScreen() {
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { pickForShare = true }, modifier = Modifier.weight(1f)) {
-                    Text("Compartir carpeta")
+                    Icon(Icons.Filled.CreateNewFolder, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Compartir")
                 }
                 OutlinedButton(onClick = { showJoin = true }, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("Unirme")
                 }
             }
@@ -255,17 +296,24 @@ private fun InvitationBanner(invitation: Invitation, onDone: () -> Unit, onError
 
     Banner(tone = MaterialTheme.colorScheme.primary) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                buildString {
-                    append(invitation.fromDeviceName)
-                    append(
-                        if (invitation.folder != null) " quiere compartir «${invitation.folder.label}»"
-                        else " quiere conectarse con este dispositivo"
-                    )
-                },
-                Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    buildString {
+                        append(invitation.fromDeviceName)
+                        append(
+                            if (invitation.folder != null) " quiere compartir «${invitation.folder.label}»"
+                            else " quiere conectarse con este dispositivo"
+                        )
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    shortId(invitation.fromDeviceId),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             TextButton(
                 enabled = !busy,
                 onClick = {
@@ -298,10 +346,12 @@ private fun InvitationBanner(invitation: Invitation, onDone: () -> Unit, onError
             onDismiss = { pickPath = false },
             onPicked = { dir ->
                 pickPath = false
-                val target = File(dir, invitation.folder.label)
                 scope.engineCall(onError, onDone) {
-                    target.mkdirs()
-                    Repo.accept(invitation, target.absolutePath)
+                    // Same rule as joining by code: picking the folder itself
+                    // must not create a copy of it inside itself.
+                    val target = Repo.resolveDestination(dir.absolutePath, invitation.folder.label)
+                    File(target.path).mkdirs()
+                    Repo.accept(invitation, target.path)
                 }
             },
         )
@@ -351,18 +401,55 @@ private fun StatusDot(state: FolderState) {
 @Composable
 private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
+    val qr = rememberQr(code)
+    var secondsLeft by remember { mutableStateOf<Long?>(null) }
+
+    // The window is open for as long as this is on screen, so it is counted
+    // down here rather than left as something the user has to know about.
+    LaunchedEffect(Unit) {
+        while (true) {
+            val window = withContext(Dispatchers.IO) { runCatching { Repo.pairingWindow() }.getOrNull() }
+            secondsLeft = window?.secondsLeft
+            delay(1000)
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Compartir «$label»") },
         text = {
-            Column {
-                Text("Pega este código en el otro dispositivo.", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.height(10.dp))
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    "Escanea esto desde el otro dispositivo, o pega el código.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(12.dp))
+                if (qr != null) {
+                    Image(
+                        bitmap = qr,
+                        contentDescription = "Código QR para compartir $label",
+                        modifier = Modifier.size(220.dp).clip(RoundedCornerShape(10.dp)),
+                    )
+                } else {
+                    Text("No se pudo dibujar el QR", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(12.dp))
                 Text(
                     code,
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall,
                 )
+                secondsLeft?.let {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Entrará solo, sin que aceptes nada más, durante ${countdown(it)}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "Cualquiera con este código puede entrar en «$label». No lo publiques.",
@@ -372,10 +459,20 @@ private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = { copyToClipboard(context, code); onDismiss() }) { Text("Copiar") }
+            TextButton(onClick = { copyToClipboard(context, code); onDismiss() }) {
+                Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Copiar")
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
     )
+}
+
+private fun countdown(seconds: Long): String {
+    val minutes = seconds / 60
+    val rest = seconds % 60
+    return if (minutes == 0L) "$rest s" else "$minutes:${rest.toString().padStart(2, '0')} min"
 }
 
 @Composable
@@ -383,21 +480,35 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
     val scope = rememberCoroutineScope()
     var code by remember { mutableStateOf("") }
     var preview by remember { mutableStateOf<CodePreview?>(null) }
+    var destination by remember { mutableStateOf<Destination?>(null) }
     var problem by remember { mutableStateOf<String?>(null) }
     var pickPath by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+
+    val scan = rememberQrScanner { scanned -> code = scanned }
 
     // Reading the code as it is typed means a wrong one is caught before the
     // user commits to a destination.
     LaunchedEffect(code) {
         if (code.trim().length < 8) {
             preview = null
+            destination = null
             problem = null
             return@LaunchedEffect
         }
-        val outcome = withContext(Dispatchers.IO) { runCatching { Repo.previewCode(code) } }
+        val outcome = withContext(Dispatchers.IO) {
+            runCatching {
+                val read = Repo.previewCode(code)
+                // Somewhere sensible to start: the phone's own folder of that
+                // name if it has one, and never a directory nested in itself.
+                val guess = File(Environment.getExternalStorageDirectory(), read.folderLabel)
+                val chosen = if (guess.isDirectory) guess else Environment.getExternalStorageDirectory()
+                read to Repo.resolveDestination(chosen.absolutePath, read.folderLabel)
+            }
+        }
         outcome.fold(
-            onSuccess = { preview = it; problem = null },
-            onFailure = { preview = null; problem = it.message },
+            onSuccess = { (read, target) -> preview = read; destination = target; problem = null },
+            onFailure = { preview = null; destination = null; problem = it.message },
         )
     }
 
@@ -406,10 +517,16 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
         title = { Text("Unirme a una carpeta") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedButton(onClick = scan, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Escanear el QR del otro dispositivo")
+                }
+                Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it },
-                    label = { Text("Código del otro dispositivo") },
+                    label = { Text("…o pega el código") },
                     placeholder = { Text("HC1…") },
                     minLines = 2,
                 )
@@ -417,29 +534,100 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
                     Spacer(Modifier.height(8.dp))
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
-                preview?.let {
+                val read = preview
+                val target = destination
+                if (read != null && target != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("${read.deviceName} comparte «${read.folderLabel}»")
                     Spacer(Modifier.height(10.dp))
-                    Text("${it.deviceName} comparte «${it.folderLabel}»")
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp))
+                            .padding(12.dp),
+                    ) {
+                        Text(
+                            target.path,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            target.explanation,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { pickPath = true }) {
+                                Icon(Icons.Filled.Edit, null, Modifier.size(17.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Cambiar")
+                            }
+                            TextButton(onClick = {
+                                // Flipping needs the directory the user meant,
+                                // which for "inside" is the one shown and for
+                                // "itself" is its parent.
+                                val chosen =
+                                    if (target.putsItInside) File(target.path).parentFile
+                                    else File(target.path)
+                                val wanted = if (target.putsItInside) "itself" else "inside"
+                                scope.launch {
+                                    val flipped = withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            Repo.resolveDestination(
+                                                (chosen ?: File(target.path)).absolutePath,
+                                                read.folderLabel,
+                                                wanted,
+                                            )
+                                        }
+                                    }
+                                    flipped.onSuccess { destination = it }
+                                }
+                            }) {
+                                Text(
+                                    if (target.putsItInside) "Usar esa carpeta tal cual"
+                                    else "Crear una subcarpeta dentro"
+                                )
+                            }
+                        }
+                    }
                 }
             }
         },
         confirmButton = {
-            TextButton(enabled = preview != null, onClick = { pickPath = true }) { Text("Elegir carpeta") }
+            val target = destination
+            TextButton(
+                enabled = target != null && !busy,
+                onClick = {
+                    busy = true
+                    scope.engineCall(onError, onDone = { busy = false; onJoined() }) {
+                        File(target!!.path).mkdirs()
+                        Repo.redeemCode(code, target.path)
+                    }
+                },
+            ) { Text(if (busy) "Conectando…" else "Unirme") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
 
     if (pickPath) {
-        val label = preview?.folderLabel ?: "Carpeta"
+        val read = preview
         DirectoryPicker(
-            title = "¿Dónde guardo «$label»?",
+            title = "¿Dónde guardo «${read?.folderLabel ?: "la carpeta"}»?",
             onDismiss = { pickPath = false },
             onPicked = { dir ->
                 pickPath = false
-                val target = File(dir, label)
-                scope.engineCall(onError, onJoined) {
-                    target.mkdirs()
-                    Repo.redeemCode(code, target.absolutePath)
+                if (read != null) {
+                    scope.launch {
+                        val resolved = withContext(Dispatchers.IO) {
+                            runCatching { Repo.resolveDestination(dir.absolutePath, read.folderLabel) }
+                        }
+                        resolved.fold(
+                            onSuccess = { destination = it },
+                            onFailure = { onError(it.message ?: "") },
+                        )
+                    }
                 }
             },
         )
@@ -485,6 +673,13 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(peer.name, style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            shortId(peer.id),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -498,14 +693,30 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                             onFailure = { onError(it.message ?: "") },
                         )
                     }
-                }) { Text("Añadir otro dispositivo") }
+                }) {
+                    Icon(Icons.Filled.PersonAdd, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Añadir otro dispositivo")
+                }
                 TextButton(onClick = {
                     scope.engineCall(onError, onDismiss) { Repo.setFolderPaused(folder.id, !paused) }
-                }) { Text(if (paused) "Reanudar" else "Pausar") }
+                }) {
+                    Icon(
+                        if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        null,
+                        Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (paused) "Reanudar" else "Pausar")
+                }
                 TextButton(onClick = {
                     // The files stay on the phone. Only the syncing stops.
                     scope.engineCall(onError, onDismiss) { Repo.stopSharing(folder.id) }
-                }) { Text("Dejar de sincronizar") }
+                }) {
+                    Icon(Icons.Filled.LinkOff, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Dejar de sincronizar")
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
@@ -517,6 +728,7 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var settings by remember { mutableStateOf<Settings?>(null) }
+    var tidy by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -561,6 +773,42 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
                             )
                         }
                     }
+                    Spacer(Modifier.height(14.dp))
+                    Text("Dispositivos olvidados", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        "Reinstalar la app le da al teléfono una identidad nueva, y la vieja se " +
+                            "queda en la lista con el mismo nombre. Esto quita las que ya no " +
+                            "comparten ninguna carpeta. No borra ficheros.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = {
+                        tidy = "Limpiando…"
+                        scope.launch {
+                            val outcome = withContext(Dispatchers.IO) {
+                                runCatching { Repo.forgetUnusedDevices() }
+                            }
+                            tidy = outcome.fold(
+                                onSuccess = {
+                                    if (it.isEmpty()) "No había ninguno que sobrara."
+                                    else "Se quitaron ${it.size}: ${it.joinToString(", ")}."
+                                },
+                                onFailure = { it.message ?: "No se pudo limpiar" },
+                            )
+                        }
+                    }) {
+                        Icon(Icons.Filled.CleaningServices, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Limpiar dispositivos que no comparten nada")
+                    }
+                    tidy?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
                     Spacer(Modifier.height(10.dp))
                     Text("Este dispositivo", style = MaterialTheme.typography.labelMedium)
                     Text(

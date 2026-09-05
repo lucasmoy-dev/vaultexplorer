@@ -11,8 +11,10 @@
 //! to get wrong; a single JSON in, JSON out call is checked by the same tests on
 //! both sides.
 
+use std::path::Path;
 use std::sync::OnceLock;
 
+use homecore::destination;
 use homecore::model::{Invitation, Settings};
 use homecore::{PairingCode, Syncthing};
 use jni::objects::{JClass, JString};
@@ -96,6 +98,32 @@ macro_rules! arg {
 }
 
 fn dispatch(method: &str, args: Value) -> Result<Value, String> {
+    // Answered without the engine: these are pure functions of their arguments,
+    // and the interface needs them while deciding what to do, which is before
+    // anything has been asked of the engine.
+    match method {
+        "previewCode" => return to_value(PairingCode::decode(&arg!(args, "code"))),
+        "resolveDestination" => {
+            let chosen = arg!(args, "chosen");
+            let label = arg!(args, "label");
+            let pick = match args["pick"].as_str() {
+                Some("itself") => destination::Pick::Itself,
+                Some("inside") => destination::Pick::Inside,
+                _ => destination::default_pick(Path::new(&chosen), &label),
+            };
+            let chosen = Path::new(&chosen);
+            return Ok(json!({
+                "path": destination::resolve(chosen, &label, pick).to_string_lossy(),
+                "pick": match pick {
+                    destination::Pick::Itself => "itself",
+                    destination::Pick::Inside => "inside",
+                },
+                "explanation": destination::describe(chosen, &label, pick),
+            }));
+        }
+        _ => {}
+    }
+
     let guard = client_slot().read().map_err(|_| "the app lost track of the engine".to_string())?;
     let client = guard.as_ref().ok_or_else(|| "the sync engine is still starting up".to_string())?;
 
@@ -125,10 +153,6 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
                 let code = client.code_for(&arg!(args, "folderId")).await.map_err(plain)?;
                 Value::String(code.encode().map_err(plain)?)
             }
-
-            // Reads a code without acting on it, so the phone can show what is
-            // being offered before anything touches storage.
-            "previewCode" => to_value(PairingCode::decode(&arg!(args, "code")))?,
 
             "redeemCode" => {
                 let code = PairingCode::decode(&arg!(args, "code")).map_err(plain)?;
@@ -170,6 +194,19 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
 
             "ping" => {
                 client.ping().await.map_err(plain)?;
+                Value::Null
+            }
+
+            "ensureDeviceName" => Value::String(
+                client.ensure_device_name(&arg!(args, "fallback")).await.map_err(plain)?,
+            ),
+
+            "forgetUnusedDevices" => to_value(client.forget_unused_devices().await)?,
+
+            "pairingWindow" => serde_json::to_value(client.pairing_window()).map_err(plain)?,
+
+            "closePairingWindow" => {
+                client.close_pairing_window();
                 Value::Null
             }
 

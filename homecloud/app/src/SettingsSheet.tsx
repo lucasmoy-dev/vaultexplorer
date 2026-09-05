@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { copyText } from "./clipboard";
 import { api, type Settings } from "./api";
+import { BroomIcon, CheckIcon, CopyIcon } from "./Icons";
 
 /**
  * Everything that is not a folder. The device name is at the top because it is
@@ -12,6 +13,7 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [tidyState, setTidyState] = useState<string | null>(null);
 
   useEffect(() => {
     api.settings().then(setSettings).catch((e) => setProblem(String(e)));
@@ -39,9 +41,22 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
   }
 
   async function copyId() {
-    await writeText(settings!.deviceId);
-    setCopied(true);
+    setCopied(await copyText(settings!.deviceId));
     setTimeout(() => setCopied(false), 1600);
+  }
+
+  async function forgetUnused() {
+    setTidyState("working");
+    try {
+      const dropped = await api.forgetUnusedDevices();
+      setTidyState(
+        dropped.length === 0
+          ? "No había ninguno que sobrara."
+          : `Se quitaron ${dropped.length}: ${dropped.join(", ")}.`,
+      );
+    } catch (e) {
+      setTidyState(String(e));
+    }
   }
 
   return (
@@ -115,9 +130,23 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
 
       <hr className="rule" />
 
+      <p className="section">Dispositivos olvidados</p>
+      <p className="hint">
+        Reinstalar la app en un teléfono le da una identidad nueva, y la vieja se queda en la lista
+        con el mismo nombre. Esto quita las que ya no comparten ninguna carpeta. No borra ficheros.
+      </p>
+      <button className="btn" onClick={forgetUnused} disabled={tidyState === "working"}>
+        <BroomIcon />
+        {tidyState === "working" ? "Limpiando…" : "Limpiar dispositivos que no comparten nada"}
+      </button>
+      {tidyState && tidyState !== "working" && <p className="hint">{tidyState}</p>}
+
+      <hr className="rule" />
+
       <p className="section">Este dispositivo</p>
-      <button className="path-picker" onClick={copyId} type="button" title="Copiar">
-        {copied ? "Copiado" : settings.deviceId}
+      <button className="path-open" onClick={copyId} type="button" title="Copiar">
+        {copied ? <CheckIcon /> : <CopyIcon />}
+        <span>{copied ? "Copiado" : settings.deviceId}</span>
       </button>
       <p className="hint">
         Motor de sincronización: Syncthing {settings.engineVersion}
@@ -126,6 +155,7 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
       {problem && <p className="problem">{problem}</p>}
 
       <button className="btn btn-primary" onClick={save}>
+        {saved && <CheckIcon />}
         {saved ? "Guardado" : "Guardar"}
       </button>
     </div>

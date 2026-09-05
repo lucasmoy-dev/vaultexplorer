@@ -62,6 +62,21 @@ export interface CodePreview {
   suggestedPath: string;
 }
 
+/** Which of the two readings of a chosen directory is in force. */
+export type Pick = "inside" | "itself";
+
+export interface Destination {
+  path: string;
+  pick: Pick;
+  explanation: string;
+}
+
+export interface PairingWindow {
+  folderId: string;
+  folderLabel: string;
+  secondsLeft: number;
+}
+
 export const api = {
   readiness: () => invoke<Readiness>("readiness"),
   retryEngine: () => invoke<void>("retry_engine"),
@@ -71,6 +86,11 @@ export const api = {
   codeFor: (folderId: string) => invoke<string>("code_for", { folderId }),
   previewCode: (code: string) => invoke<CodePreview>("preview_code", { code }),
   redeemCode: (code: string, localPath: string) => invoke<void>("redeem_code", { code, localPath }),
+  resolveDestination: (chosen: string, label: string, pick?: Pick) =>
+    invoke<Destination>("resolve_destination", { chosen, label, pick: pick ?? null }),
+  pairingWindow: () => invoke<PairingWindow | null>("pairing_window"),
+  closePairingWindow: () => invoke<void>("close_pairing_window"),
+  forgetUnusedDevices: () => invoke<string[]>("forget_unused_devices"),
   suggestedPath: (label: string) => invoke<string>("suggested_path", { label }),
   acceptInvitation: (invitation: Invitation, localPath: string | null) =>
     invoke<void>("accept_invitation", { invitation, localPath }),
@@ -92,6 +112,11 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value.toFixed(value < 10 ? 1 : 0).replace(".", ",")} ${units[unit]}`;
+}
+
+/** The tail of a device ID, so two devices with the same name are still telling apart. */
+export function shortId(id: string): string {
+  return id.split("-")[0] ?? id;
 }
 
 /** The one line under a folder's name. Says who it syncs with, not how. */

@@ -7,7 +7,8 @@
 
 use std::path::PathBuf;
 
-use homecore::model::{Invitation, Settings, SharedFolder, ThisDevice};
+use homecore::destination::{self, Pick};
+use homecore::model::{Invitation, PairingWindow, Settings, SharedFolder, ThisDevice};
 use homecore::supervisor::{engine_binary, Engine};
 use homecore::PairingCode;
 use serde::Serialize;
@@ -25,6 +26,29 @@ struct AppState {
     /// Kept so a retry can look for the engine again without rediscovering it.
     resource_dir: Option<PathBuf>,
     engine_home: PathBuf,
+    /// This user's home, for guessing a destination that already exists.
+    home_dir: PathBuf,
+}
+
+impl AppState {
+    /// Where to put a folder called `label`, unless the user picks elsewhere.
+    ///
+    /// A folder arriving from another device usually has a counterpart here
+    /// already — that is why the two are being paired. Proposing a fresh
+    /// directory under `~/HomeCloud` when `~/Documents/cloud` is sitting right
+    /// there is how someone ends up syncing an empty folder and believing it
+    /// failed, so anything that exists wins over anything invented.
+    fn suggest_for(&self, label: &str) -> PathBuf {
+        let candidates = [
+            self.home_dir.join(label),
+            self.home_dir.join("Documents").join(label),
+            self.home_dir.join("Documentos").join(label),
+        ];
+        candidates
+            .into_iter()
+            .find(|path| path.is_dir())
+            .unwrap_or_else(|| self.default_root.join(label))
+    }
 }
 
 /// Starts the engine and records either it or the reason it would not start.
@@ -43,11 +67,7 @@ async fn launch_engine(state: &AppState) {
         Ok(engine) => {
             // A device with no name shows up on other people's screens as a
             // meaningless ID, so give it one on first run.
-            if let Ok(me) = engine.client.this_device().await {
-                if me.name.is_empty() {
-                    let _ = engine.client.set_this_device_name(&default_device_name()).await;
-                }
-            }
+            let _ = engine.client.ensure_device_name(&default_device_name()).await;
             *state.engine.write().await = Some(engine);
         }
         Err(e) => *state.startup_problem.write().await = Some(plain(e)),
@@ -149,10 +169,61 @@ struct CodePreview {
 async fn preview_code(state: State<'_, AppState>, code: String) -> UiResult<CodePreview> {
     let parsed = PairingCode::decode(&code).map_err(plain)?;
     Ok(CodePreview {
-        suggested_path: state.default_root.join(&parsed.folder_label).to_string_lossy().into_owned(),
+        suggested_path: state.suggest_for(&parsed.folder_label).to_string_lossy().into_owned(),
         device_name: parsed.device_name,
         folder_label: parsed.folder_label,
     })
+}
+
+/// What choosing `chosen` would actually do, so the interface can say it before
+/// the user commits. `pick` is `"inside"`, `"itself"`, or absent for the default.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Destination {
+    path: String,
+    pick: String,
+    explanation: String,
+}
+
+#[tauri::command]
+async fn resolve_destination(chosen: String, label: String, pick: Option<String>) -> UiResult<Destination> {
+    let chosen = PathBuf::from(chosen);
+    let pick = match pick.as_deref() {
+        Some("itself") => Pick::Itself,
+        Some("inside") => Pick::Inside,
+        _ => destination::default_pick(&chosen, &label),
+    };
+    Ok(Destination {
+        path: destination::resolve(&chosen, &label, pick).to_string_lossy().into_owned(),
+        pick: match pick {
+            Pick::Itself => "itself".into(),
+            Pick::Inside => "inside".into(),
+        },
+        explanation: destination::describe(&chosen, &label, pick),
+    })
+}
+
+/// Whether a handed-out code is still letting devices in, and for how long.
+#[tauri::command]
+async fn pairing_window(state: State<'_, AppState>) -> UiResult<Option<PairingWindow>> {
+    let guard = state.engine.read().await;
+    Ok(guard.as_ref().and_then(|engine| engine.client.pairing_window()))
+}
+
+#[tauri::command]
+async fn close_pairing_window(state: State<'_, AppState>) -> UiResult<()> {
+    let guard = state.engine.read().await;
+    if let Some(engine) = guard.as_ref() {
+        engine.client.close_pairing_window();
+    }
+    Ok(())
+}
+
+/// Drops devices that share nothing here any more — the identities left behind
+/// by reinstalling the app on a phone.
+#[tauri::command]
+async fn forget_unused_devices(state: State<'_, AppState>) -> UiResult<Vec<String>> {
+    with_engine!(state, |client| client.forget_unused_devices())
 }
 
 #[tauri::command]
@@ -166,7 +237,7 @@ async fn redeem_code(state: State<'_, AppState>, code: String, local_path: Strin
 
 #[tauri::command]
 async fn suggested_path(state: State<'_, AppState>, label: String) -> UiResult<String> {
-    Ok(state.default_root.join(label).to_string_lossy().into_owned())
+    Ok(state.suggest_for(&label).to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -246,6 +317,7 @@ pub fn run() {
                 engine: RwLock::new(None),
                 startup_problem: RwLock::new(None),
                 default_root: home_dir.join("HomeCloud"),
+                home_dir: home_dir.clone(),
                 resource_dir,
                 engine_home: data_dir.join("engine"),
             });
@@ -276,6 +348,10 @@ pub fn run() {
             code_for,
             preview_code,
             redeem_code,
+            resolve_destination,
+            pairing_window,
+            close_pairing_window,
+            forget_unused_devices,
             suggested_path,
             accept_invitation,
             decline_invitation,

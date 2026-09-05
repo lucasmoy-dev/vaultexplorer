@@ -120,6 +120,40 @@ data class Settings(
 
 data class CodePreview(val deviceName: String, val folderLabel: String)
 
+/**
+ * What picking a directory would actually do with a folder arriving from a code.
+ *
+ * The phone used to append the folder's name to whatever the user chose, so
+ * choosing `/sdcard/cloud` for a folder called `cloud` synced an empty
+ * `/sdcard/cloud/cloud` beside the real one. Now the decision is named, shown
+ * as a sentence, and reversible before anything is written.
+ */
+data class Destination(val path: String, val pick: String, val explanation: String) {
+    val putsItInside: Boolean get() = pick == "inside"
+
+    companion object {
+        fun from(json: JSONObject) = Destination(
+            path = json.getString("path"),
+            pick = json.getString("pick"),
+            explanation = json.getString("explanation"),
+        )
+    }
+}
+
+/** A code is out and this device is still letting whoever redeems it in. */
+data class PairingWindow(val folderId: String, val folderLabel: String, val secondsLeft: Long) {
+    companion object {
+        fun from(json: JSONObject) = PairingWindow(
+            folderId = json.getString("folderId"),
+            folderLabel = json.getString("folderLabel"),
+            secondsLeft = json.getLong("secondsLeft"),
+        )
+    }
+}
+
+/** The head of a device ID: what tells two devices with the same name apart. */
+fun shortId(id: String): String = id.substringBefore('-')
+
 inline fun <T> JSONArray.map(transform: (JSONObject) -> T): List<T> =
     (0 until length()).map { transform(getJSONObject(it)) }
 

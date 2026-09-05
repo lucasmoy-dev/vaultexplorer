@@ -5,14 +5,30 @@ import {
   api,
   formatBytes,
   peerSummary,
+  shortId,
   type CodePreview,
+  type Destination,
   type Invitation,
+  type PairingWindow,
   type Readiness,
   type SharedFolder,
 } from "./api";
 import { StatusDot, stateLabel } from "./StatusDot";
 import { PairingCard } from "./PairingCard";
 import { SettingsSheet } from "./SettingsSheet";
+import {
+  ClockIcon,
+  CloseIcon,
+  FolderIcon,
+  GearIcon,
+  JoinIcon,
+  PauseIcon,
+  PencilIcon,
+  PlayIcon,
+  PlusIcon,
+  ShareIcon,
+  TrashIcon,
+} from "./Icons";
 
 /** Slow enough not to hammer the engine, fast enough that a sync looks live. */
 const POLL_MS = 1500;
@@ -28,6 +44,7 @@ export default function App() {
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [folders, setFolders] = useState<SharedFolder[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [pairing, setPairing] = useState<PairingWindow | null>(null);
   const [screen, setScreen] = useState<Screen>({ name: "list" });
   const [error, setError] = useState<string | null>(null);
 
@@ -36,9 +53,14 @@ export default function App() {
     setReadiness(status);
     if (!status.ready) return;
     try {
-      const [f, i] = await Promise.all([api.listFolders(), api.listInvitations()]);
+      const [f, i, w] = await Promise.all([
+        api.listFolders(),
+        api.listInvitations(),
+        api.pairingWindow(),
+      ]);
       setFolders(f);
       setInvitations(i);
+      setPairing(w);
       // Keep an open folder sheet in step with what the engine now reports.
       setScreen((current) =>
         current.name === "folder"
@@ -110,6 +132,27 @@ export default function App() {
         </div>
       )}
 
+      {pairing && (
+        <div className="banner banner-open">
+          <p className="banner-text">
+            <ClockIcon />
+            Esperando a que otro dispositivo entre en «<strong>{pairing.folderLabel}</strong>».
+            Quedan {Math.ceil(pairing.secondsLeft / 60)} min.
+          </p>
+          <div className="banner-actions">
+            <button
+              className="btn btn-small"
+              onClick={async () => {
+                await api.closePairingWindow();
+                void refresh();
+              }}
+            >
+              Ya está
+            </button>
+          </div>
+        </div>
+      )}
+
       {invitations.map((invitation) => (
         <InvitationBanner
           key={invitation.fromDeviceId + (invitation.folder?.id ?? "")}
@@ -154,9 +197,11 @@ export default function App() {
 
       <footer className="actions">
         <button className="btn btn-primary" onClick={shareNewFolder}>
+          <ShareIcon />
           Compartir carpeta
         </button>
         <button className="btn" onClick={() => setScreen({ name: "join" })}>
+          <JoinIcon />
           Unirme con un código
         </button>
       </footer>
@@ -232,15 +277,6 @@ function StartupProblem({ problem, onRetry }: { problem: string; onRetry: () => 
   );
 }
 
-function GearIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7">
-      <circle cx="12" cy="12" r="3.1" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
 function InvitationBanner({
   invitation,
   onDone,
@@ -282,12 +318,15 @@ function InvitationBanner({
       <p className="banner-text">
         {invitation.folder ? (
           <>
-            <strong>{invitation.fromDeviceName}</strong> quiere compartir «
+            <strong>{invitation.fromDeviceName}</strong>{" "}
+            <span className="muted mono">{shortId(invitation.fromDeviceId)}</span> quiere compartir «
             <strong>{invitation.folder.label}</strong>»
           </>
         ) : (
           <>
-            <strong>{invitation.fromDeviceName}</strong> quiere conectarse con este dispositivo
+            <strong>{invitation.fromDeviceName}</strong>{" "}
+            <span className="muted mono">{shortId(invitation.fromDeviceId)}</span> quiere conectarse
+            con este dispositivo
           </>
         )}
       </p>
@@ -306,7 +345,7 @@ function InvitationBanner({
 function JoinForm({ onJoined }: { onJoined: () => void }) {
   const [code, setCode] = useState("");
   const [preview, setPreview] = useState<CodePreview | null>(null);
-  const [path, setPath] = useState("");
+  const [destination, setDestination] = useState<Destination | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -315,21 +354,23 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
   useEffect(() => {
     if (code.trim().length < 8) {
       setPreview(null);
+      setDestination(null);
       setProblem(null);
       return;
     }
     let cancelled = false;
     api
       .previewCode(code)
-      .then((p) => {
+      .then(async (p) => {
         if (cancelled) return;
         setPreview(p);
-        setPath(p.suggestedPath);
         setProblem(null);
+        setDestination(await api.resolveDestination(p.suggestedPath, p.folderLabel, "itself"));
       })
       .catch((e) => {
         if (cancelled) return;
         setPreview(null);
+        setDestination(null);
         setProblem(String(e));
       });
     return () => {
@@ -338,14 +379,34 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
   }, [code]);
 
   async function choosePath() {
-    const picked = await open({ directory: true, multiple: false, title: "¿Dónde guardo la carpeta?" });
-    if (typeof picked === "string") setPath(picked);
+    if (!preview) return;
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: `¿Dónde guardo «${preview.folderLabel}»?`,
+    });
+    if (typeof picked !== "string") return;
+    // No pick is assumed: choosing a directory already called like the folder
+    // means "sync this one", anything else means "put it in here", and the
+    // sentence below says which one is about to happen.
+    setDestination(await api.resolveDestination(picked, preview.folderLabel));
+  }
+
+  async function flipPick() {
+    if (!preview || !destination) return;
+    const chosen =
+      destination.pick === "inside"
+        ? destination.path
+        : (destination.path.split("/").slice(0, -1).join("/") || "/");
+    const wanted = destination.pick === "inside" ? "itself" : "inside";
+    setDestination(await api.resolveDestination(chosen, preview.folderLabel, wanted));
   }
 
   async function join() {
+    if (!destination) return;
     setBusy(true);
     try {
-      await api.redeemCode(code, path);
+      await api.redeemCode(code, destination.path);
       onJoined();
     } catch (e) {
       setProblem(String(e));
@@ -369,18 +430,33 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
 
       {problem && <p className="problem">{problem}</p>}
 
-      {preview && (
+      {preview && destination && (
         <>
           <p className="preview">
             <strong>{preview.deviceName}</strong> comparte «<strong>{preview.folderLabel}</strong>»
           </p>
-          <label className="field">
-            <span>Se guardará en</span>
-            <button className="path-picker" onClick={choosePath} type="button">
-              {path}
-            </button>
-          </label>
-          <button className="btn btn-primary" onClick={join} disabled={busy || !path}>
+
+          <div className="destination">
+            <p className="destination-path">
+              <FolderIcon />
+              <span>{destination.path}</span>
+            </p>
+            <p className="destination-explain">{destination.explanation}</p>
+            <div className="destination-actions">
+              <button className="btn btn-small" onClick={choosePath} type="button">
+                <PencilIcon />
+                Cambiar carpeta
+              </button>
+              <button className="btn btn-small btn-quiet" onClick={flipPick} type="button">
+                {destination.pick === "inside"
+                  ? "Usar esa carpeta tal cual"
+                  : "Crear una subcarpeta dentro"}
+              </button>
+            </div>
+          </div>
+
+          <button className="btn btn-primary" onClick={join} disabled={busy}>
+            <JoinIcon />
             {busy ? "Conectando…" : "Unirme"}
           </button>
         </>
@@ -422,8 +498,14 @@ function FolderSheet({
       <p className="sheet-line muted">
         {folder.files} ficheros · {formatBytes(folder.bytes)}
       </p>
-      <button className="path-picker" onClick={() => void revealItemInDir(folder.path)} type="button">
-        {folder.path}
+      <button
+        className="path-open"
+        onClick={() => void revealItemInDir(folder.path)}
+        type="button"
+        title="Abrir en el explorador de archivos"
+      >
+        <FolderIcon />
+        <span>{folder.path}</span>
       </button>
 
       {folder.peers.length > 0 && (
@@ -432,6 +514,7 @@ function FolderSheet({
             <li key={peer.id}>
               <span className={`dot ${peer.connected ? "dot-ok" : "dot-idle"}`} aria-hidden />
               {peer.name}
+              <span className="muted mono">{shortId(peer.id)}</span>
               <span className="muted">{peer.connected ? "conectado" : "sin conexión"}</span>
             </li>
           ))}
@@ -440,6 +523,7 @@ function FolderSheet({
 
       <div className="sheet-actions">
         <button className="btn" onClick={showCode}>
+          <PlusIcon />
           Añadir otro dispositivo
         </button>
         <button
@@ -453,6 +537,7 @@ function FolderSheet({
             }
           }}
         >
+          {paused ? <PlayIcon /> : <PauseIcon />}
           {paused ? "Reanudar" : "Pausar"}
         </button>
         {confirmingStop ? (
@@ -468,10 +553,12 @@ function FolderSheet({
               }
             }}
           >
+            <TrashIcon />
             Sí, dejar de sincronizar
           </button>
         ) : (
           <button className="btn btn-quiet" onClick={() => setConfirmingStop(true)}>
+            <TrashIcon />
             Dejar de sincronizar
           </button>
         )}
@@ -500,8 +587,8 @@ function Sheet({
       <section className="sheet" onClick={(e) => e.stopPropagation()}>
         <header className="sheet-head">
           <h2>{title}</h2>
-          <button className="btn btn-quiet" onClick={onClose} aria-label="Cerrar">
-            ✕
+          <button className="btn btn-quiet btn-icon" onClick={onClose} aria-label="Cerrar">
+            <CloseIcon />
           </button>
         </header>
         {children}

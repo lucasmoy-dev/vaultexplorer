@@ -7,6 +7,7 @@
 //! top of Syncthing's much larger one of devices, folders and cluster config.
 
 pub mod client;
+pub mod destination;
 pub mod device_id;
 pub mod error;
 pub mod model;
@@ -14,6 +15,7 @@ pub mod pairing;
 pub mod supervisor;
 
 pub use client::Syncthing;
+pub use destination::{Pick, resolve as resolve_destination};
 pub use device_id::DeviceId;
 pub use error::{Error, Result};
 pub use pairing::PairingCode;
