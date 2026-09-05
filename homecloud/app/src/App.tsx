@@ -16,6 +16,7 @@ import {
 import { StatusDot, stateLabel } from "./StatusDot";
 import { PairingCard } from "./PairingCard";
 import { SettingsSheet } from "./SettingsSheet";
+import { QrScanner } from "./QrScanner";
 import {
   ClockIcon,
   CloseIcon,
@@ -26,6 +27,7 @@ import {
   PencilIcon,
   PlayIcon,
   PlusIcon,
+  QrIcon,
   ShareIcon,
   TrashIcon,
 } from "./Icons";
@@ -348,6 +350,7 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
   const [destination, setDestination] = useState<Destination | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   // Reading the code as it is pasted means the user finds out it is wrong
   // immediately, rather than after committing to a destination folder.
@@ -415,10 +418,26 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
     }
   }
 
+  if (scanning) {
+    return (
+      <QrScanner
+        onScanned={(scanned) => {
+          setCode(scanned);
+          setScanning(false);
+        }}
+        onClose={() => setScanning(false)}
+      />
+    );
+  }
+
   return (
     <div className="join">
+      <button className="btn" onClick={() => setScanning(true)} type="button">
+        <QrIcon />
+        Escanear el QR del otro dispositivo
+      </button>
       <label className="field">
-        <span>Pega aquí el código del otro dispositivo</span>
+        <span>…o pega aquí el código</span>
         <textarea
           value={code}
           onChange={(e) => setCode(e.target.value)}

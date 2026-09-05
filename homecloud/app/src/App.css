@@ -193,7 +193,6 @@ body {
 .pairing-note { margin: 0; font-size: 12px; color: var(--muted); }
 
 /* ---- join form ---- */
-.join { display: flex; flex-direction: column; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
 .field textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -246,6 +245,17 @@ body {
   cursor: pointer;
 }
 .path-open:hover { border-color: var(--accent); }
+
+.join { display: flex; flex-direction: column; gap: 12px; }
+.scanner { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.scanner-video {
+  width: 100%;
+  max-width: 340px;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  background: #000;
+  object-fit: cover;
+}
 
 .banner-open { display: flex; align-items: center; gap: 12px; border-color: var(--accent); }
 .banner-open .banner-text { display: flex; align-items: center; gap: 8px; }

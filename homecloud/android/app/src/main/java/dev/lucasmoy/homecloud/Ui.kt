@@ -16,6 +16,8 @@ import androidx.compose.foundation.verticalScroll
 import android.os.Environment
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
+import android.content.Intent
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
@@ -27,6 +29,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -80,7 +83,7 @@ fun HomeScreen() {
     var showSettings by remember { mutableStateOf(false) }
     var showJoin by remember { mutableStateOf(false) }
     var pickForShare by remember { mutableStateOf(false) }
-    var shareCode by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var codeOnScreen by remember { mutableStateOf<Pair<String, String>?>(null) }
     var openFolder by remember { mutableStateOf<SharedFolder?>(null) }
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
@@ -222,7 +225,7 @@ fun HomeScreen() {
                         runCatching { Repo.shareFolder(dir.absolutePath, dir.name) }
                     }
                     outcome.fold(
-                        onSuccess = { shareCode = dir.name to it },
+                        onSuccess = { codeOnScreen = dir.name to it },
                         onFailure = { error = it.message },
                     )
                 }
@@ -230,8 +233,8 @@ fun HomeScreen() {
         )
     }
 
-    shareCode?.let { (label, code) ->
-        CodeDialog(label = label, code = code, onDismiss = { shareCode = null })
+    codeOnScreen?.let { (label, code) ->
+        CodeDialog(label = label, code = code, onDismiss = { codeOnScreen = null })
     }
 
     if (showJoin) {
@@ -403,6 +406,7 @@ private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val qr = rememberQr(code)
     var secondsLeft by remember { mutableStateOf<Long?>(null) }
+    var copied by remember { mutableStateOf(false) }
 
     // The window is open for as long as this is on screen, so it is counted
     // down here rather than left as something the user has to know about.
@@ -423,7 +427,7 @@ private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "Escanea esto desde el otro dispositivo, o pega el código.",
+                    "Escanea esto desde el otro dispositivo, o pásale el código.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(12.dp))
@@ -436,14 +440,40 @@ private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
                 } else {
                     Text("No se pudo dibujar el QR", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    code,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
+
+                Spacer(Modifier.height(14.dp))
+                // The same code as the QR, in a field rather than as text: it
+                // can be selected and dragged out by hand when neither copying
+                // nor sharing is what the moment calls for.
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Código") },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    maxLines = 2,
+                    modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { copyToClipboard(context, code); copied = true }) {
+                        Icon(
+                            if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                            null,
+                            Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (copied) "Copiado" else "Copiar")
+                    }
+                    OutlinedButton(onClick = { shareCode(context, label, code) }) {
+                        Icon(Icons.Filled.Share, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Compartir")
+                    }
+                }
+
                 secondsLeft?.let {
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     Text(
                         "Entrará solo, sin que aceptes nada más, durante ${countdown(it)}.",
                         style = MaterialTheme.typography.bodySmall,
@@ -458,15 +488,27 @@ private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
                 )
             }
         },
-        confirmButton = {
-            TextButton(onClick = { copyToClipboard(context, code); onDismiss() }) {
-                Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Copiar")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
     )
+}
+
+/**
+ * Hands the code to whatever the user already uses to talk to themselves.
+ *
+ * Pairing usually happens between two devices in the same pair of hands, and
+ * the code has to cross that gap somehow. Copying only helps if the other
+ * device shares a clipboard; sending it through a chat is what most people
+ * actually do.
+ */
+private fun shareCode(context: Context, label: String, code: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "Código de HomeCloud para «$label»")
+        putExtra(Intent.EXTRA_TEXT, code)
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(intent, "Compartir el código"))
+    }
 }
 
 private fun countdown(seconds: Long): String {

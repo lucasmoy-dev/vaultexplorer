@@ -291,6 +291,46 @@ fn default_device_name() -> String {
         .unwrap_or_else(|| "Mi ordenador".to_string())
 }
 
+/// Lets the pairing screen open the camera to read a QR.
+///
+/// WebKitGTK says no twice: media streams are off in its settings, and every
+/// request after that is refused unless the embedder answers it. Tauri does not,
+/// so `getUserMedia` fails with a permission error and the scan button would be
+/// a button that never works.
+///
+/// Only camera requests are granted. Anything else — a microphone, the screen —
+/// is left to the default refusal, because nothing in this app has any business
+/// asking for them.
+#[cfg(target_os = "linux")]
+fn enable_camera(window: &tauri::WebviewWindow) {
+    use webkit2gtk::glib::Cast;
+    use webkit2gtk::{
+        PermissionRequestExt, SettingsExt, UserMediaPermissionRequest,
+        UserMediaPermissionRequestExt, WebViewExt,
+    };
+
+    let _ = window.with_webview(|webview| {
+        let view = webview.inner();
+        if let Some(settings) = WebViewExt::settings(&view) {
+            settings.set_enable_media_stream(true);
+        }
+        view.connect_permission_request(|_, request| {
+            let is_camera = request
+                .downcast_ref::<UserMediaPermissionRequest>()
+                .is_some_and(|media| media.is_for_video_device());
+            if is_camera {
+                request.allow();
+            } else {
+                request.deny();
+            }
+            true
+        });
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn enable_camera(_window: &tauri::WebviewWindow) {}
+
 pub fn run() {
     tauri::Builder::default()
         // Must be registered first. Two copies of the app would each start an
@@ -321,6 +361,10 @@ pub fn run() {
                 resource_dir,
                 engine_home: data_dir.join("engine"),
             });
+
+            if let Some(window) = app.get_webview_window("main") {
+                enable_camera(&window);
+            }
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
