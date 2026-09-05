@@ -27,6 +27,8 @@ pub struct Engine {
     /// output is the only thing that says why, and throwing it away turns every
     /// failure into the same useless "it did not start".
     log: Arc<Mutex<VecDeque<String>>>,
+    /// Kept so shutting down can clear the record of the running engine.
+    home: PathBuf,
 }
 
 /// Enough of the engine's output to explain a failure, not enough to grow
@@ -47,6 +49,12 @@ impl Engine {
             )));
         }
         std::fs::create_dir_all(home)?;
+
+        // An engine left over from a copy of the app that died without cleaning
+        // up still holds this home directory, and the new one then cannot start.
+        // The user is told the app "could not start" and has no window to close,
+        // because the thing in the way has no window. So it is cleared here.
+        reap_previous_engine(home);
 
         // First run only: mint the device certificate and identity.
         if !home.join("config.xml").exists() {
@@ -100,12 +108,16 @@ impl Engine {
             .spawn()
             .map_err(|e| Error::Engine(format!("could not launch the sync engine: {e}")))?;
 
+        if let Some(pid) = child.id() {
+            let _ = std::fs::write(pid_file(home), pid.to_string());
+        }
+
         let log: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         capture(child.stdout.take(), Arc::clone(&log));
         capture(child.stderr.take(), Arc::clone(&log));
 
         let client = Syncthing::new(&base_url, api_key);
-        let mut engine = Engine { child: Some(child), client, base_url, log };
+        let mut engine = Engine { child: Some(child), client, base_url, log, home: home.to_path_buf() };
         if let Err(e) = engine.wait_until_ready().await {
             // Leaving a half-started engine behind would make the next attempt
             // fail for a different reason than this one.
@@ -167,9 +179,128 @@ impl Engine {
             let _ = child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
+        let _ = std::fs::remove_file(pid_file(&self.home));
         Ok(())
     }
 }
+
+/// Where the running engine's process id is recorded, beside its own data.
+fn pid_file(home: &Path) -> PathBuf {
+    home.join("engine.pid")
+}
+
+/// Stops an engine left behind by a previous run of the app.
+///
+/// `kill_on_drop` covers a tidy exit, and nothing else: a crash, a SIGKILL or a
+/// session ending leaves the engine running and holding this home directory.
+/// Every later launch then fails with a message telling the user to close a
+/// window that does not exist.
+///
+/// Best effort by design — being unable to clean up must not stop a launch that
+/// might well succeed anyway.
+fn reap_previous_engine(home: &Path) {
+    let path = pid_file(home);
+    let recorded = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| c.trim().parse::<u32>().ok());
+    let _ = std::fs::remove_file(&path);
+
+    // The engine runs as a monitor plus the process doing the work, so killing
+    // only the pid we recorded can leave the other one holding the directory.
+    // Everything serving *this* home goes, and nothing else does.
+    let mut doomed = engines_serving(home);
+    if let Some(pid) = recorded {
+        if is_our_engine(pid, home) && !doomed.contains(&pid) {
+            doomed.push(pid);
+        }
+    }
+    if doomed.is_empty() {
+        return;
+    }
+
+    for pid in &doomed {
+        signal(*pid, "TERM");
+    }
+    for _ in 0..25 {
+        doomed.retain(|pid| is_our_engine(*pid, home));
+        if doomed.is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    for pid in &doomed {
+        signal(*pid, "KILL");
+    }
+}
+
+/// Whether `pid` is alive *and* is an engine serving this home directory.
+///
+/// Both halves matter: process ids are reused, and the whole point is to never
+/// kill something that merely inherited the number.
+fn is_our_engine(pid: u32, home: &Path) -> bool {
+    command_line_of(pid).is_some_and(|line| serves_this_home(&line, home))
+}
+
+/// The test that decides whether a process is ours, kept separate from the
+/// business of reading it out of the operating system so it can be checked.
+fn serves_this_home(command_line: &str, home: &Path) -> bool {
+    command_line.contains("syncthing") && command_line.contains(&*home.to_string_lossy())
+}
+
+#[cfg(target_os = "linux")]
+fn engines_serving(home: &Path) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| *pid != std::process::id() && is_our_engine(*pid, home))
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn engines_serving(_home: &Path) -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn command_line_of(pid: u32) -> Option<String> {
+    // NUL-separated on Linux; the separators become spaces so a path that is one
+    // whole argument still matches.
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(String::from_utf8_lossy(&raw).replace('\0', " "))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn command_line_of(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(not(unix))]
+fn command_line_of(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(unix)]
+fn signal(pid: u32, name: &str) {
+    let _ = std::process::Command::new("kill")
+        .arg(format!("-{name}"))
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(unix))]
+fn signal(_pid: u32, _name: &str) {}
 
 /// The name the engine binary is shipped under on this platform.
 pub fn engine_file_name() -> &'static str {
@@ -264,6 +395,37 @@ fn mint_api_key() -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{pid_file, serves_this_home};
+    use std::path::Path;
+
+    #[test]
+    fn an_engine_serving_this_home_is_ours() {
+        let home = Path::new("/home/lucas/.local/share/com.linux.homecloud/engine");
+        let line = format!("/usr/lib/HomeCloud/resources/syncthing serve --home {} --gui-address 127.0.0.1:39551", home.display());
+        assert!(serves_this_home(&line, home));
+    }
+
+    /// The user may well run their own Syncthing. Killing it would be a far
+    /// worse bug than the one being fixed.
+    #[test]
+    fn an_unrelated_syncthing_is_left_alone() {
+        let home = Path::new("/home/lucas/.local/share/com.linux.homecloud/engine");
+        let line = "/usr/bin/syncthing serve --home /home/lucas/.config/syncthing";
+        assert!(!serves_this_home(line, home));
+    }
+
+    #[test]
+    fn a_recycled_process_id_is_left_alone() {
+        let home = Path::new("/home/lucas/.local/share/com.linux.homecloud/engine");
+        assert!(!serves_this_home("/usr/bin/firefox", home));
+    }
+
+    #[test]
+    fn the_pid_file_lives_beside_the_engines_own_data() {
+        let home = Path::new("/tmp/engine-home");
+        assert_eq!(pid_file(home), home.join("engine.pid"));
+    }
+
     use super::*;
 
     #[test]
