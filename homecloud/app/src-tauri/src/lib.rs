@@ -16,8 +16,42 @@ use tokio::sync::RwLock;
 
 struct AppState {
     engine: RwLock<Option<Engine>>,
+    /// Why the engine is not running, already phrased for a person. Without
+    /// this a failed launch is indistinguishable from a slow one, and the
+    /// window sits on "Arrancando…" forever.
+    startup_problem: RwLock<Option<String>>,
     /// Where folders joined from a code are put unless the user picks elsewhere.
     default_root: PathBuf,
+    /// Kept so a retry can look for the engine again without rediscovering it.
+    resource_dir: Option<PathBuf>,
+    engine_home: PathBuf,
+}
+
+/// Starts the engine and records either it or the reason it would not start.
+async fn launch_engine(state: &AppState) {
+    *state.startup_problem.write().await = None;
+
+    let binary = match engine_binary(state.resource_dir.as_deref()) {
+        Ok(path) => path,
+        Err(e) => {
+            *state.startup_problem.write().await = Some(plain(e));
+            return;
+        }
+    };
+
+    match Engine::start(&binary, &state.engine_home).await {
+        Ok(engine) => {
+            // A device with no name shows up on other people's screens as a
+            // meaningless ID, so give it one on first run.
+            if let Ok(me) = engine.client.this_device().await {
+                if me.name.is_empty() {
+                    let _ = engine.client.set_this_device_name(&default_device_name()).await;
+                }
+            }
+            *state.engine.write().await = Some(engine);
+        }
+        Err(e) => *state.startup_problem.write().await = Some(plain(e)),
+    }
 }
 
 /// Commands hand the interface a sentence, never a stack trace.
@@ -51,12 +85,27 @@ struct Readiness {
 async fn readiness(state: State<'_, AppState>) -> UiResult<Readiness> {
     let guard = state.engine.read().await;
     let Some(engine) = guard.as_ref() else {
-        return Ok(Readiness { ready: false, device: None, problem: None });
+        return Ok(Readiness {
+            ready: false,
+            device: None,
+            problem: state.startup_problem.read().await.clone(),
+        });
     };
     match engine.client.this_device().await {
         Ok(device) => Ok(Readiness { ready: true, device: Some(device), problem: None }),
         Err(e) => Ok(Readiness { ready: false, device: None, problem: Some(plain(e)) }),
     }
+}
+
+/// Tries again after a failed launch, so a transient cause (another copy that
+/// has since closed, a machine still waking up) does not need the app restarted.
+#[tauri::command]
+async fn retry_engine(state: State<'_, AppState>) -> UiResult<()> {
+    if let Some(mut engine) = state.engine.write().await.take() {
+        let _ = engine.stop().await;
+    }
+    launch_engine(&state).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -173,6 +222,16 @@ fn default_device_name() -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first. Two copies of the app would each start an
+        // engine against the same database; the second one loses, dies, and
+        // leaves the user watching a window that never finishes starting.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -185,32 +244,15 @@ pub fn run() {
 
             app.manage(AppState {
                 engine: RwLock::new(None),
+                startup_problem: RwLock::new(None),
                 default_root: home_dir.join("HomeCloud"),
+                resource_dir,
+                engine_home: data_dir.join("engine"),
             });
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let binary = match engine_binary(resource_dir.as_deref()) {
-                    Ok(path) => path,
-                    Err(e) => {
-                        eprintln!("homecloud: {e}");
-                        return;
-                    }
-                };
-                match Engine::start(&binary, &data_dir.join("engine")).await {
-                    Ok(engine) => {
-                        // A device with no name shows up on other people's
-                        // screens as a meaningless ID, so give it one on first run.
-                        if let Ok(me) = engine.client.this_device().await {
-                            if me.name.is_empty() {
-                                let _ = engine.client.set_this_device_name(&default_device_name()).await;
-                            }
-                        }
-                        let state = handle.state::<AppState>();
-                        *state.engine.write().await = Some(engine);
-                    }
-                    Err(e) => eprintln!("homecloud: {e}"),
-                }
+                launch_engine(&handle.state::<AppState>()).await;
             });
             Ok(())
         })
@@ -241,6 +283,7 @@ pub fn run() {
             stop_sharing,
             settings,
             save_settings,
+            retry_engine,
         ])
         .run(tauri::generate_context!())
         .expect("error while running HomeCloud");

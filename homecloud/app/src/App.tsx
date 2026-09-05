@@ -73,13 +73,19 @@ export default function App() {
     }
   }
 
+  // A failed launch and a slow one look identical from here unless the reason
+  // is shown; without this the window sits on "Arrancando…" forever.
   if (!readiness?.ready) {
     return (
       <main className="app centered">
-        <div className="starting">
-          <div className="spinner" />
-          <p>{readiness?.problem ?? "Arrancando…"}</p>
-        </div>
+        {readiness?.problem ? (
+          <StartupProblem problem={readiness.problem} onRetry={refresh} />
+        ) : (
+          <div className="starting">
+            <div className="spinner" />
+            <p>Arrancando…</p>
+          </div>
+        )}
       </main>
     );
   }
@@ -189,6 +195,40 @@ export default function App() {
         </Sheet>
       )}
     </main>
+  );
+}
+
+function StartupProblem({ problem, onRetry }: { problem: string; onRetry: () => void }) {
+  const [retrying, setRetrying] = useState(false);
+
+  async function retry() {
+    setRetrying(true);
+    try {
+      await api.retryEngine();
+    } finally {
+      setRetrying(false);
+      onRetry();
+    }
+  }
+
+  // The commonest cause by far, and the one the raw message explains worst.
+  const looksLikeASecondCopy =
+    problem.includes("stopped while starting") || problem.includes("never answered");
+
+  return (
+    <div className="startup-problem">
+      <p className="startup-title">HomeCloud no pudo arrancar</p>
+      {looksLikeASecondCopy && (
+        <p className="startup-hint">
+          Lo más habitual es que ya haya otra copia de HomeCloud abierta. Ciérrala y vuelve a
+          intentarlo.
+        </p>
+      )}
+      <p className="startup-detail">{problem}</p>
+      <button className="btn btn-primary" onClick={retry} disabled={retrying}>
+        {retrying ? "Reintentando…" : "Reintentar"}
+      </button>
+    </div>
   );
 }
 

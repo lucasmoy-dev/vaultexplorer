@@ -268,3 +268,23 @@ body {
 .toggle input { margin-top: 2px; flex: 0 0 auto; accent-color: var(--accent); width: 15px; height: 15px; }
 .toggle span { display: flex; flex-direction: column; gap: 2px; }
 .toggle em { font-style: normal; font-size: 12px; color: var(--muted); }
+
+/* ---- startup failure ---- */
+.startup-problem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 0 24px;
+  max-width: 420px;
+}
+.startup-title { margin: 0; font-weight: 600; }
+.startup-hint { margin: 0; color: var(--text); }
+.startup-detail {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-word;
+}

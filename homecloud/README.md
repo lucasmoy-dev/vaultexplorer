@@ -79,8 +79,9 @@ emulator running the real engine:
   camera path needs CameraX and is the obvious next piece of the "just scan it"
   promise.
 - **The engine can be orphaned on the desktop.** It is stopped when the window
-  closes, but a `SIGKILL` leaves the child process running. It should be adopted
-  on next launch instead of a second one being spawned.
+  closes, but a `SIGKILL` leaves the child process running. The next launch now
+  says so instead of hanging, but it should adopt the stray engine rather than
+  asking the user to deal with it.
 - **Copying the code to the clipboard is unverified on the desktop.** The button
   produced no visible result on this machine (X11 + WebKitGTK); the QR and the
   on-screen code both work, and the button now reports failure instead of doing

@@ -6,9 +6,11 @@
 //! command line, so nothing long-lived sits on disk for another local program
 //! to find.
 
+use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rand::Rng;
@@ -21,7 +23,15 @@ pub struct Engine {
     child: Option<Child>,
     pub client: Syncthing,
     pub base_url: String,
+    /// The engine's last words. Kept because when it refuses to start, its own
+    /// output is the only thing that says why, and throwing it away turns every
+    /// failure into the same useless "it did not start".
+    log: Arc<Mutex<VecDeque<String>>>,
 }
+
+/// Enough of the engine's output to explain a failure, not enough to grow
+/// without bound over a long run.
+const LOG_LINES_KEPT: usize = 40;
 
 /// How long the engine gets to answer before we call the launch failed. A cold
 /// start on a slow disk takes a few seconds; anything past this is broken.
@@ -69,7 +79,7 @@ impl Engine {
         let api_key = mint_api_key();
         let base_url = format!("http://127.0.0.1:{port}");
 
-        let child = Command::new(binary)
+        let mut child = Command::new(binary)
             .arg("serve")
             .arg("--home")
             .arg(home)
@@ -84,31 +94,70 @@ impl Engine {
             .arg("--no-restart")
             .arg("--log-level")
             .arg("WARN")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| Error::Engine(format!("could not launch the sync engine: {e}")))?;
 
+        let log: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+        capture(child.stdout.take(), Arc::clone(&log));
+        capture(child.stderr.take(), Arc::clone(&log));
+
         let client = Syncthing::new(&base_url, api_key);
-        let engine = Engine { child: Some(child), client, base_url };
-        engine.wait_until_ready().await?;
+        let mut engine = Engine { child: Some(child), client, base_url, log };
+        if let Err(e) = engine.wait_until_ready().await {
+            // Leaving a half-started engine behind would make the next attempt
+            // fail for a different reason than this one.
+            let _ = engine.stop().await;
+            return Err(e);
+        }
         engine.client.apply_house_defaults().await?;
         Ok(engine)
     }
 
-    async fn wait_until_ready(&self) -> Result<()> {
+    async fn wait_until_ready(&mut self) -> Result<()> {
         let deadline = tokio::time::Instant::now() + STARTUP_TIMEOUT;
         loop {
             if self.client.ping().await.is_ok() {
                 return Ok(());
             }
+            // A dead engine is never going to answer, so say so now rather than
+            // making the user watch a spinner for the rest of the timeout.
+            if let Some(child) = self.child.as_mut() {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return Err(Error::Engine(self.explain("the sync engine stopped while starting")));
+                }
+            }
             if tokio::time::Instant::now() >= deadline {
-                return Err(Error::Engine(
-                    "the sync engine started but never answered — try restarting HomeCloud".into(),
-                ));
+                return Err(Error::Engine(self.explain("the sync engine never answered")));
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+
+    /// Pairs our summary with whatever the engine actually said, which is the
+    /// difference between a shrug and something the user can act on.
+    fn explain(&self, summary: &str) -> String {
+        let detail = self
+            .log
+            .lock()
+            .ok()
+            .map(|lines| {
+                lines
+                    .iter()
+                    .rev()
+                    .take(4)
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            })
+            .unwrap_or_default();
+        if detail.trim().is_empty() {
+            summary.to_string()
+        } else {
+            format!("{summary}: {detail}")
         }
     }
 
@@ -184,6 +233,27 @@ pub fn engine_binary(resource_dir: Option<&Path>) -> Result<PathBuf> {
 fn free_port() -> Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     Ok(listener.local_addr()?.port())
+}
+
+/// Drains one of the engine's output streams into the ring buffer. A process
+/// whose output nobody reads eventually blocks on a full pipe.
+fn capture<R>(stream: Option<R>, log: Arc<Mutex<VecDeque<String>>>)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let Some(stream) = stream else { return };
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(stream).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(mut log) = log.lock() {
+                if log.len() == LOG_LINES_KEPT {
+                    log.pop_front();
+                }
+                log.push_back(line);
+            }
+        }
+    });
 }
 
 fn mint_api_key() -> String {

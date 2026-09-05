@@ -64,6 +64,7 @@ export interface CodePreview {
 
 export const api = {
   readiness: () => invoke<Readiness>("readiness"),
+  retryEngine: () => invoke<void>("retry_engine"),
   listFolders: () => invoke<SharedFolder[]>("list_folders"),
   listInvitations: () => invoke<Invitation[]>("list_invitations"),
   shareFolder: (path: string, label: string) => invoke<string>("share_folder", { path, label }),
