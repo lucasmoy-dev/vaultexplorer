@@ -832,6 +832,9 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
                         }
                     }
                     Spacer(Modifier.height(14.dp))
+                    UpdateRow(onError = onError)
+
+                    Spacer(Modifier.height(14.dp))
                     Text("Idioma", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("es" to "Español", "en" to "Inglés").forEach { (code, name) ->
@@ -906,6 +909,105 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
+}
+
+/**
+ * Looking for a newer HomeCloud, and installing it.
+ *
+ * The whole flow lives in one row because it is one thought: what version is
+ * this, is there a newer one, install it. Android's three-step permission
+ * dance around installing a package is handled by [Updater]; the only part
+ * that surfaces here is being sent to the right settings screen when the
+ * permission is missing, because a button that silently does nothing is worse
+ * than one that explains itself.
+ */
+@Composable
+private fun UpdateRow(onError: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf<String?>(null) }
+    var found by remember { mutableStateOf<Updater.Available?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    val current = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+        }.getOrDefault("")
+    }
+
+    Text("Actualizaciones", style = MaterialTheme.typography.labelMedium)
+    Text(
+        "Tienes la versión $current. Se busca en las publicaciones de GitHub; " +
+            "la instalación la confirmas tú.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(
+            enabled = !busy,
+            onClick = {
+                busy = true
+                state = "Comprobando…"
+                scope.launch {
+                    val outcome = withContext(Dispatchers.IO) { Updater.check(current) }
+                    busy = false
+                    outcome.fold(
+                        onSuccess = { available ->
+                            if (available.hasUpdate) {
+                                found = available
+                                state = null
+                            } else {
+                                found = null
+                                state = "Ya tienes la última versión ($current)."
+                            }
+                        },
+                        onFailure = { state = "No se pudo comprobar: ${it.message}" },
+                    )
+                }
+            },
+        ) { Text(if (busy) "Comprobando…" else "Buscar actualizaciones") }
+
+        found?.let { available ->
+            Button(
+                enabled = !busy,
+                onClick = {
+                    // Checked before downloading tens of megabytes that could
+                    // not be installed at the end of it.
+                    if (!Updater.canInstall(context)) {
+                        state = "Permite instalar apps de HomeCloud y vuelve a intentarlo."
+                        runCatching { context.startActivity(Updater.installPermissionIntent(context)) }
+                        return@Button
+                    }
+                    busy = true
+                    scope.launch {
+                        val outcome = withContext(Dispatchers.IO) {
+                            runCatching {
+                                Updater.download(context, available.apkUrl) { fraction ->
+                                    state = "Descargando… ${(fraction * 100).toInt()}%"
+                                }
+                            }
+                        }
+                        busy = false
+                        outcome.fold(
+                            onSuccess = { apk ->
+                                state = "Confirma la instalación."
+                                runCatching { context.startActivity(Updater.installIntent(context, apk)) }
+                                    .onFailure { onError(it.message ?: "No se pudo abrir el instalador") }
+                            },
+                            onFailure = { state = "No se pudo descargar: ${it.message}" },
+                        )
+                    }
+                },
+            ) { Text("Actualizar a ${available.latest}") }
+        }
+    }
+    state?.let {
+        Text(
+            it,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 private fun copyToClipboard(context: Context, text: String) {

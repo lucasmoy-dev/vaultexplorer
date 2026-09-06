@@ -21,6 +21,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process", "macros"] }
 homecore = { path = "../../core" }
+# Fetching an update. The core already pulls it in for the engine's REST API.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 # Starting with the session is the point of a sync app: a folder that only
 # syncs while someone remembers to open a window is not synced.
 tauri-plugin-autostart = "2"

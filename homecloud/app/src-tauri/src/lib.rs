@@ -456,6 +456,40 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> UiResult<()> {
     outcome.map_err(plain)
 }
 
+/// Downloads an update and hands back where it landed.
+///
+/// Installing it is left to the system's package installer, which is the only
+/// thing that can ask for the password a `.deb` needs. Doing it here would mean
+/// this app holding a root prompt, which it has no business doing.
+#[tauri::command]
+async fn download_update(app: tauri::AppHandle, url: String) -> UiResult<String> {
+    // Only ever our own releases. A URL arriving from anywhere else would make
+    // this a general-purpose downloader pointed at whatever asked.
+    if !url.starts_with("https://github.com/lucasmoy-dev/") {
+        return Err("esa descarga no viene de HomeCloud".into());
+    }
+
+    let name = url.rsplit('/').next().unwrap_or("homecloud.deb").to_string();
+    let target = app
+        .path()
+        .download_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(name);
+
+    let bytes = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("no se pudo descargar: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("no se pudo descargar: {e}"))?
+        .bytes()
+        .await
+        .map_err(|e| format!("la descarga se cortó: {e}"))?;
+
+    std::fs::write(&target, &bytes)
+        .map_err(|e| format!("no se pudo guardar en {}: {e}", target.display()))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
 /// Asks the engine to look at a folder again, which is the way out of an index
 /// that has drifted from what is on disk.
 #[tauri::command]
@@ -562,6 +596,7 @@ pub fn run() {
             resolve_destination,
             set_folder_read_only,
             rescan,
+            download_update,
             autostart_enabled,
             set_autostart,
             forget_unused_devices,

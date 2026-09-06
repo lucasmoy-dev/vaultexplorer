@@ -1688,6 +1688,7 @@ name = "homecloud"
 version = "0.1.0"
 dependencies = [
  "homecore",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",

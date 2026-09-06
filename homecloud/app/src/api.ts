@@ -94,6 +94,7 @@ export const api = {
   setFolderReadOnly: (folderId: string, readOnly: boolean) =>
     invoke<void>("set_folder_read_only", { folderId, readOnly }),
   rescan: (folderId: string) => invoke<void>("rescan", { folderId }),
+  downloadUpdate: (url: string) => invoke<string>("download_update", { url }),
   autostartEnabled: () => invoke<boolean>("autostart_enabled"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   forgetUnusedDevices: () => invoke<string[]>("forget_unused_devices"),

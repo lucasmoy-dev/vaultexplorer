@@ -15,6 +15,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Updating from inside the app. The system installer still shows its own
+         confirmation; this only opens it. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Syncing an arbitrary folder means reading and writing an arbitrary
          folder. Scoped storage hands back permission-scoped URIs, and the sync
          engine is a separate process that can only open real paths. This is why
@@ -45,6 +48,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- A file:// URI to an APK has been rejected by the installer since
+             Android 7, so the downloaded update is handed over as a
+             content:// URI from here. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <service
             android:name=".SyncService"

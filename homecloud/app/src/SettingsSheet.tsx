@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { copyText } from "./clipboard";
+import { getVersion } from "@tauri-apps/api/app";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { api, type Settings } from "./api";
-import { BroomIcon, CheckIcon, CopyIcon } from "./Icons";
+import { isNewer, latestRelease, type Release } from "./updates";
+import { BroomIcon, CheckIcon, CopyIcon, RefreshIcon } from "./Icons";
 
 /**
  * Everything that is not a folder. The device name is at the top because it is
@@ -15,10 +18,58 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
   const [copied, setCopied] = useState(false);
   const [tidyState, setTidyState] = useState<string | null>(null);
   const [autostart, setAutostart] = useState(false);
+  const [version, setVersion] = useState("");
+  const [update, setUpdate] = useState<Release | null>(null);
+  const [updateState, setUpdateState] = useState<string | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
 
   useEffect(() => {
     void api.autostartEnabled().then(setAutostart).catch(() => setAutostart(false));
+    void getVersion().then(setVersion).catch(() => setVersion(""));
   }, []);
+
+  async function checkForUpdate() {
+    setUpdateBusy(true);
+    setUpdateState(null);
+    try {
+      const latest = await latestRelease();
+      if (!latest) {
+        setUpdateState("No hay ninguna versión publicada todavía.");
+      } else if (isNewer(latest.version, version)) {
+        setUpdate(latest);
+        setUpdateState(null);
+      } else {
+        setUpdate(null);
+        setUpdateState(`Ya tienes la última versión (${version}).`);
+      }
+    } catch (e) {
+      setUpdateState(`No se pudo comprobar: ${e}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function installUpdate() {
+    if (!update) return;
+    setUpdateBusy(true);
+    try {
+      if (!update.debUrl) {
+        // Nothing to install from here, so at least land on the page that has it.
+        await openUrl(update.pageUrl);
+        return;
+      }
+      setUpdateState("Descargando…");
+      const file = await api.downloadUpdate(update.debUrl);
+      // The system installer is the only thing that can ask for the password a
+      // package needs, so the download is handed to it rather than installed here.
+      await openPath(file);
+      setUpdateState(`Descargado en ${file}. Confirma la instalación y reinicia HomeCloud.`);
+    } catch (e) {
+      setUpdateState(String(e));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
 
   useEffect(() => {
     api.settings().then(setSettings).catch((e) => setProblem(String(e)));
@@ -187,6 +238,26 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
       <p className="hint">
         Motor de sincronización: Syncthing {settings.engineVersion}
       </p>
+
+      <hr className="rule" />
+
+      <p className="section">Actualizaciones</p>
+      <p className="hint">
+        {version ? `Tienes la versión ${version}.` : "Comprobando la versión…"} Se busca en las
+        publicaciones de GitHub; la instalación la confirmas tú.
+      </p>
+      <div className="destination-actions">
+        <button className="btn" onClick={checkForUpdate} disabled={updateBusy}>
+          <RefreshIcon />
+          {updateBusy ? "Comprobando…" : "Buscar actualizaciones"}
+        </button>
+        {update && (
+          <button className="btn btn-primary" onClick={installUpdate} disabled={updateBusy}>
+            Actualizar a {update.version}
+          </button>
+        )}
+      </div>
+      {updateState && <p className="hint">{updateState}</p>}
 
       {problem && <p className="problem">{problem}</p>}
 
