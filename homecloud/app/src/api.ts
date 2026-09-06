@@ -93,6 +93,9 @@ export const api = {
     invoke<Destination>("resolve_destination", { chosen, label, pick: pick ?? null }),
   setFolderReadOnly: (folderId: string, readOnly: boolean) =>
     invoke<void>("set_folder_read_only", { folderId, readOnly }),
+  rescan: (folderId: string) => invoke<void>("rescan", { folderId }),
+  autostartEnabled: () => invoke<boolean>("autostart_enabled"),
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   forgetUnusedDevices: () => invoke<string[]>("forget_unused_devices"),
   reportCameraProblem: (detail: string) => invoke<void>("report_camera_problem", { detail }),
   suggestedPath: (label: string) => invoke<string>("suggested_path", { label }),

@@ -419,6 +419,15 @@ impl Syncthing {
         )
     }
 
+    /// Asks the engine to look at the folder again from scratch.
+    ///
+    /// The way out of "no connected device has the required version": the index
+    /// and the disk have drifted apart, and only a fresh look reconciles them.
+    pub async fn rescan(&self, folder_id: &str) -> Result<()> {
+        self.post(&format!("/rest/db/scan?folder={folder_id}"), json!({})).await?;
+        Ok(())
+    }
+
     /// Turns a folder into one that receives changes but never sends its own,
     /// or back again. Everything is two-way unless someone says otherwise.
     pub async fn set_folder_read_only(&self, folder_id: &str, read_only: bool) -> Result<()> {
@@ -994,6 +1003,12 @@ fn explain_pull_error(count: u64, engine_said: Option<&str>) -> String {
     if lower.contains("read-only file system") {
         return format!("{files} no se pudieron guardar: el disco está montado como solo lectura.");
     }
+    if lower.contains("no connected device has the required version") {
+        return format!(
+            "{files} ya no están en el otro dispositivo, o no está conectado. \
+             Se arregla cuando vuelva a revisar su carpeta; si los borró, aquí también desaparecerán."
+        );
+    }
     if lower.contains("file name too long") || lower.contains("invalid") {
         return format!("{files} no se pudieron guardar: el nombre no vale en este sistema.");
     }
@@ -1095,6 +1110,19 @@ mod tests {
     }
 
     /// An unknown cause keeps the engine's words, which beat a guess.
+    /// The second wrong guess this function existed to stop: a stale index is
+    /// not a full disk and not a permission problem.
+    #[test]
+    fn a_file_the_other_device_no_longer_has_says_so() {
+        let shown = explain_pull_error(
+            2,
+            Some("syncing: no connected device has the required version of this file"),
+        );
+        assert!(shown.contains("otro dispositivo"), "{shown}");
+        assert!(!shown.to_lowercase().contains("espacio"), "{shown}");
+        assert!(!shown.to_lowercase().contains("permiso"), "{shown}");
+    }
+
     #[test]
     fn anything_else_keeps_what_the_engine_said() {
         let shown = explain_pull_error(3, Some("something nobody has seen before"));

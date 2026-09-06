@@ -117,6 +117,13 @@ export const BroomIcon = () => (
   </Svg>
 );
 
+export const RefreshIcon = () => (
+  <Svg>
+    <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+    <path d="M20 4.5V10h-5.5" />
+  </Svg>
+);
+
 export const ClockIcon = () => (
   <Svg>
     <circle cx="12" cy="12" r="8.2" />

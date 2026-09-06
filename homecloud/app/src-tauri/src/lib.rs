@@ -5,13 +5,15 @@
 //! commands the interface calls. Errors come back as plain sentences, because
 //! every one of them is going to be shown to a person.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use homecore::destination::{self, Pick};
 use homecore::model::{Invitation, Settings, SharedFolder, ThisDevice};
 use homecore::supervisor::{engine_binary, Engine};
 use homecore::PairingCode;
 use serde::Serialize;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, State};
 use tokio::sync::RwLock;
 
@@ -363,6 +365,113 @@ fn report_camera_problem(state: State<'_, AppState>, detail: String) {
 #[cfg(not(target_os = "linux"))]
 fn enable_camera(_window: &tauri::WebviewWindow) {}
 
+/// Puts HomeCloud in the status bar and keeps it reachable from there.
+///
+/// Left click shows the window, right click opens a menu whose only
+/// destructive item is Quit — so closing for good is deliberate, and closing
+/// the window is not.
+fn install_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Abrir HomeCloud", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Cerrar HomeCloud", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let Some(icon) = app.default_window_icon().cloned() else {
+        // Without an icon there is nothing to click, and a tray entry nobody
+        // can see would leave no way to reopen a hidden window.
+        eprintln!("homecloud: no window icon in this build, so no tray icon");
+        return Ok(());
+    };
+
+    TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .tooltip("HomeCloud")
+        .menu(&menu)
+        // The menu must not also open on a left click, or showing the window
+        // would need two gestures instead of one.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => reveal(app),
+            "quit" => {
+                // Closing the window is what stops the engine, and it is also
+                // what lets the app exit: destroying it runs the same shutdown
+                // as before the tray existed.
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.destroy();
+                }
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                reveal(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+/// Turns starting with the session on, once.
+///
+/// On by default, because a sync app that waits to be opened is not syncing.
+/// Only ever set the first time: after that it is the user's switch, and
+/// re-enabling it behind their back on every launch would make the setting a
+/// lie.
+fn arrange_autostart(app: &tauri::AppHandle, data_dir: &Path) {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let marker = data_dir.join("autostart-decided");
+    if marker.exists() {
+        return;
+    }
+    match app.autolaunch().enable() {
+        Ok(()) => {
+            let _ = std::fs::create_dir_all(data_dir);
+            let _ = std::fs::write(&marker, "1");
+        }
+        Err(e) => eprintln!("homecloud: could not turn on start-with-session: {e}"),
+    }
+}
+
+/// Whether HomeCloud starts with the session.
+#[tauri::command]
+fn autostart_enabled(app: tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> UiResult<()> {
+    use tauri_plugin_autostart::ManagerExt;
+    let outcome = if enabled {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    };
+    outcome.map_err(plain)
+}
+
+/// Asks the engine to look at a folder again, which is the way out of an index
+/// that has drifted from what is on disk.
+#[tauri::command]
+async fn rescan(state: State<'_, AppState>, folder_id: String) -> UiResult<()> {
+    with_engine!(state, |client| client.rescan(&folder_id))
+}
+
+/// Brings the window back from the tray, wherever it was left.
+fn reveal(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // Must be registered first. Two copies of the app would each start an
@@ -378,6 +487,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // Starts with the session, minimised to the tray. A folder that only
+        // syncs while someone remembers to open a window is not synced.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             // Resolved here rather than in the core: only the toolkit knows
@@ -397,6 +512,14 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 enable_camera(&window);
             }
+            install_tray(app.handle())?;
+            arrange_autostart(app.handle(), &data_dir);
+
+            // The window is configured hidden so a login launch can stay in the
+            // tray; every other launch is someone asking to see it.
+            if !std::env::args().any(|arg| arg == "--hidden") {
+                reveal(app.handle());
+            }
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -405,15 +528,27 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // The engine is a child process; leaving it running after the last
-            // window closes would strand it with no way to reach it.
-            if let tauri::WindowEvent::Destroyed = event {
-                let state = window.state::<AppState>();
-                tauri::async_runtime::block_on(async {
-                    if let Some(mut engine) = state.engine.write().await.take() {
-                        let _ = engine.stop().await;
-                    }
-                });
+            match event {
+                // Closing the window means "get out of my way", not "stop
+                // syncing": a sync app that only works while a window is open
+                // is one that quietly stops doing its job. The tray icon is
+                // where it goes, and its menu is the only way out.
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                // Reached only through the tray's Quit, which destroys the
+                // window on purpose. The engine is a child process, so leaving
+                // it running would strand it with nothing able to reach it.
+                tauri::WindowEvent::Destroyed => {
+                    let state = window.state::<AppState>();
+                    tauri::async_runtime::block_on(async {
+                        if let Some(mut engine) = state.engine.write().await.take() {
+                            let _ = engine.stop().await;
+                        }
+                    });
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -426,6 +561,9 @@ pub fn run() {
             redeem_code,
             resolve_destination,
             set_folder_read_only,
+            rescan,
+            autostart_enabled,
+            set_autostart,
             forget_unused_devices,
             report_camera_problem,
             suggested_path,

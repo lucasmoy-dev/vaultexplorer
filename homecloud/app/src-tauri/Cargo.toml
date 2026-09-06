@@ -12,7 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -21,6 +21,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process", "macros"] }
 homecore = { path = "../../core" }
+# Starting with the session is the point of a sync app: a folder that only
+# syncs while someone remembers to open a window is not synced.
+tauri-plugin-autostart = "2"
 
 # Linux only, and only to let the pairing screen open the camera.
 #

@@ -14,6 +14,11 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tidyState, setTidyState] = useState<string | null>(null);
+  const [autostart, setAutostart] = useState(false);
+
+  useEffect(() => {
+    void api.autostartEnabled().then(setAutostart).catch(() => setAutostart(false));
+  }, []);
 
   useEffect(() => {
     api.settings().then(setSettings).catch((e) => setProblem(String(e)));
@@ -80,6 +85,26 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
           <option value="es">Español</option>
           <option value="en">Inglés</option>
         </select>
+      </label>
+
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={autostart}
+          onChange={async (e) => {
+            const wanted = e.target.checked;
+            setAutostart(wanted);
+            try {
+              await api.setAutostart(wanted);
+            } catch {
+              setAutostart(!wanted);
+            }
+          }}
+        />
+        <span>
+          Arrancar al iniciar el ordenador
+          <em>Aparece en la barra de estado, sin abrir la ventana.</em>
+        </span>
       </label>
 
       <hr className="rule" />

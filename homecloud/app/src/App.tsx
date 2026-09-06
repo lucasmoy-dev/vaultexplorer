@@ -27,6 +27,7 @@ import {
   PencilIcon,
   PlayIcon,
   PlusIcon,
+  RefreshIcon,
   QrIcon,
   ShareIcon,
   TrashIcon,
@@ -584,6 +585,21 @@ function FolderSheet({
         <button className="btn" onClick={showCode}>
           <PlusIcon />
           Añadir otro dispositivo
+        </button>
+        <button
+          className="btn"
+          onClick={async () => {
+            try {
+              await api.rescan(folder.id);
+              onChanged();
+            } catch (e) {
+              onError(String(e));
+            }
+          }}
+          title="Vuelve a mirar la carpeta desde cero. Arregla los avisos de ficheros que ya no están."
+        >
+          <RefreshIcon />
+          Volver a revisar
         </button>
         <button
           className="btn"
