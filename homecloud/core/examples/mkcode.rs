@@ -15,6 +15,7 @@ fn main() {
         folder_id: args[2].clone(),
         folder_label: args[3].clone(),
         hints: args[4..].to_vec(),
+        bytes: None,
     };
     match code.encode() {
         Ok(encoded) => println!("{encoded}"),

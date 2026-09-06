@@ -351,9 +351,17 @@ impl Syncthing {
                 })
                 .collect();
 
-            let syncing = matches!(folder_state(&folder, &status, &peers), FolderState::Syncing { .. });
+            // Asked for only when something is actually wrong: it is another
+            // round trip, and this runs for every folder every second and a half.
+            let trouble = if status["pullErrors"].as_u64().unwrap_or(0) > 0 {
+                self.first_pull_error(&folder.id).await
+            } else {
+                None
+            };
+            let state = folder_state(&folder, &status, &peers, trouble);
+            let syncing = matches!(state, FolderState::Syncing { .. });
             out.push(SharedFolder {
-                state: folder_state(&folder, &status, &peers),
+                state,
                 conflicts: count_conflicts(Path::new(&folder.path)),
                 bytes: status["globalBytes"].as_u64().unwrap_or(0),
                 files: status["globalFiles"].as_u64().unwrap_or(0),
@@ -361,6 +369,8 @@ impl Syncthing {
                 // screen next to a finished folder reads as a rate for it.
                 bytes_per_second: if syncing { down.max(up) } else { 0 },
                 read_only: folder.folder_type == "receiveonly",
+                free_bytes: crate::disk::free_bytes(Path::new(&folder.path)),
+                pending_bytes: status["needBytes"].as_u64().unwrap_or(0),
                 peers,
                 id: folder.id,
                 label: folder.label,
@@ -368,6 +378,30 @@ impl Syncthing {
             });
         }
         Ok(out)
+    }
+
+    /// How much a folder holds, as every device agrees it should. Zero when the
+    /// engine cannot say, which reads as "size unknown" rather than "empty".
+    async fn folder_bytes(&self, folder_id: &str) -> u64 {
+        self.get(&format!("/rest/db/status?folder={folder_id}"))
+            .await
+            .ok()
+            .and_then(|status| status["globalBytes"].as_u64())
+            .unwrap_or(0)
+    }
+
+    /// What the engine actually said about the first file it could not write.
+    ///
+    /// The count of failures alone says nothing a person can act on, and the
+    /// message that used to be shown guessed: it blamed permissions for every
+    /// one of them, including a full disk, which is the commonest cause by far
+    /// and the only one where the guess sends you looking in the wrong place.
+    async fn first_pull_error(&self, folder_id: &str) -> Option<String> {
+        let errors = self
+            .get(&format!("/rest/folder/errors?folder={folder_id}"))
+            .await
+            .ok()?;
+        errors["errors"][0]["error"].as_str().map(str::to_string)
     }
 
     /// Bytes per second in and out, as the engine has measured them.
@@ -432,6 +466,7 @@ impl Syncthing {
             }),
         )
         .await?;
+        let folder_id_for_size = folder_id.clone();
 
         Ok(PairingCode {
             device_id: me.id,
@@ -439,6 +474,7 @@ impl Syncthing {
             folder_id,
             folder_label: label.to_string(),
             hints: self.lan_hints().await,
+            bytes: Some(self.folder_bytes(&folder_id_for_size).await),
         })
     }
 
@@ -488,12 +524,14 @@ impl Syncthing {
             .find(|f| f.id == folder_id)
             .ok_or_else(|| Error::Engine(format!("no folder called {folder_id}")))?;
 
+        let bytes = self.folder_bytes(&folder.id).await;
         Ok(PairingCode {
             device_id: me.id,
             device_name: me.name,
             folder_id: folder.id,
             folder_label: folder.label,
             hints: self.lan_hints().await,
+            bytes: Some(bytes),
         })
     }
 
@@ -837,7 +875,12 @@ struct DeviceConfig {
     name: String,
 }
 
-fn folder_state(folder: &FolderConfig, status: &Value, peers: &[Peer]) -> FolderState {
+fn folder_state(
+    folder: &FolderConfig,
+    status: &Value,
+    peers: &[Peer],
+    trouble: Option<String>,
+) -> FolderState {
     if folder.paused {
         return FolderState::Paused;
     }
@@ -847,7 +890,7 @@ fn folder_state(folder: &FolderConfig, status: &Value, peers: &[Peer]) -> Folder
     let pull_errors = status["pullErrors"].as_u64().unwrap_or(0);
     if pull_errors > 0 {
         return FolderState::Problem {
-            detail: format!("{pull_errors} files could not be written — check permissions on the folder"),
+            detail: explain_pull_error(pull_errors, trouble.as_deref()),
         };
     }
 
@@ -930,6 +973,42 @@ fn random_secret() -> String {
     (0..40).map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char).collect()
 }
 
+/// Turns the engine's own words about a failed write into a sentence that says
+/// what to do about it.
+///
+/// Only the causes that lead somewhere different are singled out; everything
+/// else keeps the engine's message, which is more use than a guess.
+fn explain_pull_error(count: u64, engine_said: Option<&str>) -> String {
+    let files = if count == 1 { "1 fichero".to_string() } else { format!("{count} ficheros") };
+    let Some(said) = engine_said else {
+        return format!("{files} no se pudieron guardar.");
+    };
+    let lower = said.to_lowercase();
+
+    if lower.contains("insufficient space") || lower.contains("no space left") {
+        return format!("{files} no caben: no queda espacio en el disco. {}", sizes_from(said));
+    }
+    if lower.contains("permission denied") {
+        return format!("{files} no se pudieron guardar: la carpeta no da permiso de escritura.");
+    }
+    if lower.contains("read-only file system") {
+        return format!("{files} no se pudieron guardar: el disco está montado como solo lectura.");
+    }
+    if lower.contains("file name too long") || lower.contains("invalid") {
+        return format!("{files} no se pudieron guardar: el nombre no vale en este sistema.");
+    }
+    format!("{files} no se pudieron guardar: {said}")
+}
+
+/// Pulls the "current X < required Y" tail out of the engine's message, which
+/// is the part that tells you how much room you actually need.
+fn sizes_from(said: &str) -> String {
+    match said.split_once("current ") {
+        Some((_, tail)) => format!("Hace falta {}.", tail.replace(" < required ", " libres, y se necesitan ")),
+        None => String::new(),
+    }
+}
+
 /// A label arriving from another device must never become a path separator.
 fn sanitised(label: &str) -> String {
     let cleaned: String = label
@@ -992,6 +1071,42 @@ fn count_conflicts(root: &Path) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::explain_pull_error;
+
+    /// The message this replaced blamed permissions for everything, including
+    /// this — the commonest cause, and the one where being sent to look at
+    /// permissions wastes the most time.
+    #[test]
+    fn a_full_disk_is_named_as_a_full_disk() {
+        let said = "syncing: insufficient space in folder \"DCIM\" (dcim-17f2tg) \
+                    (/home/lucas/dcim): current 5.3 GB < required 11.5 GB";
+        let shown = explain_pull_error(2, Some(said));
+        assert!(shown.contains("no queda espacio"), "{shown}");
+        assert!(shown.contains("5.3 GB"), "the amounts are what make it actionable: {shown}");
+        assert!(shown.contains("11.5 GB"), "{shown}");
+        assert!(!shown.to_lowercase().contains("permiso"), "must not blame permissions: {shown}");
+    }
+
+    #[test]
+    fn permissions_are_named_only_when_that_is_what_happened() {
+        let shown = explain_pull_error(1, Some("open /x/y: permission denied"));
+        assert!(shown.contains("permiso"), "{shown}");
+        assert!(shown.starts_with("1 fichero "), "singular reads as singular: {shown}");
+    }
+
+    /// An unknown cause keeps the engine's words, which beat a guess.
+    #[test]
+    fn anything_else_keeps_what_the_engine_said() {
+        let shown = explain_pull_error(3, Some("something nobody has seen before"));
+        assert!(shown.contains("something nobody has seen before"), "{shown}");
+    }
+
+    #[test]
+    fn no_detail_still_says_how_many() {
+        let shown = explain_pull_error(4, None);
+        assert!(shown.contains("4 ficheros"), "{shown}");
+    }
+
     use super::*;
 
     #[test]

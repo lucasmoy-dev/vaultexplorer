@@ -48,6 +48,8 @@ data class SharedFolder(
     val conflicts: Long,
     val bytesPerSecond: Long,
     val readOnly: Boolean,
+    val freeBytes: Long?,
+    val pendingBytes: Long,
 ) {
     companion object {
         fun from(json: JSONObject) = SharedFolder(
@@ -61,6 +63,8 @@ data class SharedFolder(
             conflicts = json.getLong("conflicts"),
             bytesPerSecond = json.optLong("bytesPerSecond"),
             readOnly = json.optBoolean("readOnly"),
+            freeBytes = if (json.isNull("freeBytes")) null else json.optLong("freeBytes"),
+            pendingBytes = json.optLong("pendingBytes"),
         )
     }
 }
@@ -125,7 +129,24 @@ data class Settings(
     }
 }
 
-data class CodePreview(val deviceName: String, val folderLabel: String)
+data class CodePreview(val deviceName: String, val folderLabel: String, val bytes: Long?)
+
+/** Kept free so filling a disk does not take the rest of the phone with it. */
+const val DISK_RESERVE = 1_000_000_000L
+
+/** How much more room a folder of [needed] bytes wants. Zero when it fits. */
+fun shortfall(needed: Long, free: Long): Long =
+    maxOf(0L, needed - maxOf(0L, free - DISK_RESERVE))
+
+/**
+ * Whether something is about to run out of room. An unknown size or an
+ * unreadable disk is never a warning: one that fires without knowing is one
+ * people learn to ignore.
+ */
+fun doesNotFit(needed: Long?, free: Long?): Boolean {
+    if (needed == null || free == null || needed <= 0) return false
+    return shortfall(needed, free) > 0
+}
 
 /**
  * What picking a directory would actually do with a folder arriving from a code.
@@ -135,7 +156,12 @@ data class CodePreview(val deviceName: String, val folderLabel: String)
  * `/sdcard/cloud/cloud` beside the real one. Now the decision is named, shown
  * as a sentence, and reversible before anything is written.
  */
-data class Destination(val path: String, val pick: String, val explanation: String) {
+data class Destination(
+    val path: String,
+    val pick: String,
+    val explanation: String,
+    val freeBytes: Long?,
+) {
     val putsItInside: Boolean get() = pick == "inside"
 
     companion object {
@@ -143,6 +169,7 @@ data class Destination(val path: String, val pick: String, val explanation: Stri
             path = json.getString("path"),
             pick = json.getString("pick"),
             explanation = json.getString("explanation"),
+            freeBytes = if (json.isNull("freeBytes")) null else json.optLong("freeBytes"),
         )
     }
 }

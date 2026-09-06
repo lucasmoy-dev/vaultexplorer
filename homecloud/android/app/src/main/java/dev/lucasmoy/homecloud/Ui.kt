@@ -125,6 +125,19 @@ fun HomeScreen() {
                 Spacer(Modifier.height(8.dp))
             }
 
+            folders.filter { doesNotFit(it.pendingBytes, it.freeBytes) }.forEach { folder ->
+                Banner(tone = MaterialTheme.colorScheme.error) {
+                    Text(
+                        "A «${folder.label}» le faltan ${formatBytes(folder.pendingBytes)} por bajar " +
+                            "y en ese disco quedan ${formatBytes(folder.freeBytes ?: 0)}. Libera " +
+                            "${formatBytes(shortfall(folder.pendingBytes, folder.freeBytes ?: 0))} " +
+                            "o guárdala en otro sitio.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
             invitations.forEach { invitation ->
                 InvitationBanner(
                     invitation = invitation,
@@ -564,6 +577,20 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (read.bytes != null && target.freeBytes != null) {
+                            val missing = shortfall(read.bytes, target.freeBytes)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                buildString {
+                                    append("Ocupa ${formatBytes(read.bytes)}")
+                                    append(" · quedan ${formatBytes(target.freeBytes)} libres")
+                                    if (missing > 0) append(" · faltan ${formatBytes(missing)}")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (missing > 0) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = { pickPath = true }) {
@@ -613,7 +640,10 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
                         Repo.redeemCode(code, target.path)
                     }
                 },
-            ) { Text(if (busy) "Conectando…" else "Unirme") }
+            ) {
+                val wontFit = doesNotFit(preview?.bytes, target?.freeBytes)
+                Text(if (busy) "Conectando…" else if (wontFit) "Unirme igual" else "Unirme")
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
@@ -659,7 +689,10 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
             Column {
                 Text(stateLabel(folder.state))
                 Text(
-                    "${folder.files} ficheros · ${formatBytes(folder.bytes)}",
+                    buildString {
+                        append("${folder.files} ficheros · ${formatBytes(folder.bytes)}")
+                        folder.freeBytes?.let { append(" · ${formatBytes(it)} libres en el disco") }
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

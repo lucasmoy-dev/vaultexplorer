@@ -24,6 +24,8 @@ export interface SharedFolder {
   conflicts: number;
   bytesPerSecond: number;
   readOnly: boolean;
+  freeBytes: number | null;
+  pendingBytes: number;
 }
 
 export interface OfferedFolder {
@@ -63,6 +65,7 @@ export interface CodePreview {
   deviceName: string;
   folderLabel: string;
   suggestedPath: string;
+  bytes: number | null;
 }
 
 /** Which of the two readings of a chosen directory is in force. */
@@ -72,6 +75,7 @@ export interface Destination {
   path: string;
   pick: Pick;
   explanation: string;
+  freeBytes: number | null;
 }
 
 
@@ -112,6 +116,18 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value.toFixed(value < 10 ? 1 : 0).replace(".", ",")} ${units[unit]}`;
+}
+
+/**
+ * Kept free so filling a disk does not take the rest of the machine with it.
+ * The same figure the core uses, because two different answers to "does it
+ * fit" is worse than either of them.
+ */
+export const DISK_RESERVE = 1_000_000_000;
+
+/** How much more room a folder of `needed` bytes wants. Zero when it fits. */
+export function shortfall(needed: number, free: number): number {
+  return Math.max(0, needed - Math.max(0, free - DISK_RESERVE));
 }
 
 /** A transfer rate a person can read, e.g. "2,4 MB/s". */

@@ -6,6 +6,7 @@ import {
   formatBytes,
   formatRate,
   peerSummary,
+  shortfall,
   shortId,
   type CodePreview,
   type Destination,
@@ -127,6 +128,19 @@ export default function App() {
         </div>
       )}
 
+      {folders
+        .filter((folder) => doesNotFit(folder.pendingBytes, folder.freeBytes))
+        .map((folder) => (
+          <div key={`space-${folder.id}`} className="banner banner-bad">
+            <p className="banner-text">
+              A «<strong>{folder.label}</strong>» le faltan {formatBytes(folder.pendingBytes)} por
+              bajar y en ese disco quedan {formatBytes(folder.freeBytes ?? 0)}. Libera{" "}
+              {formatBytes(shortfall(folder.pendingBytes, folder.freeBytes ?? 0))} o guárdala en otro
+              sitio.
+            </p>
+          </div>
+        ))}
+
       {invitations.map((invitation) => (
         <InvitationBanner
           key={invitation.fromDeviceId + (invitation.folder?.id ?? "")}
@@ -219,6 +233,30 @@ export default function App() {
         </Sheet>
       )}
     </main>
+  );
+}
+
+/**
+ * Whether a folder is about to run out of room where it is going.
+ *
+ * `null` means the disk could not be asked, and an unknown size means an older
+ * device wrote the code. Neither is a reason to warn: a warning that fires
+ * without knowing is one people learn to ignore.
+ */
+function doesNotFit(needed: number | null, free: number | null): boolean {
+  if (needed === null || free === null || needed <= 0) return false;
+  return shortfall(needed, free) > 0;
+}
+
+/** The one line that turns "it will not fit" into something to do about it. */
+function SpaceCheck({ needed, free }: { needed: number | null; free: number | null }) {
+  if (needed === null || free === null) return null;
+  const missing = shortfall(needed, free);
+  return (
+    <p className={missing > 0 ? "problem" : "destination-explain"}>
+      Ocupa {formatBytes(needed)} · quedan {formatBytes(free)} libres
+      {missing > 0 && ` · faltan ${formatBytes(missing)}`}
+    </p>
   );
 }
 
@@ -438,6 +476,7 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
               <span>{destination.path}</span>
             </p>
             <p className="destination-explain">{destination.explanation}</p>
+            <SpaceCheck needed={preview.bytes} free={destination.freeBytes} />
             <div className="destination-actions">
               <button className="btn btn-small" onClick={choosePath} type="button">
                 <PencilIcon />
@@ -453,7 +492,11 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
 
           <button className="btn btn-primary" onClick={join} disabled={busy}>
             <JoinIcon />
-            {busy ? "Conectando…" : "Unirme"}
+            {busy
+              ? "Conectando…"
+              : doesNotFit(preview.bytes, destination.freeBytes)
+                ? "Unirme de todos modos"
+                : "Unirme"}
           </button>
         </>
       )}
@@ -493,6 +536,7 @@ function FolderSheet({
       </p>
       <p className="sheet-line muted">
         {folder.files} ficheros · {formatBytes(folder.bytes)}
+        {folder.freeBytes !== null && ` · ${formatBytes(folder.freeBytes)} libres en el disco`}
       </p>
       <button
         className="path-open"

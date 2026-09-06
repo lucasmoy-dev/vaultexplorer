@@ -112,8 +112,10 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
                 _ => destination::default_pick(Path::new(&chosen), &label),
             };
             let chosen = Path::new(&chosen);
+            let target = destination::resolve(chosen, &label, pick);
             return Ok(json!({
-                "path": destination::resolve(chosen, &label, pick).to_string_lossy(),
+                "freeBytes": homecore::disk::free_bytes(&target),
+                "path": target.to_string_lossy(),
                 "pick": match pick {
                     destination::Pick::Itself => "itself",
                     destination::Pick::Inside => "inside",

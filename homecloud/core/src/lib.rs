@@ -8,6 +8,7 @@
 
 pub mod client;
 pub mod destination;
+pub mod disk;
 pub mod device_id;
 pub mod error;
 pub mod model;

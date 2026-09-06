@@ -12,4 +12,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["process", "time", "net", "io-util", "rt", "macros"] }
 base64 = "0.22"
 rand = "0.8"
+# Only for statvfs: how much room is left where a folder lives. Nothing in
+# std answers that, and a folder that will not fit is worth knowing before the
+# download starts rather than after it stalls.
+libc = "0.2"
 postcard = { version = "1", features = ["alloc"] }

@@ -56,6 +56,11 @@ pub struct SharedFolder {
     pub bytes_per_second: u64,
     /// Takes changes from the other devices but never sends its own.
     pub read_only: bool,
+    /// Room left where this folder lives. `None` when the disk cannot be asked.
+    pub free_bytes: Option<u64>,
+    /// Still to come down. Compared against `free_bytes` this is what says
+    /// "this is not going to fit" while there is still time to act.
+    pub pending_bytes: u64,
 }
 
 /// Someone is asking to share something with this device.

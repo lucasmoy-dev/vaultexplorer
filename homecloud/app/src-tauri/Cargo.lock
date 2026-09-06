@@ -1674,6 +1674,7 @@ name = "homecore"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "libc",
  "postcard",
  "rand 0.8.8",
  "reqwest 0.12.28",

@@ -33,6 +33,7 @@ object Repo {
         return CodePreview(
             deviceName = json.getString("deviceName"),
             folderLabel = json.getString("folderLabel"),
+            bytes = if (json.isNull("bytes")) null else json.optLong("bytes"),
         )
     }
 

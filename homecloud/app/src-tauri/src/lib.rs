@@ -163,6 +163,8 @@ struct CodePreview {
     folder_label: String,
     /// Where this device would put the folder, unless the user says otherwise.
     suggested_path: String,
+    /// What the folder holds on the other device. `None` from an older one.
+    bytes: Option<u64>,
 }
 
 /// Reads a pasted code without acting on it, so the interface can ask "accept
@@ -174,6 +176,7 @@ async fn preview_code(state: State<'_, AppState>, code: String) -> UiResult<Code
         suggested_path: state.suggest_for(&parsed.folder_label).to_string_lossy().into_owned(),
         device_name: parsed.device_name,
         folder_label: parsed.folder_label,
+        bytes: parsed.bytes,
     })
 }
 
@@ -185,6 +188,8 @@ struct Destination {
     path: String,
     pick: String,
     explanation: String,
+    /// Room left on the disk this path lives on.
+    free_bytes: Option<u64>,
 }
 
 #[tauri::command]
@@ -195,8 +200,10 @@ async fn resolve_destination(chosen: String, label: String, pick: Option<String>
         Some("inside") => Pick::Inside,
         _ => destination::default_pick(&chosen, &label),
     };
+    let path = destination::resolve(&chosen, &label, pick);
     Ok(Destination {
-        path: destination::resolve(&chosen, &label, pick).to_string_lossy().into_owned(),
+        free_bytes: homecore::disk::free_bytes(&path),
+        path: path.to_string_lossy().into_owned(),
         pick: match pick {
             Pick::Itself => "itself".into(),
             Pick::Inside => "inside".into(),
