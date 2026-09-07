@@ -17,11 +17,16 @@ import android.os.Environment
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import android.content.Intent
+import android.net.Uri
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PersonAdd
@@ -673,8 +678,12 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
 
 @Composable
 private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (String) -> Unit) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var code by remember { mutableStateOf<String?>(null) }
+    // Read-only, the device list and the wifi rule are settings: looked at once
+    // when a folder is set up and never again. The actions come first.
+    var advancedOpen by remember { mutableStateOf(false) }
     val paused = folder.state == FolderState.Paused
 
     code?.let {
@@ -686,99 +695,202 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
         onDismissRequest = onDismiss,
         title = { Text(folder.label) },
         text = {
-            Column {
-                Text(stateLabel(folder.state))
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    buildString {
+                        append(stateLabel(folder.state))
+                        if (folder.bytesPerSecond > 0) append(" · ${formatRate(folder.bytesPerSecond)}")
+                    },
+                )
                 Text(
                     buildString {
                         append("${folder.files} ficheros · ${formatBytes(folder.bytes)}")
-                        folder.freeBytes?.let { append(" · ${formatBytes(it)} libres en el disco") }
+                        folder.freeBytes?.let { append(" · ${formatBytes(it)} libres") }
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    folder.path,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                )
-                folder.peers.forEach { peer ->
-                    Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier.size(8.dp).clip(CircleShape).background(
-                                if (peer.connected) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.outline
-                            )
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(peer.name, style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            shortId(peer.id),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+
                 Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = folder.readOnly,
-                        onCheckedChange = { wanted ->
-                            scope.engineCall(onError, onDismiss) {
-                                Repo.setFolderReadOnly(folder.id, wanted)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = { openFolder(context, folder.path, onError) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Abrir")
+                    }
+                    TextButton(
+                        onClick = {
+                            scope.launch {
+                                val outcome = withContext(Dispatchers.IO) {
+                                    runCatching { Repo.codeFor(folder.id) }
+                                }
+                                outcome.fold(
+                                    onSuccess = { code = it },
+                                    onFailure = { onError(it.message ?: "") },
+                                )
                             }
                         },
-                    )
-                    Column {
-                        Text("Solo lectura", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Recibe los cambios de los demás, pero nunca envía los suyos.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Filled.PersonAdd, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Añadir")
                     }
                 }
-                TextButton(onClick = {
-                    scope.launch {
-                        val outcome = withContext(Dispatchers.IO) {
-                            runCatching { Repo.codeFor(folder.id) }
-                        }
-                        outcome.fold(
-                            onSuccess = { code = it },
-                            onFailure = { onError(it.message ?: "") },
-                        )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            scope.engineCall(onError, onDismiss) { Repo.rescan(folder.id) }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Revisar")
                     }
-                }) {
-                    Icon(Icons.Filled.PersonAdd, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Añadir otro dispositivo")
+                    TextButton(
+                        onClick = {
+                            scope.engineCall(onError, onDismiss) {
+                                Repo.setFolderPaused(folder.id, !paused)
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(
+                            if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                            null,
+                            Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (paused) "Reanudar" else "Pausar")
+                    }
                 }
-                TextButton(onClick = {
-                    scope.engineCall(onError, onDismiss) { Repo.setFolderPaused(folder.id, !paused) }
-                }) {
+
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = { advancedOpen = !advancedOpen }) {
                     Icon(
-                        if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        if (advancedOpen) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
                         null,
                         Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text(if (paused) "Reanudar" else "Pausar")
+                    Text("Avanzado")
                 }
-                TextButton(onClick = {
-                    // The files stay on the phone. Only the syncing stops.
-                    scope.engineCall(onError, onDismiss) { Repo.stopSharing(folder.id) }
-                }) {
-                    Icon(Icons.Filled.LinkOff, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Dejar de sincronizar")
+
+                if (advancedOpen) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = folder.readOnly,
+                            onCheckedChange = { wanted ->
+                                scope.engineCall(onError, onDismiss) {
+                                    Repo.setFolderReadOnly(folder.id, wanted)
+                                }
+                            },
+                        )
+                        Column {
+                            Text("Solo lectura", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Recibe los cambios de los demás, pero nunca envía los suyos.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = folder.wifiOnly,
+                            onCheckedChange = { wanted ->
+                                scope.engineCall(onError, onDismiss) {
+                                    Repo.setFolderWifiOnly(folder.id, wanted)
+                                }
+                            },
+                        )
+                        Column {
+                            Text("Solo con wifi", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                buildString {
+                                    append("Se detiene cuando la conexión se paga por datos.")
+                                    if (folder.pausedByNetwork) {
+                                        append(" Ahora mismo está detenida por eso.")
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text("Dispositivos", style = MaterialTheme.typography.labelMedium)
+                    if (folder.peers.isEmpty()) {
+                        Text(
+                            "Todavía no comparte con ningún dispositivo.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    folder.peers.forEach { peer ->
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier.size(8.dp).clip(CircleShape).background(
+                                    if (peer.connected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outline
+                                )
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(peer.name, style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                shortId(peer.id),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        folder.path,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = {
+                        // The files stay on the phone. Only the syncing stops.
+                        scope.engineCall(onError, onDismiss) { Repo.stopSharing(folder.id) }
+                    }) {
+                        Icon(Icons.Filled.LinkOff, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Dejar de sincronizar")
+                    }
                 }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
     )
+}
+
+/**
+ * Opens the folder in whatever file manager the phone has.
+ *
+ * Android has no reliable way to point a file manager at a plain path, so this
+ * asks for the folder as a document tree and falls back to saying so rather
+ * than doing nothing.
+ */
+private fun openFolder(context: Context, path: String, onError: (String) -> Unit) {
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(Uri.parse("file://$path"), "resource/folder")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching { context.startActivity(intent) }
+        .onFailure { onError("Ningún gestor de archivos quiso abrir $path") }
 }
 
 @Composable

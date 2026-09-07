@@ -331,6 +331,10 @@ impl Syncthing {
         // One reading for every folder: the engine reports transfer rates for
         // the device as a whole, not per folder.
         let (down, up) = self.transfer_rates().await;
+        // Read once for the whole listing: these live in HomeCloud's own
+        // preferences, which the engine knows nothing about.
+        let wifi_only = self.folder_ids_in("wifiOnly");
+        let paused_by_network = self.folder_ids_in("pausedByNetwork");
 
         let mut out = Vec::with_capacity(configured.len());
         for folder in configured {
@@ -371,6 +375,8 @@ impl Syncthing {
                 read_only: folder.folder_type == "receiveonly",
                 free_bytes: crate::disk::free_bytes(Path::new(&folder.path)),
                 pending_bytes: status["needBytes"].as_u64().unwrap_or(0),
+                wifi_only: wifi_only.contains(&folder.id),
+                paused_by_network: paused_by_network.contains(&folder.id),
                 peers,
                 id: folder.id,
                 label: folder.label,
@@ -417,6 +423,81 @@ impl Syncthing {
             total["inBytesPerSecond"].as_f64().unwrap_or(0.0).max(0.0) as u64,
             total["outBytesPerSecond"].as_f64().unwrap_or(0.0).max(0.0) as u64,
         )
+    }
+
+    // ---- metered connections -------------------------------------------
+
+    /// The folder ids stored under one preference key.
+    fn folder_ids_in(&self, key: &str) -> Vec<String> {
+        self.read_preferences()[key]
+            .as_array()
+            .map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Marks a folder as one to hold off on while the connection is metered.
+    pub async fn set_folder_wifi_only(&self, folder_id: &str, wifi_only: bool) -> Result<()> {
+        let mut ids = self.folder_ids_in("wifiOnly");
+        ids.retain(|id| id != folder_id);
+        if wifi_only {
+            ids.push(folder_id.to_string());
+        }
+        self.write_preference("wifiOnly", json!(ids));
+        Ok(())
+    }
+
+    /// Pauses or resumes the wifi-only folders as the connection changes.
+    ///
+    /// Only ever touches folders it paused itself: a folder the user stopped on
+    /// purpose must not come back to life because the phone found a network,
+    /// which is why the two reasons for being paused are recorded separately.
+    ///
+    /// Returns how many folders changed, so a caller can log a no-op as a no-op.
+    pub async fn apply_metered_policy(&self, metered: bool) -> Result<usize> {
+        let wifi_only = self.folder_ids_in("wifiOnly");
+        let mut paused_by_us = self.folder_ids_in("pausedByNetwork");
+        let mut changed = 0;
+
+        if metered {
+            for folder_id in &wifi_only {
+                if paused_by_us.contains(folder_id) {
+                    continue;
+                }
+                self.set_folder_paused(folder_id, true).await?;
+                paused_by_us.push(folder_id.clone());
+                changed += 1;
+            }
+        } else {
+            for folder_id in paused_by_us.clone() {
+                self.set_folder_paused(&folder_id, false).await?;
+                paused_by_us.retain(|id| *id != folder_id);
+                changed += 1;
+            }
+        }
+
+        self.write_preference("pausedByNetwork", json!(paused_by_us));
+        Ok(changed)
+    }
+
+    /// Nudges every device into reconnecting.
+    ///
+    /// Moving between networks leaves sockets that look alive on one side and
+    /// are dead on the other, which is exactly the asymmetry behind a desktop
+    /// showing "connected" while the phone shows "disconnected". Pausing and
+    /// resuming a device tears the connection down and dials again.
+    pub async fn reconnect_all(&self) -> Result<()> {
+        let devices: Vec<DeviceConfig> =
+            serde_json::from_value(self.get("/rest/config/devices").await?)?;
+        let me = self.this_device().await?.id;
+        for device in devices.iter().filter(|d| d.device_id != me) {
+            let path = format!("/rest/system/pause?device={}", device.device_id);
+            let _ = self.post(&path, json!({})).await;
+        }
+        for device in devices.iter().filter(|d| d.device_id != me) {
+            let path = format!("/rest/system/resume?device={}", device.device_id);
+            let _ = self.post(&path, json!({})).await;
+        }
+        Ok(())
     }
 
     /// Asks the engine to look at the folder again from scratch.

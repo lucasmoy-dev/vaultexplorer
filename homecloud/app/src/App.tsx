@@ -78,6 +78,18 @@ export default function App() {
     return () => clearInterval(timer);
   }, [refresh]);
 
+  // Coming back from a dropped connection leaves sockets one side still
+  // believes in — a desktop showing "connected" while the phone shows
+  // "disconnected". Nothing recovers from that quickly on its own, so
+  // regaining the network dials again.
+  useEffect(() => {
+    const redial = () => {
+      void api.reconnectAll().then(refresh).catch(() => undefined);
+    };
+    window.addEventListener("online", redial);
+    return () => window.removeEventListener("online", redial);
+  }, [refresh]);
+
   async function shareNewFolder() {
     setError(null);
     const picked = await open({ directory: true, multiple: false, title: "Elige la carpeta a compartir" });
@@ -518,11 +530,25 @@ function FolderSheet({
 }) {
   const [code, setCode] = useState<string | null>(null);
   const [confirmingStop, setConfirmingStop] = useState(false);
+  // Read-only and the device list are settings, not things you reach for: they
+  // are looked at once when a folder is set up and never again. Out of the way
+  // by default so the actions you actually use are the ones on screen.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const paused = folder.state.kind === "paused";
 
   async function showCode() {
     try {
       setCode(await api.codeFor(folder.id));
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  /** Every action here changes something in the engine and then re-reads it. */
+  async function act(change: () => Promise<void>) {
+    try {
+      await change();
+      onChanged();
     } catch (e) {
       onError(String(e));
     }
@@ -534,68 +560,31 @@ function FolderSheet({
     <div className="sheet-body">
       <p className="sheet-line">
         <StatusDot state={folder.state} /> {stateLabel(folder.state)}
+        {folder.bytesPerSecond > 0 && (
+          <span className="muted"> · {formatRate(folder.bytesPerSecond)}</span>
+        )}
       </p>
       <p className="sheet-line muted">
         {folder.files} ficheros · {formatBytes(folder.bytes)}
         {folder.freeBytes !== null && ` · ${formatBytes(folder.freeBytes)} libres en el disco`}
       </p>
-      <button
-        className="path-open"
-        onClick={() => void revealItemInDir(folder.path)}
-        type="button"
-        title="Abrir en el explorador de archivos"
-      >
-        <FolderIcon />
-        <span>{folder.path}</span>
-      </button>
-
-      {folder.peers.length > 0 && (
-        <ul className="peers">
-          {folder.peers.map((peer) => (
-            <li key={peer.id}>
-              <span className={`dot ${peer.connected ? "dot-ok" : "dot-idle"}`} aria-hidden />
-              {peer.name}
-              <span className="muted mono">{shortId(peer.id)}</span>
-              <span className="muted">{peer.connected ? "conectado" : "sin conexión"}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <label className="toggle">
-        <input
-          type="checkbox"
-          checked={folder.readOnly}
-          onChange={async (e) => {
-            try {
-              await api.setFolderReadOnly(folder.id, e.target.checked);
-              onChanged();
-            } catch (err) {
-              onError(String(err));
-            }
-          }}
-        />
-        <span>
-          Solo lectura
-          <em>Recibe los cambios de los demás, pero nunca envía los suyos.</em>
-        </span>
-      </label>
 
       <div className="sheet-actions">
+        <button
+          className="btn"
+          onClick={() => void revealItemInDir(folder.path)}
+          title={folder.path}
+        >
+          <FolderIcon />
+          Abrir la carpeta
+        </button>
         <button className="btn" onClick={showCode}>
           <PlusIcon />
           Añadir otro dispositivo
         </button>
         <button
           className="btn"
-          onClick={async () => {
-            try {
-              await api.rescan(folder.id);
-              onChanged();
-            } catch (e) {
-              onError(String(e));
-            }
-          }}
+          onClick={() => act(() => api.rescan(folder.id))}
           title="Vuelve a mirar la carpeta desde cero. Arregla los avisos de ficheros que ya no están."
         >
           <RefreshIcon />
@@ -603,48 +592,121 @@ function FolderSheet({
         </button>
         <button
           className="btn"
-          onClick={async () => {
-            try {
-              await api.setFolderPaused(folder.id, !paused);
-              onChanged();
-            } catch (e) {
-              onError(String(e));
-            }
-          }}
+          onClick={() => act(() => api.setFolderPaused(folder.id, !paused))}
         >
           {paused ? <PlayIcon /> : <PauseIcon />}
           {paused ? "Reanudar" : "Pausar"}
         </button>
-        {confirmingStop ? (
-          <button
-            className="btn btn-danger"
-            onClick={async () => {
-              try {
-                await api.stopSharing(folder.id);
-                onClosed();
-                onChanged();
-              } catch (e) {
-                onError(String(e));
-              }
-            }}
-          >
-            <TrashIcon />
-            Sí, dejar de sincronizar
-          </button>
-        ) : (
-          <button className="btn btn-quiet" onClick={() => setConfirmingStop(true)}>
-            <TrashIcon />
-            Dejar de sincronizar
-          </button>
-        )}
       </div>
-      {confirmingStop && (
-        <p className="muted small">
-          Los ficheros que ya están en este ordenador se quedan donde están. Solo se deja de
-          sincronizar.
-        </p>
+
+      <button
+        className="btn btn-quiet disclosure"
+        onClick={() => setAdvancedOpen((open) => !open)}
+        aria-expanded={advancedOpen}
+      >
+        <ChevronIcon open={advancedOpen} />
+        Avanzado
+      </button>
+
+      {advancedOpen && (
+        <div className="advanced">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={folder.readOnly}
+              onChange={(e) => act(() => api.setFolderReadOnly(folder.id, e.target.checked))}
+            />
+            <span>
+              Solo lectura
+              <em>Recibe los cambios de los demás, pero nunca envía los suyos.</em>
+            </span>
+          </label>
+
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={folder.wifiOnly}
+              onChange={(e) => act(() => api.setFolderWifiOnly(folder.id, e.target.checked))}
+            />
+            <span>
+              Solo con wifi
+              <em>
+                Se detiene cuando la conexión se paga por datos.
+                {folder.pausedByNetwork && " Ahora mismo está detenida por eso."}
+              </em>
+            </span>
+          </label>
+
+          <p className="section">Dispositivos</p>
+          {folder.peers.length === 0 ? (
+            <p className="hint">Todavía no comparte con ningún dispositivo.</p>
+          ) : (
+            <ul className="peers">
+              {folder.peers.map((peer) => (
+                <li key={peer.id}>
+                  <span className={`dot ${peer.connected ? "dot-ok" : "dot-idle"}`} aria-hidden />
+                  {peer.name}
+                  <span className="muted mono">{shortId(peer.id)}</span>
+                  <span className="muted">{peer.connected ? "conectado" : "sin conexión"}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <p className="path-line mono">{folder.path}</p>
+
+          {confirmingStop ? (
+            <>
+              <button
+                className="btn btn-danger"
+                onClick={async () => {
+                  try {
+                    await api.stopSharing(folder.id);
+                    onClosed();
+                    onChanged();
+                  } catch (e) {
+                    onError(String(e));
+                  }
+                }}
+              >
+                <TrashIcon />
+                Sí, dejar de sincronizar
+              </button>
+              <p className="muted small">
+                Los ficheros que ya están en este ordenador se quedan donde están. Solo se deja de
+                sincronizar.
+              </p>
+            </>
+          ) : (
+            <button className="btn btn-quiet" onClick={() => setConfirmingStop(true)}>
+              <TrashIcon />
+              Dejar de sincronizar
+            </button>
+          )}
+        </div>
       )}
     </div>
+  );
+}
+
+/** Points down when the section is open, right when it is closed. */
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      width="17"
+      height="17"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 120ms" }}
+    >
+      <path d="M9 5.5l7 6.5-7 6.5" />
+    </svg>
   );
 }
 

@@ -26,6 +26,8 @@ export interface SharedFolder {
   readOnly: boolean;
   freeBytes: number | null;
   pendingBytes: number;
+  wifiOnly: boolean;
+  pausedByNetwork: boolean;
 }
 
 export interface OfferedFolder {
@@ -94,6 +96,9 @@ export const api = {
   setFolderReadOnly: (folderId: string, readOnly: boolean) =>
     invoke<void>("set_folder_read_only", { folderId, readOnly }),
   rescan: (folderId: string) => invoke<void>("rescan", { folderId }),
+  setFolderWifiOnly: (folderId: string, wifiOnly: boolean) =>
+    invoke<void>("set_folder_wifi_only", { folderId, wifiOnly }),
+  reconnectAll: () => invoke<void>("reconnect_all"),
   downloadUpdate: (url: string) => invoke<string>("download_update", { url }),
   autostartEnabled: () => invoke<boolean>("autostart_enabled"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),

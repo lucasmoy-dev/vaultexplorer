@@ -214,6 +214,20 @@ async fn resolve_destination(chosen: String, label: String, pick: Option<String>
     })
 }
 
+/// Holds a folder back while the connection is metered. Desktop machines are
+/// rarely on a metered link, but the setting is shared so a folder configured
+/// on the phone reads the same here.
+#[tauri::command]
+async fn set_folder_wifi_only(state: State<'_, AppState>, folder_id: String, wifi_only: bool) -> UiResult<()> {
+    with_engine!(state, |client| client.set_folder_wifi_only(&folder_id, wifi_only))
+}
+
+/// Tears every connection down and dials again.
+#[tauri::command]
+async fn reconnect_all(state: State<'_, AppState>) -> UiResult<()> {
+    with_engine!(state, |client| client.reconnect_all())
+}
+
 /// Makes a folder one that receives but never sends, or two-way again.
 #[tauri::command]
 async fn set_folder_read_only(state: State<'_, AppState>, folder_id: String, read_only: bool) -> UiResult<()> {
@@ -595,6 +609,8 @@ pub fn run() {
             redeem_code,
             resolve_destination,
             set_folder_read_only,
+            set_folder_wifi_only,
+            reconnect_all,
             rescan,
             download_update,
             autostart_enabled,

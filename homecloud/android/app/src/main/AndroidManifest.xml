@@ -62,9 +62,22 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- stopWithTask=false: swiping the app out of recents must not stop
+             syncing. The notification's action is the only way to stop it. -->
         <service
             android:name=".SyncService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

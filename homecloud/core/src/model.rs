@@ -61,6 +61,13 @@ pub struct SharedFolder {
     /// Still to come down. Compared against `free_bytes` this is what says
     /// "this is not going to fit" while there is still time to act.
     pub pending_bytes: u64,
+    /// Hold off while the connection is a metered one. Off by default: a
+    /// folder that silently refuses to sync is worse than one that costs data,
+    /// and only the person paying the bill knows which folders are big.
+    pub wifi_only: bool,
+    /// Stopped because of `wifi_only`, not because anyone asked. Kept apart so
+    /// resuming never un-pauses a folder the user paused on purpose.
+    pub paused_by_network: bool,
 }
 
 /// Someone is asking to share something with this device.

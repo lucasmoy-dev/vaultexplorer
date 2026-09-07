@@ -7,6 +7,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -23,6 +27,22 @@ class SyncService : Service() {
 
     private val engine by lazy { Engine(this) }
 
+    /**
+     * Watches the connection so a change of network is acted on rather than
+     * waited out.
+     *
+     * Moving between wifi and mobile data leaves sockets that one side still
+     * believes in and the other has given up on — the desktop saying
+     * "connected" while the phone says "disconnected". Nothing recovers from
+     * that on its own quickly, so every change dials again.
+     */
+    private val networkWatcher = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = onNetworkChanged()
+        override fun onLost(network: Network) = onNetworkChanged()
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) =
+            onNetworkChanged()
+    }
+
     override fun onCreate() {
         super.onCreate()
         createChannel()
@@ -32,6 +52,7 @@ class SyncService : Service() {
                 .onSuccess {
                     tellCoreWhereThingsGo()
                     nameThisPhone()
+                    watchTheNetwork()
                     notify("Sincronizando tus carpetas")
                 }
                 .onFailure { notify(it.message ?: "El motor de sincronización no arrancó") }
@@ -39,14 +60,41 @@ class SyncService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The only way to stop syncing: the action on the notification. Closing
+        // the app, or swiping it out of recents, deliberately does not.
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         // Restarted by the system after being killed: the whole point is that
         // syncing resumes without the user opening anything.
         return START_STICKY
     }
 
     override fun onDestroy() {
+        runCatching {
+            getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkWatcher)
+        }
         engine.stop()
         super.onDestroy()
+    }
+
+    /**
+     * Reacts to the connection changing: reconnects, and applies each folder's
+     * "only on wifi" preference to the network there is now.
+     */
+    private fun onNetworkChanged() {
+        Thread {
+            runCatching {
+                val manager = getSystemService(ConnectivityManager::class.java)
+                val capabilities = manager.getNetworkCapabilities(manager.activeNetwork)
+                val metered = capabilities?.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_NOT_METERED
+                ) != true
+                Repo.applyMeteredPolicy(metered)
+                Repo.reconnectAll()
+            }
+        }.start()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -84,6 +132,16 @@ class SyncService : Service() {
         }
     }
 
+    private fun watchTheNetwork() {
+        runCatching {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            getSystemService(ConnectivityManager::class.java)
+                .registerNetworkCallback(request, networkWatcher)
+        }
+    }
+
     private fun createChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -101,6 +159,14 @@ class SyncService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
+        // The only exit. Closing the app does not stop syncing, so there has to
+        // be somewhere that does, and it has to be somewhere findable.
+        val stop = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, SyncService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("HomeCloud")
             .setContentText(text)
@@ -108,6 +174,7 @@ class SyncService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .setSilent(true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Detener HomeCloud", stop)
             .build()
     }
 
@@ -119,6 +186,7 @@ class SyncService : Service() {
     companion object {
         private const val CHANNEL_ID = "sync"
         private const val NOTIFICATION_ID = 1
+        const val ACTION_STOP = "dev.lucasmoy.homecloud.STOP"
 
         fun start(context: Context) {
             val intent = Intent(context, SyncService::class.java)

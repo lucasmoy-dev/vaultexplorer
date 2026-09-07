@@ -85,6 +85,27 @@ object Repo {
     }
 
     /** Tells the core where it may put folders it accepts on its own. */
+    fun rescan(folderId: String) {
+        Native.request("rescan", JSONObject().put("folderId", folderId))
+    }
+
+    fun setFolderWifiOnly(folderId: String, wifiOnly: Boolean) {
+        Native.request(
+            "setFolderWifiOnly",
+            JSONObject().put("folderId", folderId).put("wifiOnly", wifiOnly),
+        )
+    }
+
+    /** Pauses or resumes the wifi-only folders as the connection changes. */
+    fun applyMeteredPolicy(metered: Boolean) {
+        Native.request("applyMeteredPolicy", JSONObject().put("metered", metered))
+    }
+
+    /** Tears every connection down and dials again. */
+    fun reconnectAll() {
+        Native.request("reconnectAll")
+    }
+
     fun setRoots(autoAcceptRoot: String, preferences: String) {
         Native.request(
             "setRoots",

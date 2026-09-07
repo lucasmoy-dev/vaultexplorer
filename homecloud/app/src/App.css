@@ -165,7 +165,29 @@ body {
 .sheet-head h2 { font-size: 16px; margin: 0; }
 .sheet-body { display: flex; flex-direction: column; gap: 10px; }
 .sheet-line { margin: 0; display: flex; align-items: center; gap: 8px; }
-.sheet-actions { display: flex; flex-direction: column; gap: 7px; margin-top: 6px; }
+.sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 6px;
+}
+/* Two per row at this width, and one when there is no room for two. */
+.sheet-actions .btn { flex: 1 1 calc(50% - 4px); min-width: 150px; }
+
+/* The advanced section: settings, not actions. */
+.disclosure { align-self: flex-start; margin-top: 10px; padding-left: 4px; }
+.advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.advanced .btn { align-self: flex-start; }
+.path-line { margin: 0; font-size: 11.5px; color: var(--muted); word-break: break-all; }
 
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
@@ -287,7 +309,16 @@ body {
 .path-picker:hover { border-color: var(--accent); }
 
 /* ---- startup ---- */
-.starting { display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); }
+.starting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.starting p { margin: 0; }
 .spinner {
   width: 22px;
   height: 22px;

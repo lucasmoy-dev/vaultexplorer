@@ -205,6 +205,30 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
 
             "forgetUnusedDevices" => to_value(client.forget_unused_devices().await)?,
 
+            "rescan" => {
+                client.rescan(&arg!(args, "folderId")).await.map_err(plain)?;
+                Value::Null
+            }
+
+            "setFolderWifiOnly" => {
+                let wifi_only = args["wifiOnly"].as_bool().ok_or("missing wifiOnly")?;
+                client
+                    .set_folder_wifi_only(&arg!(args, "folderId"), wifi_only)
+                    .await
+                    .map_err(plain)?;
+                Value::Null
+            }
+
+            "applyMeteredPolicy" => {
+                let metered = args["metered"].as_bool().ok_or("missing metered")?;
+                to_value(client.apply_metered_policy(metered).await)?
+            }
+
+            "reconnectAll" => {
+                client.reconnect_all().await.map_err(plain)?;
+                Value::Null
+            }
+
             "setFolderReadOnly" => {
                 let read_only = args["readOnly"].as_bool().ok_or("missing readOnly")?;
                 client
