@@ -19,6 +19,14 @@ pub enum Error {
     #[error("the sync engine would not start: {0}")]
     Engine(String),
 
+    /// Bare passthrough, no prefix: a public link has nothing to do with the
+    /// sync engine, and every message here is already a full sentence written
+    /// for a person. Wrapping it in "the sync engine would not start: " — as
+    /// reusing `Engine` for this would have done — describes a failure that
+    /// never happened.
+    #[error("{0}")]
+    Link(String),
+
     #[error("{0}")]
     Io(#[from] std::io::Error),
 

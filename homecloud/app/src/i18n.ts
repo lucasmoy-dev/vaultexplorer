@@ -87,6 +87,20 @@ const ENGLISH = {
   "Abrir en el explorador de archivos": "Open in the file manager",
   "Los ficheros que ya están en este ordenador se quedan donde están. Solo se deja de sincronizar.":
     "The files already on this computer stay where they are. Only the syncing stops.",
+  "Compartir por enlace": "Share as a link",
+  "Enlace copiado": "Link copied",
+  "No se pudo copiar el enlace": "Could not copy the link",
+  "Copiar el enlace": "Copy the link",
+  "Dejar de compartir": "Stop sharing",
+  "Crear el enlace": "Create the link",
+  "Creando el enlace…": "Creating the link…",
+  "Contraseña para el enlace (opcional)": "Password for the link (optional)",
+  "Caduca en {n}, o antes si cierras HomeCloud en este ordenador.":
+    "Expires in {n}, or sooner if you close HomeCloud on this computer.",
+  "Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un navegador y sin instalar nada. No podrá cambiar ni borrar nada. El enlace caduca solo a las pocas horas: no hace falta cuenta en ningún sitio, y esa es la contrapartida.":
+    "Anyone with the link can view and download what is in this folder, from a browser, with nothing to install. They cannot change or delete anything. The link expires on its own after a few hours — no account is needed anywhere, and that is the trade-off.",
+  "Sin contraseña, el enlace lo abre quien lo tenga. Con ella, la comprueba este ordenador, no un tercero.":
+    "With no password, whoever has the link can open it. With one, this computer checks it, not a third party.",
 } satisfies Record<string, string>;
 
 let current: Language = "es";
@@ -106,4 +120,14 @@ export function getLanguage(): Language {
 export function t(spanish: string): string {
   if (current === "es") return spanish;
   return (ENGLISH as Record<string, string>)[spanish] ?? spanish;
+}
+
+/**
+ * Like {@link t}, for a string carrying one placeholder — `key` holds the
+ * Spanish sentence with `{n}` where a value gets substituted, and this looks
+ * up the translation before substituting so the placeholder survives the
+ * lookup untouched.
+ */
+export function tf(key: string, value: string): string {
+  return t(key).replace("{n}", value);
 }

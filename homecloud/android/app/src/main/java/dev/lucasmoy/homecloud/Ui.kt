@@ -962,7 +962,12 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { copyToClipboard(context, current.url) }) {
+            TextButton(onClick = {
+                copyToClipboard(context, current.url)
+                android.widget.Toast
+                    .makeText(context, "Enlace copiado", android.widget.Toast.LENGTH_SHORT)
+                    .show()
+            }) {
                 Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Copiar")
@@ -1013,7 +1018,16 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
                 }
                 busy = false
                 outcome.fold(
-                    onSuccess = { status = it },
+                    onSuccess = {
+                        status = it
+                        // Creating the link and then making the user tap a
+                        // second button to get it onto the clipboard is one
+                        // step more than the moment calls for.
+                        copyToClipboard(context, it.url)
+                        android.widget.Toast
+                            .makeText(context, "Enlace copiado", android.widget.Toast.LENGTH_SHORT)
+                            .show()
+                    },
                     onFailure = { onError(it.message ?: "No se pudo crear el enlace") },
                 )
             }

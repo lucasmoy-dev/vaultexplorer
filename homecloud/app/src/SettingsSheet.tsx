@@ -3,6 +3,7 @@ import { copyText } from "./clipboard";
 import { getVersion } from "@tauri-apps/api/app";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { api, type Settings } from "./api";
+import { setLanguage } from "./i18n";
 import { isNewer, latestRelease, type Release } from "./updates";
 import { BroomIcon, CheckIcon, CopyIcon, RefreshIcon } from "./Icons";
 
@@ -74,6 +75,12 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
   useEffect(() => {
     api.settings().then(setSettings).catch((e) => setProblem(String(e)));
   }, []);
+
+  // The panel is the only place the language is ever set, so this is also
+  // the only place a change needs to reach the running interface.
+  useEffect(() => {
+    if (settings) setLanguage(settings.language);
+  }, [settings?.language]);
 
   if (!settings) {
     return <p className="muted">{problem ?? "Cargando…"}</p>;

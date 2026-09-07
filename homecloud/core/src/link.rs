@@ -98,7 +98,7 @@ impl Links {
             self.stop(folder_id).await?;
         }
         if !self.tunnel_binary.exists() {
-            return Err(Error::Engine(format!(
+            return Err(Error::Link(format!(
                 "falta {} en esta instalación",
                 self.tunnel_binary.display()
             )));
@@ -117,31 +117,31 @@ impl Links {
 
         let mut child = command
             .spawn()
-            .map_err(|e| Error::Engine(format!("no se pudo lanzar el enlace: {e}")))?;
+            .map_err(|e| Error::Link(format!("no se pudo lanzar el enlace: {e}")))?;
 
         // hcshare prints the share as one line and then serves until it is
         // killed or its time runs out, so the URL arrives on stdout rather
         // than as an exit status.
-        let stdout = child.stdout.take().ok_or_else(|| Error::Engine("sin salida".into()))?;
+        let stdout = child.stdout.take().ok_or_else(|| Error::Link("sin salida".into()))?;
         let mut lines = BufReader::new(stdout).lines();
         let first = tokio::time::timeout(Duration::from_secs(60), lines.next_line())
             .await
-            .map_err(|_| Error::Engine("no contestó a tiempo".into()))?
-            .map_err(|e| Error::Engine(format!("no se pudo leer la respuesta: {e}")))?;
+            .map_err(|_| Error::Link("no contestó a tiempo".into()))?
+            .map_err(|e| Error::Link(format!("no se pudo leer la respuesta: {e}")))?;
 
         let announced =
             first.as_deref().and_then(|line| serde_json::from_str::<Announcement>(line).ok());
         let Some(announced) = announced else {
-            return Err(Error::Engine(self.explain(&mut child).await));
+            return Err(Error::Link(self.explain(&mut child).await));
         };
         if let Some(problem) = announced.error {
             let _ = child.start_kill();
-            return Err(Error::Engine(problem));
+            return Err(Error::Link(problem));
         }
         let url = announced
             .url
             .filter(|u| !u.is_empty())
-            .ok_or_else(|| Error::Engine("no se devolvió ninguna dirección".into()))?;
+            .ok_or_else(|| Error::Link("no se devolvió ninguna dirección".into()))?;
         let expires_at = announced.expires_at.unwrap_or_else(|| now_secs() + lifetime.as_secs());
 
         let status = LinkStatus { url, expires_at };
@@ -234,10 +234,20 @@ pub fn tunnel_binary(resource_dir: Option<&Path>) -> Result<PathBuf> {
 
 fn find_binary(resource_dir: Option<&Path>, unix_name: &str, windows_name: &str) -> Result<PathBuf> {
     let name = if cfg!(target_os = "windows") { windows_name } else { unix_name };
-    resource_dir
-        .map(|dir| dir.join(name))
-        .filter(|path| path.exists())
-        .ok_or_else(|| Error::Engine(format!("{name} no viene en esta instalación")))
+
+    // Two candidates, for the same reason `engine_binary` tries two: Tauri's
+    // resource_dir() lands one level up from the bundled files on some
+    // platforms and right on top of them on others, and the sync engine's own
+    // lookup already had to account for both — this is the same lookup, just
+    // for a binary that ships beside it.
+    let candidates = resource_dir
+        .map(|dir| vec![dir.join("resources").join(name), dir.join(name)])
+        .unwrap_or_default();
+
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .ok_or_else(|| Error::Link(format!("{name} no viene en esta instalación")))
 }
 
 #[cfg(test)]
@@ -249,6 +259,25 @@ mod tests {
         let empty = std::env::temp_dir().join("homecloud-no-helper-here");
         let error = share_binary(Some(&empty)).unwrap_err().to_string();
         assert!(error.contains("hcshare"), "{error}");
+    }
+
+    /// The bug this pinned down: Tauri's `resource_dir()` lands one level
+    /// above the bundled files on some installs and right on top of them on
+    /// others. `engine_binary` already tried both; this module's own lookup
+    /// only tried one, so it found `syncthing` but not `cloudflared` on a real
+    /// installed .deb, reported as "falta cloudflared en esta instalación"
+    /// with no clue that the file was one directory away.
+    #[test]
+    fn a_binary_one_level_up_in_a_resources_subfolder_is_still_found() {
+        let root = std::env::temp_dir().join(format!("homecloud-resdir-{}", std::process::id()));
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("cloudflared"), b"").unwrap();
+
+        let found = tunnel_binary(Some(&root)).unwrap();
+        assert_eq!(found, resources.join("cloudflared"));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

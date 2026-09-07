@@ -20,6 +20,8 @@ import { StatusDot, stateLabel } from "./StatusDot";
 import { PairingCard } from "./PairingCard";
 import { SettingsSheet } from "./SettingsSheet";
 import { QrScanner } from "./QrScanner";
+import { showToast, ToastHost } from "./Toast";
+import { setLanguage, t, tf } from "./i18n";
 import {
   CheckIcon,
   CloseIcon,
@@ -83,6 +85,15 @@ export default function App() {
     return () => clearInterval(timer);
   }, [refresh]);
 
+  // Applied once, as soon as the engine is up, so the very first screen a
+  // returning user sees is already in their language — not just the screens
+  // opened after they happen to visit Settings. The dependency is the plain
+  // boolean, not the `readiness` object, so this does not re-run on every poll.
+  useEffect(() => {
+    if (!readiness?.ready) return;
+    void api.settings().then((s) => setLanguage(s.language)).catch(() => undefined);
+  }, [readiness?.ready]);
+
   // Coming back from a dropped connection leaves sockets one side still
   // believes in — a desktop showing "connected" while the phone shows
   // "disconnected". Nothing recovers from that quickly on its own, so
@@ -128,6 +139,7 @@ export default function App() {
 
   return (
     <main className="app">
+      <ToastHost />
       <header className="topbar">
         <h1>HomeCloud</h1>
         <button
@@ -755,7 +767,13 @@ function ShareLink({
   async function start() {
     setBusy(true);
     try {
-      setStatus(await api.linkStart(folder.id, folder.path, password));
+      const created = await api.linkStart(folder.id, folder.path, password);
+      setStatus(created);
+      // Creating the link and then making the user click a second button to
+      // get it onto the clipboard is one step more than the moment calls
+      // for: copying it straight away is what "give me a link to send" means.
+      const ok = await copyText(created.url);
+      showToast(t(ok ? "Enlace copiado" : "No se pudo copiar el enlace"));
     } catch (e) {
       onError(String(e));
     } finally {
@@ -784,7 +802,7 @@ function ShareLink({
 
   return (
     <div className="folder-password">
-      <p className="section">Compartir por enlace</p>
+      <p className="section">{t("Compartir por enlace")}</p>
 
       {status && secondsLeft > 0 ? (
         <>
@@ -792,45 +810,45 @@ function ShareLink({
             <span>{status.url}</span>
           </p>
           <p className="hint">
-            Caduca en {formatCountdown(secondsLeft)}, o antes si cierras HomeCloud en este
-            ordenador.
+            {tf("Caduca en {n}, o antes si cierras HomeCloud en este ordenador.", formatCountdown(secondsLeft))}
           </p>
           <div className="destination-actions">
             <button
               className="btn btn-small"
               onClick={async () => {
-                setCopied(await copyText(status.url));
+                const ok = await copyText(status.url);
+                setCopied(ok);
+                showToast(t(ok ? "Enlace copiado" : "No se pudo copiar el enlace"));
                 setTimeout(() => setCopied(false), 2000);
               }}
             >
               {copied ? <CheckIcon /> : <CopyIcon />}
-              {copied ? "Copiado" : "Copiar el enlace"}
+              {copied ? t("Copiado") : t("Copiar el enlace")}
             </button>
             <button className="btn btn-small btn-quiet" onClick={stop} disabled={busy}>
-              Dejar de compartir
+              {t("Dejar de compartir")}
             </button>
           </div>
         </>
       ) : (
         <>
           <p className="hint">
-            Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un
-            navegador y sin instalar nada. No podrá cambiar ni borrar nada. El enlace caduca solo
-            a las pocas horas: no hace falta cuenta en ningún sitio, y esa es la contrapartida.
+            {t(
+              "Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un navegador y sin instalar nada. No podrá cambiar ni borrar nada. El enlace caduca solo a las pocas horas: no hace falta cuenta en ningún sitio, y esa es la contrapartida.",
+            )}
           </p>
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="Contraseña para el enlace (opcional)"
+            placeholder={t("Contraseña para el enlace (opcional)")}
           />
           <p className="hint">
-            Sin contraseña, el enlace lo abre quien lo tenga. Con ella, la comprueba este
-            ordenador, no un tercero.
+            {t("Sin contraseña, el enlace lo abre quien lo tenga. Con ella, la comprueba este ordenador, no un tercero.")}
           </p>
           <button className="btn btn-small btn-primary" onClick={start} disabled={busy}>
             <LinkIcon />
-            {busy ? "Creando el enlace…" : "Crear el enlace"}
+            {busy ? t("Creando el enlace…") : t("Crear el enlace")}
           </button>
         </>
       )}
