@@ -68,6 +68,9 @@ pub struct SharedFolder {
     /// Stopped because of `wifi_only`, not because anyone asked. Kept apart so
     /// resuming never un-pauses a folder the user paused on purpose.
     pub paused_by_network: bool,
+    /// Codes for this folder are encrypted, and cannot be used without the
+    /// password. Off unless someone set one.
+    pub has_password: bool,
 }
 
 /// Someone is asking to share something with this device.

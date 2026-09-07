@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 
 use homecore::destination;
 use homecore::model::{Invitation, Settings};
-use homecore::{PairingCode, Syncthing};
+use homecore::Syncthing;
 use jni::objects::{JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
@@ -102,7 +102,6 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
     // and the interface needs them while deciding what to do, which is before
     // anything has been asked of the engine.
     match method {
-        "previewCode" => return to_value(PairingCode::decode(&arg!(args, "code"))),
         "resolveDestination" => {
             let chosen = arg!(args, "chosen");
             let label = arg!(args, "label");
@@ -151,13 +150,36 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
                 Value::String(code.encode().map_err(plain)?)
             }
 
-            "codeFor" => {
-                let code = client.code_for(&arg!(args, "folderId")).await.map_err(plain)?;
-                Value::String(code.encode().map_err(plain)?)
+            "codeFor" => Value::String(
+                client.code_text_for(&arg!(args, "folderId")).await.map_err(plain)?,
+            ),
+
+            // Reads a code without acting on it, so the phone can show what is
+            // being offered — and ask for a password — before touching storage.
+            "previewCode" => to_value(
+                client
+                    .read_code(&arg!(args, "code"), args["password"].as_str())
+                    .await,
+            )?,
+
+            "setFolderPassword" => {
+                let password = args["password"].as_str().unwrap_or("");
+                if password.trim().is_empty() {
+                    client.clear_folder_password(&arg!(args, "folderId")).await.map_err(plain)?;
+                } else {
+                    client
+                        .set_folder_password(&arg!(args, "folderId"), password)
+                        .await
+                        .map_err(plain)?;
+                }
+                Value::Null
             }
 
             "redeemCode" => {
-                let code = PairingCode::decode(&arg!(args, "code")).map_err(plain)?;
+                let code = client
+                    .read_code(&arg!(args, "code"), args["password"].as_str())
+                    .await
+                    .map_err(plain)?;
                 client
                     .redeem(&code, &arg!(args, "localPath"))
                     .await

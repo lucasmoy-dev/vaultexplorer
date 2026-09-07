@@ -28,6 +28,7 @@ export interface SharedFolder {
   pendingBytes: number;
   wifiOnly: boolean;
   pausedByNetwork: boolean;
+  hasPassword: boolean;
 }
 
 export interface OfferedFolder {
@@ -89,8 +90,12 @@ export const api = {
   listInvitations: () => invoke<Invitation[]>("list_invitations"),
   shareFolder: (path: string, label: string) => invoke<string>("share_folder", { path, label }),
   codeFor: (folderId: string) => invoke<string>("code_for", { folderId }),
-  previewCode: (code: string) => invoke<CodePreview>("preview_code", { code }),
-  redeemCode: (code: string, localPath: string) => invoke<void>("redeem_code", { code, localPath }),
+  previewCode: (code: string, password?: string) =>
+    invoke<CodePreview>("preview_code", { code, password: password ?? null }),
+  redeemCode: (code: string, localPath: string, password?: string) =>
+    invoke<void>("redeem_code", { code, localPath, password: password ?? null }),
+  setFolderPassword: (folderId: string, password: string) =>
+    invoke<void>("set_folder_password", { folderId, password }),
   resolveDestination: (chosen: string, label: string, pick?: Pick) =>
     invoke<Destination>("resolve_destination", { chosen, label, pick: pick ?? null }),
   setFolderReadOnly: (folderId: string, readOnly: boolean) =>

@@ -17,7 +17,7 @@ import android.os.Environment
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import android.content.Intent
-import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.ContentCopy
@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -153,7 +154,7 @@ fun HomeScreen() {
             }
 
             if (!ready) {
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator()
                         Spacer(Modifier.height(12.dp))
@@ -161,7 +162,7 @@ fun HomeScreen() {
                     }
                 }
             } else if (folders.isEmpty()) {
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Todavía no compartes nada", fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(6.dp))
@@ -509,12 +510,14 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
     var problem by remember { mutableStateOf<String?>(null) }
     var pickPath by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var password by remember { mutableStateOf("") }
+    var needsPassword by remember { mutableStateOf(false) }
 
     val scan = rememberQrScanner { scanned -> code = scanned }
 
     // Reading the code as it is typed means a wrong one is caught before the
     // user commits to a destination.
-    LaunchedEffect(code) {
+    LaunchedEffect(code, password) {
         if (code.trim().length < 8) {
             preview = null
             destination = null
@@ -523,7 +526,7 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
         }
         val outcome = withContext(Dispatchers.IO) {
             runCatching {
-                val read = Repo.previewCode(code)
+                val read = Repo.previewCode(code, password)
                 // Somewhere sensible to start: the phone's own folder of that
                 // name if it has one, and never a directory nested in itself.
                 val guess = File(Environment.getExternalStorageDirectory(), read.folderLabel)
@@ -532,8 +535,20 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
             }
         }
         outcome.fold(
-            onSuccess = { (read, target) -> preview = read; destination = target; problem = null },
-            onFailure = { preview = null; destination = null; problem = it.message },
+            onSuccess = { (read, target) ->
+                preview = read
+                destination = target
+                problem = null
+                needsPassword = false
+            },
+            onFailure = {
+                preview = null
+                destination = null
+                // A locked code is not a broken one: it needs one more thing typed.
+                val locked = it.message?.contains("contraseña") == true
+                needsPassword = locked
+                problem = if (locked && password.isEmpty()) null else it.message
+            },
         )
     }
 
@@ -555,6 +570,17 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
                     placeholder = { Text("HC1…") },
                     minLines = 2,
                 )
+                if (needsPassword) {
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Esta carpeta tiene contraseña") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 problem?.let {
                     Spacer(Modifier.height(8.dp))
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -642,7 +668,7 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
                     busy = true
                     scope.engineCall(onError, onDone = { busy = false; onJoined() }) {
                         File(target!!.path).mkdirs()
-                        Repo.redeemCode(code, target.path)
+                        Repo.redeemCode(code, target.path, password)
                     }
                 },
             ) {
@@ -823,6 +849,9 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                         }
                     }
 
+                    Spacer(Modifier.height(10.dp))
+                    FolderPassword(folder = folder, onError = onError, onDone = onDismiss)
+
                     Spacer(Modifier.height(8.dp))
                     Text("Dispositivos", style = MaterialTheme.typography.labelMedium)
                     if (folder.peers.isEmpty()) {
@@ -878,19 +907,117 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
 }
 
 /**
+ * The password on a folder.
+ *
+ * Not a password the engine checks — there is nowhere in the protocol for one.
+ * It is what this folder's pairing codes are encrypted with, so a code that
+ * leaks is a code nobody can use. Hence the wording: it is about the code, not
+ * about locking files away from a device that already syncs them.
+ */
+@Composable
+private fun FolderPassword(folder: SharedFolder, onError: (String) -> Unit, onDone: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var editing by remember { mutableStateOf(false) }
+    var value by remember { mutableStateOf("") }
+
+    Text("Contraseña", style = MaterialTheme.typography.labelMedium)
+    Text(
+        if (folder.hasPassword)
+            "Los códigos de esta carpeta van cifrados: sin la contraseña no sirven de nada."
+        else
+            "Sin contraseña. Cualquiera con un código de esta carpeta puede entrar.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (editing) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = { value = it },
+            label = { Text("Una contraseña para esta carpeta") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(
+                enabled = value.isNotBlank(),
+                onClick = {
+                    val chosen = value
+                    scope.engineCall(onError, onDone) {
+                        Repo.setFolderPassword(folder.id, chosen)
+                    }
+                },
+            ) { Text("Guardar") }
+            TextButton(onClick = { editing = false; value = "" }) { Text("Cancelar") }
+        }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { editing = true }) {
+                Text(if (folder.hasPassword) "Cambiar" else "Poner una contraseña")
+            }
+            if (folder.hasPassword) {
+                TextButton(onClick = {
+                    scope.engineCall(onError, onDone) { Repo.setFolderPassword(folder.id, "") }
+                }) { Text("Quitarla") }
+            }
+        }
+    }
+}
+
+/**
  * Opens the folder in whatever file manager the phone has.
  *
- * Android has no reliable way to point a file manager at a plain path, so this
- * asks for the folder as a document tree and falls back to saying so rather
- * than doing nothing.
+ * A `file://` URI to a directory is refused outright — no app declares a
+ * handler for it, so the chooser came back empty and the button looked broken.
+ * Android's only supported way in is a document URI from the storage provider,
+ * and even then not every file manager accepts one, so this walks down a list
+ * of decreasing ambition and only gives up once nothing is left to try.
  */
 private fun openFolder(context: Context, path: String, onError: (String) -> Unit) {
-    val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(Uri.parse("file://$path"), "resource/folder")
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    val documentId = documentIdFor(path)
+    val treeUri = DocumentsContract.buildTreeDocumentUri(EXTERNAL_STORAGE_PROVIDER, documentId)
+
+    val attempts = listOf(
+        // What a file manager registers for: a directory, as a document.
+        Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(
+                DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
+                DocumentsContract.Document.MIME_TYPE_DIR,
+            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        },
+        // Some managers only take the tree form.
+        Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(treeUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        },
+        // Not "open" so much as "browse from here", but it always exists: it is
+        // the system's own picker, opened at this folder.
+        Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, treeUri)
+        },
+    )
+
+    for (intent in attempts) {
+        val started = runCatching { context.startActivity(intent) }.isSuccess
+        if (started) return
     }
-    runCatching { context.startActivity(intent) }
-        .onFailure { onError("Ningún gestor de archivos quiso abrir $path") }
+    onError("Ningún gestor de archivos de este teléfono quiso abrir la carpeta. Está en $path")
+}
+
+private const val EXTERNAL_STORAGE_PROVIDER = "com.android.externalstorage.documents"
+
+/**
+ * `/storage/emulated/0/DCIM` becomes `primary:DCIM`, which is how the storage
+ * provider names it. A path outside primary storage — an SD card — is left as
+ * a bare document id, which the provider will simply not resolve; the fallback
+ * chain then does its job.
+ */
+private fun documentIdFor(path: String): String {
+    val roots = listOf("/storage/emulated/0/", "/sdcard/")
+    val relative = roots.firstOrNull { path.startsWith(it) }?.let { path.removePrefix(it) }
+    return if (relative != null) "primary:$relative" else "primary:"
 }
 
 @Composable

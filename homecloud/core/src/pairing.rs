@@ -10,10 +10,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::device_id::DeviceId;
 use crate::error::{Error, Result};
+use crate::lock::FolderKey;
 
 /// Bumped if the payload layout ever changes, so an old app tells the user to
 /// update instead of decoding garbage into a wrong device ID.
 const PREFIX: &str = "HC2";
+
+/// A code for a folder with a password. The body is encrypted, so nothing about
+/// the folder — not even which device wrote it — is readable without it.
+const PREFIX_LOCKED: &str = "HC2L";
 
 /// The layout this replaced. Still read, so a device that has not been updated
 /// can still pair with one that has — the only thing lost is the size warning.
@@ -56,6 +61,17 @@ pub struct PairingCode {
     pub bytes: Option<u64>,
 }
 
+/// What came out of reading a code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScannedCode {
+    /// Readable as it stands.
+    Open(PairingCode),
+    /// For a folder with a password. Carries the salt needed to turn a password
+    /// into the key that opens it, and nothing else: the label, the device and
+    /// the folder are all inside the encrypted part.
+    Locked { salt: [u8; 16], sealed: Vec<u8> },
+}
+
 impl PairingCode {
     pub fn encode(&self) -> Result<String> {
         let payload = PayloadV2 {
@@ -71,15 +87,63 @@ impl PairingCode {
         Ok(format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
     }
 
+    /// The same code, encrypted with a folder's password.
+    ///
+    /// Everything goes inside: without the password there is no device id to
+    /// connect to and no folder id to ask for, so a code that leaks is a code
+    /// that cannot be used.
+    pub fn encode_locked(&self, lock: &FolderKey) -> Result<String> {
+        let payload = PayloadV2 {
+            device: DeviceId::parse(&self.device_id)?.0,
+            device_name: self.device_name.clone(),
+            folder_id: self.folder_id.clone(),
+            folder_label: self.folder_label.clone(),
+            hints: self.hints.clone(),
+            bytes: self.bytes.unwrap_or(0),
+        };
+        let bytes = postcard::to_allocvec(&payload)
+            .map_err(|e| Error::BadPairingCode(format!("could not be packed: {e}")))?;
+        let sealed = lock.seal(&bytes)?;
+        Ok(format!("{PREFIX_LOCKED}{}", URL_SAFE_NO_PAD.encode(sealed)))
+    }
+
+    /// Reads a code, saying whether a password is still needed.
+    pub fn scan(input: &str) -> Result<ScannedCode> {
+        let compact = compact(input);
+        if let Some(body) = compact.strip_prefix(PREFIX_LOCKED) {
+            let sealed = URL_SAFE_NO_PAD
+                .decode(body)
+                .map_err(|_| Error::BadPairingCode("it looks truncated or altered".into()))?;
+            let salt = FolderKey::salt_of(&sealed)?;
+            return Ok(ScannedCode::Locked { salt, sealed });
+        }
+        Ok(ScannedCode::Open(Self::decode(input)?))
+    }
+
+    /// Opens a locked code with the key a password produced.
+    pub fn unlock(sealed: &[u8], lock: &FolderKey) -> Result<Self> {
+        let bytes = lock.open(sealed)?;
+        let payload: PayloadV2 = postcard::from_bytes(&bytes)
+            .map_err(|_| Error::BadPairingCode("it was not produced by this version".into()))?;
+        Ok(PairingCode {
+            device_id: DeviceId(payload.device).to_canonical(),
+            device_name: payload.device_name,
+            folder_id: payload.folder_id,
+            folder_label: payload.folder_label,
+            hints: payload.hints,
+            bytes: Some(payload.bytes),
+        })
+    }
+
     /// Tolerates the whitespace and stray newlines that survive a copy-paste,
     /// and a full `homecloud:` link as well as a bare code.
     pub fn decode(input: &str) -> Result<Self> {
-        let trimmed = input.trim();
-        let trimmed = trimmed
-            .strip_prefix("homecloud://")
-            .or_else(|| trimmed.strip_prefix("homecloud:"))
-            .unwrap_or(trimmed);
-        let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+        let compact = compact(input);
+        if compact.starts_with(PREFIX_LOCKED) {
+            return Err(Error::BadPairingCode(
+                "esta carpeta tiene contraseña: hace falta para leer el código".into(),
+            ));
+        }
 
         let older = compact.starts_with(PREFIX_V1);
         let body = compact
@@ -117,6 +181,17 @@ impl PairingCode {
             bytes: Some(payload.bytes),
         })
     }
+}
+
+/// Tolerates the whitespace and stray newlines that survive a copy-paste, and
+/// a full `homecloud:` link as well as a bare code.
+fn compact(input: &str) -> String {
+    let trimmed = input.trim();
+    let trimmed = trimmed
+        .strip_prefix("homecloud://")
+        .or_else(|| trimmed.strip_prefix("homecloud:"))
+        .unwrap_or(trimmed);
+    trimmed.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 #[cfg(test)]
@@ -184,6 +259,52 @@ mod tests {
         let read = PairingCode::decode(&encoded).unwrap();
         assert_eq!(read.folder_label, sample().folder_label);
         assert_eq!(read.bytes, None, "an old code carries no size, and must not invent one");
+    }
+
+    #[test]
+    fn a_locked_code_needs_the_password_and_then_reads_the_same() {
+        let lock = FolderKey::create("las fotos de la abuela").unwrap();
+        let code = sample().encode_locked(&lock).unwrap();
+
+        // Nothing about the folder is readable from the code alone.
+        assert!(!code.contains("Fotos"));
+        assert!(PairingCode::decode(&code).is_err());
+
+        match PairingCode::scan(&code).unwrap() {
+            ScannedCode::Locked { salt, sealed } => {
+                let key = FolderKey::from_password("las fotos de la abuela", salt).unwrap();
+                assert_eq!(PairingCode::unlock(&sealed, &key).unwrap(), sample());
+            }
+            ScannedCode::Open(_) => panic!("a locked code must not read as an open one"),
+        }
+    }
+
+    #[test]
+    fn a_locked_code_refuses_the_wrong_password() {
+        let lock = FolderKey::create("correcta").unwrap();
+        let code = sample().encode_locked(&lock).unwrap();
+        let ScannedCode::Locked { salt, sealed } = PairingCode::scan(&code).unwrap() else {
+            panic!("expected a locked code");
+        };
+        let wrong = FolderKey::from_password("incorrecta", salt).unwrap();
+        assert!(PairingCode::unlock(&sealed, &wrong).is_err());
+    }
+
+    #[test]
+    fn a_folder_without_a_password_still_reads_with_no_extra_step() {
+        let code = sample().encode().unwrap();
+        match PairingCode::scan(&code).unwrap() {
+            ScannedCode::Open(read) => assert_eq!(read, sample()),
+            ScannedCode::Locked { .. } => panic!("an open code must not ask for a password"),
+        }
+    }
+
+    /// It still has to survive a QR read off another screen.
+    #[test]
+    fn a_locked_code_stays_short_enough_to_scan() {
+        let lock = FolderKey::create("clave").unwrap();
+        let code = sample().encode_locked(&lock).unwrap();
+        assert!(code.len() < 300, "locked code grew to {} characters", code.len());
     }
 
     #[test]

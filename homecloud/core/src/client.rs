@@ -4,6 +4,7 @@
 //! shapes Syncthing returns are deliberately not re-exported: they are an
 //! implementation detail that stops at this module's edge.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -15,6 +16,7 @@ use crate::error::{Error, Result};
 use crate::model::{
     FolderState, Invitation, OfferedFolder, Peer, Settings, SharedFolder, ThisDevice,
 };
+use crate::lock::FolderKey;
 use crate::pairing::PairingCode;
 
 pub struct Syncthing {
@@ -292,6 +294,18 @@ impl Syncthing {
                 // The engine must never swap itself out from under the app that
                 // ships and signs it.
                 "autoUpgradeIntervalH": 0,
+                // Findable away from home. Without these, two devices can only
+                // meet by shouting on the same network, so leaving the house
+                // meant "disconnected" with nothing to do about it. What is
+                // published is this device's id and address, never a folder or
+                // a file name, and a relay carries bytes it cannot read.
+                "globalAnnounceEnabled": true,
+                "relaysEnabled": true,
+                "natEnabled": true,
+                // Announcing on the local network stays on regardless: at home
+                // it is the fast path, and turning it off would only ever look
+                // like a bug.
+                "localAnnounceEnabled": true,
             }),
         )
         .await?;
@@ -377,6 +391,7 @@ impl Syncthing {
                 pending_bytes: status["needBytes"].as_u64().unwrap_or(0),
                 wifi_only: wifi_only.contains(&folder.id),
                 paused_by_network: paused_by_network.contains(&folder.id),
+                has_password: self.folder_has_password(&folder.id),
                 peers,
                 id: folder.id,
                 label: folder.label,
@@ -500,6 +515,77 @@ impl Syncthing {
         Ok(())
     }
 
+    // ---- folder passwords ----------------------------------------------
+
+    /// Puts a password on a folder, or replaces the one it had.
+    ///
+    /// What gets stored is the salt and the derived key — never the password.
+    /// That is enough to lock future codes for this folder and enough to
+    /// recognise the right password later, and not enough to recover it.
+    pub async fn set_folder_password(&self, folder_id: &str, password: &str) -> Result<()> {
+        if password.trim().is_empty() {
+            return Err(Error::Engine("la contraseña no puede estar vacía".into()));
+        }
+        let lock = FolderKey::create(password)?;
+        self.store_key(folder_id, Some(&lock));
+        Ok(())
+    }
+
+    /// Takes the password off a folder, which anyone sharing it may do: from
+    /// here on its codes are readable without one. It does not reach the other
+    /// devices — each keeps its own decision about the codes *it* writes.
+    pub async fn clear_folder_password(&self, folder_id: &str) -> Result<()> {
+        self.store_key(folder_id, None);
+        Ok(())
+    }
+
+    /// Whether a password has to be typed to use this folder's codes.
+    pub fn folder_has_password(&self, folder_id: &str) -> bool {
+        self.stored_key(folder_id).is_some()
+    }
+
+    /// Checks a password against the one a folder has.
+    pub fn folder_password_matches(&self, folder_id: &str, password: &str) -> bool {
+        let Some(stored) = self.stored_key(folder_id) else {
+            return false;
+        };
+        FolderKey::from_password(password, stored.salt)
+            .map(|candidate| candidate.matches(&stored))
+            .unwrap_or(false)
+    }
+
+    fn store_key(&self, folder_id: &str, lock: Option<&FolderKey>) {
+        let mut locks = self.read_preferences()["folderKeys"].clone();
+        if !locks.is_object() {
+            locks = json!({});
+        }
+        match lock {
+            Some(lock) => {
+                locks[folder_id] = json!({
+                    "salt": URL_SAFE_NO_PAD.encode(lock.salt),
+                    "key": URL_SAFE_NO_PAD.encode(lock.key),
+                });
+            }
+            None => {
+                if let Some(map) = locks.as_object_mut() {
+                    map.remove(folder_id);
+                }
+            }
+        }
+        self.write_preference("folderKeys", locks);
+    }
+
+    fn stored_key(&self, folder_id: &str) -> Option<FolderKey> {
+        let stored = self.read_preferences();
+        let entry = stored["folderKeys"].get(folder_id)?;
+        let salt = URL_SAFE_NO_PAD.decode(entry["salt"].as_str()?).ok()?;
+        let key = URL_SAFE_NO_PAD.decode(entry["key"].as_str()?).ok()?;
+        Some(FolderKey {
+            salt: salt.try_into().ok()?,
+            key: key.try_into().ok()?,
+        })
+    }
+
     /// Asks the engine to look at the folder again from scratch.
     ///
     /// The way out of "no connected device has the required version": the index
@@ -606,6 +692,15 @@ impl Syncthing {
 
     /// The code for an already-shared folder, so it can be handed to a second
     /// or third device later.
+    /// The code a person copies: locked when the folder has a password.
+    pub async fn code_text_for(&self, folder_id: &str) -> Result<String> {
+        let code = self.code_for(folder_id).await?;
+        match self.stored_key(folder_id) {
+            Some(lock) => code.encode_locked(&lock),
+            None => code.encode(),
+        }
+    }
+
     pub async fn code_for(&self, folder_id: &str) -> Result<PairingCode> {
         let me = self.this_device().await?;
         let folders: Vec<FolderConfig> = serde_json::from_value(self.get("/rest/config/folders").await?)?;
@@ -720,6 +815,30 @@ impl Syncthing {
     }
 
     // ---- pairing -------------------------------------------------------
+
+    /// Reads a code, using `password` when the folder has one.
+    ///
+    /// The password is checked here, before anything reaches the network: a
+    /// wrong one cannot even produce a device to connect to. When the code
+    /// opens, its password is kept for this folder so codes written *from* this
+    /// device carry it too — which is how a password follows a folder from the
+    /// second device to the third.
+    pub async fn read_code(&self, text: &str, password: Option<&str>) -> Result<PairingCode> {
+        use crate::pairing::ScannedCode;
+
+        match PairingCode::scan(text)? {
+            ScannedCode::Open(code) => Ok(code),
+            ScannedCode::Locked { salt, sealed } => {
+                let password = password.filter(|p| !p.is_empty()).ok_or_else(|| {
+                    Error::BadPairingCode("esta carpeta tiene contraseña".into())
+                })?;
+                let lock = FolderKey::from_password(password, salt)?;
+                let code = PairingCode::unlock(&sealed, &lock)?;
+                self.store_key(&code.folder_id, Some(&lock));
+                Ok(code)
+            }
+        }
+    }
 
     /// Acts on a pasted or scanned code: trusts the other device and takes it
     /// up on the folder it is offering, storing that folder at `local_path`.

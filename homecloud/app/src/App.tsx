@@ -379,6 +379,8 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [password, setPassword] = useState("");
+  const [needsPassword, setNeedsPassword] = useState(false);
 
   // Reading the code as it is pasted means the user finds out it is wrong
   // immediately, rather than after committing to a destination folder.
@@ -391,23 +393,27 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
     }
     let cancelled = false;
     api
-      .previewCode(code)
+      .previewCode(code, password)
       .then(async (p) => {
         if (cancelled) return;
         setPreview(p);
         setProblem(null);
+        setNeedsPassword(false);
         setDestination(await api.resolveDestination(p.suggestedPath, p.folderLabel, "itself"));
       })
       .catch((e) => {
         if (cancelled) return;
         setPreview(null);
         setDestination(null);
-        setProblem(String(e));
+        // A locked code is not a broken one: it needs one more thing typed.
+        const locked = String(e).includes("contraseña");
+        setNeedsPassword(locked);
+        setProblem(locked && !password ? null : String(e));
       });
     return () => {
       cancelled = true;
     };
-  }, [code]);
+  }, [code, password]);
 
   async function choosePath() {
     if (!preview) return;
@@ -437,7 +443,7 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
     if (!destination) return;
     setBusy(true);
     try {
-      await api.redeemCode(code, destination.path);
+      await api.redeemCode(code, destination.path, password);
       onJoined();
     } catch (e) {
       setProblem(String(e));
@@ -474,6 +480,19 @@ function JoinForm({ onJoined }: { onJoined: () => void }) {
           autoFocus
         />
       </label>
+
+      {needsPassword && (
+        <label className="field">
+          <span>Esta carpeta tiene contraseña</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="La contraseña de la carpeta"
+            autoFocus
+          />
+        </label>
+      )}
 
       {problem && <p className="problem">{problem}</p>}
 
@@ -637,6 +656,8 @@ function FolderSheet({
             </span>
           </label>
 
+          <FolderPassword folder={folder} onChanged={onChanged} onError={onError} />
+
           <p className="section">Dispositivos</p>
           {folder.peers.length === 0 ? (
             <p className="hint">Todavía no comparte con ningún dispositivo.</p>
@@ -681,6 +702,91 @@ function FolderSheet({
             <button className="btn btn-quiet" onClick={() => setConfirmingStop(true)}>
               <TrashIcon />
               Dejar de sincronizar
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The password on a folder.
+ *
+ * It is not a password the engine checks — there is nowhere in the protocol for
+ * one. It is what this folder's pairing codes are encrypted with, so a code
+ * that leaks is a code nobody can use. That is why the wording talks about the
+ * code and not about "protecting the folder": the files are as reachable as
+ * they ever were to a device that is already sharing them.
+ */
+function FolderPassword({
+  folder,
+  onChanged,
+  onError,
+}: {
+  folder: SharedFolder;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+
+  async function save(password: string) {
+    try {
+      await api.setFolderPassword(folder.id, password);
+      setEditing(false);
+      setValue("");
+      onChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  return (
+    <div className="folder-password">
+      <p className="section">Contraseña</p>
+      <p className="hint">
+        {folder.hasPassword
+          ? "Los códigos de esta carpeta van cifrados: sin la contraseña no sirven de nada."
+          : "Sin contraseña. Cualquiera con un código de esta carpeta puede entrar."}
+      </p>
+
+      {editing ? (
+        <>
+          <input
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="Una contraseña para esta carpeta"
+            autoFocus
+          />
+          <div className="destination-actions">
+            <button
+              className="btn btn-small btn-primary"
+              onClick={() => void save(value)}
+              disabled={value.trim().length === 0}
+            >
+              Guardar
+            </button>
+            <button
+              className="btn btn-small btn-quiet"
+              onClick={() => {
+                setEditing(false);
+                setValue("");
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="destination-actions">
+          <button className="btn btn-small" onClick={() => setEditing(true)}>
+            {folder.hasPassword ? "Cambiar la contraseña" : "Poner una contraseña"}
+          </button>
+          {folder.hasPassword && (
+            <button className="btn btn-small btn-quiet" onClick={() => void save("")}>
+              Quitarla
             </button>
           )}
         </div>

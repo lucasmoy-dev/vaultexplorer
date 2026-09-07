@@ -152,10 +152,23 @@ async fn share_folder(state: State<'_, AppState>, path: String, label: String) -
 
 #[tauri::command]
 async fn code_for(state: State<'_, AppState>, folder_id: String) -> UiResult<String> {
+    with_engine!(state, |client| client.code_text_for(&folder_id))
+}
+
+/// Puts a password on a folder, or takes it off when `password` is empty.
+#[tauri::command]
+async fn set_folder_password(
+    state: State<'_, AppState>,
+    folder_id: String,
+    password: String,
+) -> UiResult<()> {
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("the sync engine is still starting up")?;
-    let code = engine.client.code_for(&folder_id).await.map_err(plain)?;
-    code.encode().map_err(plain)
+    if password.trim().is_empty() {
+        engine.client.clear_folder_password(&folder_id).await.map_err(plain)
+    } else {
+        engine.client.set_folder_password(&folder_id, &password).await.map_err(plain)
+    }
 }
 
 #[derive(Serialize)]
@@ -172,8 +185,18 @@ struct CodePreview {
 /// Reads a pasted code without acting on it, so the interface can ask "accept
 /// Fotos from Portátil de Lucas?" before anything is written to disk.
 #[tauri::command]
-async fn preview_code(state: State<'_, AppState>, code: String) -> UiResult<CodePreview> {
-    let parsed = PairingCode::decode(&code).map_err(plain)?;
+async fn preview_code(
+    state: State<'_, AppState>,
+    code: String,
+    password: Option<String>,
+) -> UiResult<CodePreview> {
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("the sync engine is still starting up")?;
+    let parsed = engine
+        .client
+        .read_code(&code, password.as_deref())
+        .await
+        .map_err(plain)?;
     Ok(CodePreview {
         suggested_path: state.suggest_for(&parsed.folder_label).to_string_lossy().into_owned(),
         device_name: parsed.device_name,
@@ -242,11 +265,20 @@ async fn forget_unused_devices(state: State<'_, AppState>) -> UiResult<Vec<Strin
 }
 
 #[tauri::command]
-async fn redeem_code(state: State<'_, AppState>, code: String, local_path: String) -> UiResult<()> {
-    let parsed = PairingCode::decode(&code).map_err(plain)?;
+async fn redeem_code(
+    state: State<'_, AppState>,
+    code: String,
+    local_path: String,
+    password: Option<String>,
+) -> UiResult<()> {
     std::fs::create_dir_all(&local_path).map_err(|e| format!("could not create {local_path}: {e}"))?;
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("the sync engine is still starting up")?;
+    let parsed = engine
+        .client
+        .read_code(&code, password.as_deref())
+        .await
+        .map_err(plain)?;
     engine.client.redeem(&parsed, &local_path).await.map_err(plain)
 }
 
@@ -610,6 +642,7 @@ pub fn run() {
             resolve_destination,
             set_folder_read_only,
             set_folder_wifi_only,
+            set_folder_password,
             reconnect_all,
             rescan,
             download_update,

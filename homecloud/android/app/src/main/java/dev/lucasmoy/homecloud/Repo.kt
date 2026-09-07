@@ -28,8 +28,10 @@ object Repo {
     fun codeFor(folderId: String): String =
         Native.request("codeFor", JSONObject().put("folderId", folderId)) as String
 
-    fun previewCode(code: String): CodePreview {
-        val json = Native.request("previewCode", JSONObject().put("code", code)) as JSONObject
+    fun previewCode(code: String, password: String? = null): CodePreview {
+        val args = JSONObject().put("code", code)
+        if (!password.isNullOrEmpty()) args.put("password", password)
+        val json = Native.request("previewCode", args) as JSONObject
         return CodePreview(
             deviceName = json.getString("deviceName"),
             folderLabel = json.getString("folderLabel"),
@@ -37,8 +39,18 @@ object Repo {
         )
     }
 
-    fun redeemCode(code: String, localPath: String) {
-        Native.request("redeemCode", JSONObject().put("code", code).put("localPath", localPath))
+    fun redeemCode(code: String, localPath: String, password: String? = null) {
+        val args = JSONObject().put("code", code).put("localPath", localPath)
+        if (!password.isNullOrEmpty()) args.put("password", password)
+        Native.request("redeemCode", args)
+    }
+
+    /** An empty password takes it off. */
+    fun setFolderPassword(folderId: String, password: String) {
+        Native.request(
+            "setFolderPassword",
+            JSONObject().put("folderId", folderId).put("password", password),
+        )
     }
 
     fun accept(invitation: Invitation, localPath: String?) {

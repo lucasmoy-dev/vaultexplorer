@@ -16,4 +16,10 @@ rand = "0.8"
 # std answers that, and a folder that will not fit is worth knowing before the
 # download starts rather than after it stalls.
 libc = "0.2"
+# Folder passwords. A pairing code for a folder with a password is encrypted
+# with it, so a code without the password cannot even be read, let alone
+# redeemed. Argon2 because these are human-chosen passwords and the code is
+# something a person may forward by accident.
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
 postcard = { version = "1", features = ["alloc"] }

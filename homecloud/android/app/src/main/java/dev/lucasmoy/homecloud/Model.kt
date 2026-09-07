@@ -52,6 +52,7 @@ data class SharedFolder(
     val pendingBytes: Long,
     val wifiOnly: Boolean,
     val pausedByNetwork: Boolean,
+    val hasPassword: Boolean,
 ) {
     companion object {
         fun from(json: JSONObject) = SharedFolder(
@@ -69,6 +70,7 @@ data class SharedFolder(
             pendingBytes = json.optLong("pendingBytes"),
             wifiOnly = json.optBoolean("wifiOnly"),
             pausedByNetwork = json.optBoolean("pausedByNetwork"),
+            hasPassword = json.optBoolean("hasPassword"),
         )
     }
 }
