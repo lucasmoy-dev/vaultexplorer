@@ -12,9 +12,10 @@
 //! both sides.
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use homecore::destination;
+use homecore::link::Links;
 use homecore::model::{Invitation, Settings};
 use homecore::Syncthing;
 use jni::objects::{JClass, JString};
@@ -33,6 +34,24 @@ fn runtime() -> &'static Runtime {
 fn client_slot() -> &'static std::sync::RwLock<Option<Syncthing>> {
     static CLIENT: OnceLock<std::sync::RwLock<Option<Syncthing>>> = OnceLock::new();
     CLIENT.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// The public-link helper. Separate from the engine slot because the phone
+/// knows where its own native libraries live and the core does not.
+///
+/// Behind an `Arc` so a caller can take a handle and drop the lock before
+/// awaiting: holding a std lock across an await would block the runtime.
+fn links_slot() -> &'static std::sync::RwLock<Option<Arc<Links>>> {
+    static LINKS: OnceLock<std::sync::RwLock<Option<Arc<Links>>>> = OnceLock::new();
+    LINKS.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+fn links() -> Result<Arc<Links>, String> {
+    links_slot()
+        .read()
+        .map_err(|_| "the app lost track of the link helper".to_string())?
+        .clone()
+        .ok_or_else(|| "los enlaces no están listos todavía".to_string())
 }
 
 /// Called by the service once it has the engine listening and knows its port.
@@ -122,6 +141,58 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
                 "explanation": destination::describe(chosen, &label, pick),
             }));
         }
+        // ---- public links ------------------------------------------------
+        //
+        // Nothing to do with the sync engine, so these must not wait for it to
+        // be up: a folder can be handed out as a link while syncing is still
+        // starting, or broken.
+        "linkSetup" => {
+            let binary = std::path::PathBuf::from(arg!(args, "binary"));
+            let home = std::path::PathBuf::from(arg!(args, "home"));
+            if let Ok(mut slot) = links_slot().write() {
+                *slot = Some(Arc::new(Links::new(binary, home)));
+            }
+            return Ok(Value::Null);
+        }
+
+        "linkReady" => {
+            let links = links()?;
+            return Ok(Value::Bool(runtime().block_on(links.is_ready())));
+        }
+
+        "linkJoin" => {
+            let links = links()?;
+            let token = arg!(args, "token");
+            runtime().block_on(links.join(&token)).map_err(plain)?;
+            return Ok(Value::Null);
+        }
+
+        "linkStart" => {
+            let links = links()?;
+            let folder_id = arg!(args, "folderId");
+            let path = arg!(args, "path");
+            let auth = args["basicAuth"].as_str().unwrap_or("").to_string();
+            let url = runtime()
+                .block_on(links.start(&folder_id, std::path::Path::new(&path), &auth))
+                .map_err(plain)?;
+            return Ok(Value::String(url));
+        }
+
+        "linkStop" => {
+            let links = links()?;
+            let folder_id = arg!(args, "folderId");
+            runtime().block_on(links.stop(&folder_id)).map_err(plain)?;
+            return Ok(Value::Null);
+        }
+
+        "linkFor" => {
+            let links = links()?;
+            return Ok(match links.url_for(&arg!(args, "folderId")) {
+                Some(url) => Value::String(url),
+                None => Value::Null,
+            });
+        }
+
         _ => {}
     }
 

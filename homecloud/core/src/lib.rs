@@ -11,6 +11,7 @@ pub mod destination;
 pub mod disk;
 pub mod device_id;
 pub mod error;
+pub mod link;
 pub mod lock;
 pub mod model;
 pub mod pairing;

@@ -14,18 +14,22 @@ import {
   type Readiness,
   type SharedFolder,
 } from "./api";
+import { copyText } from "./clipboard";
 import { StatusDot, stateLabel } from "./StatusDot";
 import { PairingCard } from "./PairingCard";
 import { SettingsSheet } from "./SettingsSheet";
 import { QrScanner } from "./QrScanner";
 import {
+  CheckIcon,
   CloseIcon,
+  CopyIcon,
   FolderIcon,
   GearIcon,
   JoinIcon,
   PauseIcon,
   PencilIcon,
   PlayIcon,
+  LinkIcon,
   PlusIcon,
   RefreshIcon,
   QrIcon,
@@ -658,6 +662,8 @@ function FolderSheet({
 
           <FolderPassword folder={folder} onChanged={onChanged} onError={onError} />
 
+          <ShareLink folder={folder} onError={onError} />
+
           <p className="section">Dispositivos</p>
           {folder.peers.length === 0 ? (
             <p className="hint">Todavía no comparte con ningún dispositivo.</p>
@@ -705,6 +711,122 @@ function FolderSheet({
             </button>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Handing a folder out as a link, for people who will not install anything.
+ *
+ * This is not syncing and does not pretend to be: while the link is up, this
+ * device is serving the folder over a zrok tunnel, and closing HomeCloud takes
+ * it down. Both facts are on screen, because a link that quietly stops working
+ * is worse than one that never existed.
+ */
+function ShareLink({
+  folder,
+  onError,
+}: {
+  folder: SharedFolder;
+  onError: (message: string) => void;
+}) {
+  const [ready, setReady] = useState<boolean | null>(null);
+  const [url, setUrl] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    void api.linkReady().then(setReady).catch(() => setReady(false));
+    void api.linkFor(folder.id).then(setUrl).catch(() => undefined);
+  }, [folder.id]);
+
+  async function start() {
+    setBusy(true);
+    try {
+      setUrl(await api.linkStart(folder.id, folder.path, password));
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stop() {
+    setBusy(true);
+    try {
+      await api.linkStop(folder.id);
+      setUrl(null);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (ready === false) {
+    return (
+      <div className="folder-password">
+        <p className="section">Compartir por enlace</p>
+        <p className="hint">
+          Para dar un enlace a alguien que no tiene HomeCloud hace falta una cuenta de zrok, que es
+          gratis. Pega su token en Ajustes y esto se activa.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="folder-password">
+      <p className="section">Compartir por enlace</p>
+
+      {url ? (
+        <>
+          <p className="destination-path">
+            <span>{url}</span>
+          </p>
+          <p className="hint">
+            Funciona mientras HomeCloud esté abierto en este ordenador. Al cerrarlo, el enlace deja
+            de existir.
+          </p>
+          <div className="destination-actions">
+            <button
+              className="btn btn-small"
+              onClick={async () => {
+                setCopied(await copyText(url));
+                setTimeout(() => setCopied(false), 2000);
+              }}
+            >
+              {copied ? <CheckIcon /> : <CopyIcon />}
+              {copied ? "Copiado" : "Copiar el enlace"}
+            </button>
+            <button className="btn btn-small btn-quiet" onClick={stop} disabled={busy}>
+              Dejar de compartir
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="hint">
+            Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un
+            navegador y sin instalar nada. No podrá cambiar ni borrar nada.
+          </p>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Contraseña para el enlace (opcional)"
+          />
+          <p className="hint">
+            Sin contraseña, el enlace lo abre quien lo tenga. La comprueba zrok, no este
+            ordenador.
+          </p>
+          <button className="btn btn-small btn-primary" onClick={start} disabled={busy}>
+            <LinkIcon />
+            {busy ? "Creando el enlace…" : "Crear el enlace"}
+          </button>
+        </>
       )}
     </div>
   );

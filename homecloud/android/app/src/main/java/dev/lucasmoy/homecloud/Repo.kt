@@ -96,6 +96,36 @@ object Repo {
         )
     }
 
+    // ---- public links ---------------------------------------------------
+
+    /**
+     * Points the core at the link helper. The path can only come from here:
+     * only the platform knows where this app's native libraries were unpacked.
+     */
+    fun linkSetup(binary: String, home: String) {
+        Native.request("linkSetup", JSONObject().put("binary", binary).put("home", home))
+    }
+
+    /** Whether this device has joined a zrok account. */
+    fun linkReady(): Boolean = Native.request("linkReady") as Boolean
+
+    fun linkJoin(token: String) {
+        Native.request("linkJoin", JSONObject().put("token", token))
+    }
+
+    /** Starts serving a folder; returns the address to hand out. */
+    fun linkStart(folderId: String, path: String, basicAuth: String): String =
+        Native.request(
+            "linkStart",
+            JSONObject().put("folderId", folderId).put("path", path).put("basicAuth", basicAuth),
+        ) as String
+
+    fun linkStop(folderId: String) {
+        Native.request("linkStop", JSONObject().put("folderId", folderId))
+    }
+
+    fun linkFor(folderId: String): String? = Native.request("linkFor", JSONObject().put("folderId", folderId)) as? String
+
     /** Tells the core where it may put folders it accepts on its own. */
     fun rescan(folderId: String) {
         Native.request("rescan", JSONObject().put("folderId", folderId))

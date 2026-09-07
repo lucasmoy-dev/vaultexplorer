@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PersonAdd
@@ -852,6 +853,9 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                     Spacer(Modifier.height(10.dp))
                     FolderPassword(folder = folder, onError = onError, onDone = onDismiss)
 
+                    Spacer(Modifier.height(10.dp))
+                    ShareLink(folder = folder, onError = onError)
+
                     Spacer(Modifier.height(8.dp))
                     Text("Dispositivos", style = MaterialTheme.typography.labelMedium)
                     if (folder.peers.isEmpty()) {
@@ -904,6 +908,122 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
     )
+}
+
+/**
+ * Handing a folder out as a link, for people who will not install anything.
+ *
+ * This is not syncing and does not pretend to be: while the link is up, the
+ * phone is serving the folder over a zrok tunnel, and it dies with the app.
+ * Both facts are on screen, because a link that quietly stops working is worse
+ * than one that never existed.
+ */
+@Composable
+private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var ready by remember { mutableStateOf<Boolean?>(null) }
+    var url by remember { mutableStateOf<String?>(null) }
+    var password by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(folder.id) {
+        withContext(Dispatchers.IO) {
+            val isReady = runCatching { Repo.linkReady() }.getOrDefault(false)
+            val existing = runCatching { Repo.linkFor(folder.id) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                ready = isReady
+                url = existing
+            }
+        }
+    }
+
+    Text("Compartir por enlace", style = MaterialTheme.typography.labelMedium)
+
+    if (ready == false) {
+        Text(
+            "Para dar un enlace a alguien que no tiene HomeCloud hace falta una cuenta de zrok, " +
+                "que es gratis. Pega su token en Ajustes y esto se activa.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+
+    val current = url
+    if (current != null) {
+        Text(current, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+        Text(
+            "Funciona mientras HomeCloud siga en marcha en este teléfono.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { copyToClipboard(context, current) }) {
+                Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Copiar")
+            }
+            TextButton(onClick = { shareCode(context, folder.label, current) }) {
+                Icon(Icons.Filled.Share, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Compartir")
+            }
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        val outcome = withContext(Dispatchers.IO) {
+                            runCatching { Repo.linkStop(folder.id) }
+                        }
+                        busy = false
+                        outcome.fold(
+                            onSuccess = { url = null },
+                            onFailure = { onError(it.message ?: "") },
+                        )
+                    }
+                },
+            ) { Text("Dejar de compartir") }
+        }
+        return
+    }
+
+    Text(
+        "Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un " +
+            "navegador y sin instalar nada. No podrá cambiar ni borrar nada.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedTextField(
+        value = password,
+        onValueChange = { password = it },
+        label = { Text("Contraseña del enlace (opcional)") },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    TextButton(
+        enabled = !busy,
+        onClick = {
+            busy = true
+            val auth = if (password.isBlank()) "" else "familia:${password.trim()}"
+            scope.launch {
+                val outcome = withContext(Dispatchers.IO) {
+                    runCatching { Repo.linkStart(folder.id, folder.path, auth) }
+                }
+                busy = false
+                outcome.fold(
+                    onSuccess = { url = it },
+                    onFailure = { onError(it.message ?: "No se pudo crear el enlace") },
+                )
+            }
+        },
+    ) {
+        Icon(Icons.Filled.Link, null, Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(if (busy) "Creando el enlace…" else "Crear el enlace")
+    }
 }
 
 /**
@@ -1071,6 +1191,9 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
                         }
                     }
                     Spacer(Modifier.height(14.dp))
+                    ZrokRow(onError = onError)
+
+                    Spacer(Modifier.height(14.dp))
                     UpdateRow(onError = onError)
 
                     Spacer(Modifier.height(14.dp))
@@ -1148,6 +1271,69 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
+}
+
+/**
+ * Joining a zrok account, which is what public links need.
+ *
+ * Once per device: after that every folder can be handed out as a link without
+ * anyone typing a token again.
+ */
+@Composable
+private fun ZrokRow(onError: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var ready by remember { mutableStateOf<Boolean?>(null) }
+    var token by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val isReady = withContext(Dispatchers.IO) { runCatching { Repo.linkReady() }.getOrDefault(false) }
+        ready = isReady
+    }
+
+    Text("Enlaces públicos", style = MaterialTheme.typography.labelMedium)
+    if (ready == true) {
+        Text(
+            "Este teléfono ya está conectado a tu cuenta de zrok.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Text(
+        "Para dar un enlace a alguien que no tiene HomeCloud, la carpeta se sirve a través de " +
+            "zrok.io, que es gratis y de código abierto. Crea una cuenta, copia el token que te " +
+            "da y pégalo aquí.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedTextField(
+        value = token,
+        onValueChange = { token = it },
+        label = { Text("El token de tu cuenta de zrok") },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    TextButton(
+        enabled = token.isNotBlank() && !busy,
+        onClick = {
+            busy = true
+            val chosen = token.trim()
+            scope.launch {
+                val outcome = withContext(Dispatchers.IO) { runCatching { Repo.linkJoin(chosen) } }
+                busy = false
+                outcome.fold(
+                    onSuccess = { ready = true; token = "" },
+                    onFailure = { onError(it.message ?: "No se pudo conectar con zrok") },
+                )
+            }
+        },
+    ) {
+        Icon(Icons.Filled.Link, null, Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(if (busy) "Conectando…" else "Conectar con zrok")
+    }
 }
 
 /**

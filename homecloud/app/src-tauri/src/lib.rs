@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use homecore::destination::{self, Pick};
+use homecore::link::{link_binary, Links};
 use homecore::model::{Invitation, Settings, SharedFolder, ThisDevice};
 use homecore::supervisor::{engine_binary, Engine};
 use homecore::PairingCode;
@@ -30,6 +31,8 @@ struct AppState {
     engine_home: PathBuf,
     /// This user's home, for guessing a destination that already exists.
     home_dir: PathBuf,
+    /// Folders being served as public links right now.
+    links: Links,
 }
 
 impl AppState {
@@ -153,6 +156,52 @@ async fn share_folder(state: State<'_, AppState>, path: String, label: String) -
 #[tauri::command]
 async fn code_for(state: State<'_, AppState>, folder_id: String) -> UiResult<String> {
     with_engine!(state, |client| client.code_text_for(&folder_id))
+}
+
+// ---- public links ---------------------------------------------------------
+
+/// Whether this device has joined a zrok account, which is what a link needs.
+#[tauri::command]
+async fn link_ready(state: State<'_, AppState>) -> UiResult<bool> {
+    Ok(state.links.is_ready().await)
+}
+
+/// Joins the zrok account a token belongs to. Once per device.
+#[tauri::command]
+async fn link_join(state: State<'_, AppState>, token: String) -> UiResult<()> {
+    state.links.join(&token).await.map_err(plain)
+}
+
+/// Starts serving a folder and returns the address to hand out. `password`
+/// empty means a link with no password at all, which is said on screen.
+#[tauri::command]
+async fn link_start(
+    state: State<'_, AppState>,
+    folder_id: String,
+    path: String,
+    password: String,
+) -> UiResult<String> {
+    let auth = if password.trim().is_empty() {
+        String::new()
+    } else {
+        format!("familia:{}", password.trim())
+    };
+    state
+        .links
+        .start(&folder_id, Path::new(&path), &auth)
+        .await
+        .map_err(plain)
+}
+
+#[tauri::command]
+async fn link_stop(state: State<'_, AppState>, folder_id: String) -> UiResult<()> {
+    state.links.stop(&folder_id).await.map_err(plain)
+}
+
+/// The address a folder is being served at, or nothing when it is not.
+#[tauri::command]
+async fn link_for(state: State<'_, AppState>, folder_id: String) -> UiResult<Option<String>> {
+    Ok(state.links.url_for(&folder_id))
 }
 
 /// Puts a password on a folder, or takes it off when `password` is empty.
@@ -585,6 +634,10 @@ pub fn run() {
                 startup_problem: RwLock::new(None),
                 default_root: home_dir.join("HomeCloud"),
                 home_dir: home_dir.clone(),
+                links: Links::new(
+                    link_binary(resource_dir.as_deref()).unwrap_or_else(|_| PathBuf::from("hcshare")),
+                    data_dir.join("zrok"),
+                ),
                 resource_dir,
                 engine_home: data_dir.join("engine"),
             });
@@ -623,6 +676,10 @@ pub fn run() {
                 tauri::WindowEvent::Destroyed => {
                     let state = window.state::<AppState>();
                     tauri::async_runtime::block_on(async {
+                        // Public links go down with the app. One left running
+                        // after the window is gone is a tunnel nobody can see
+                        // and nobody can close.
+                        state.links.stop_all().await;
                         if let Some(mut engine) = state.engine.write().await.take() {
                             let _ = engine.stop().await;
                         }
@@ -643,6 +700,11 @@ pub fn run() {
             set_folder_read_only,
             set_folder_wifi_only,
             set_folder_password,
+            link_ready,
+            link_join,
+            link_start,
+            link_stop,
+            link_for,
             reconnect_all,
             rescan,
             download_update,
