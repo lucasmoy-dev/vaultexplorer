@@ -123,9 +123,11 @@ class SyncService : Service() {
             // Same reason the engine lives here: since Android 10 nothing may
             // be executed from an app's data directory, and the native library
             // directory is the one place left that allows it.
-            val helper = java.io.File(applicationInfo.nativeLibraryDir, "libhcshare.so")
-            val home = java.io.File(filesDir, "zrok").apply { mkdirs() }
-            Repo.linkSetup(helper.absolutePath, home.absolutePath)
+            val nativeDir = applicationInfo.nativeLibraryDir
+            Repo.linkSetup(
+                java.io.File(nativeDir, "libhcshare.so").absolutePath,
+                java.io.File(nativeDir, "libcloudflared.so").absolutePath,
+            )
         }
     }
 

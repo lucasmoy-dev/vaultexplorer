@@ -64,6 +64,12 @@ export interface Settings {
   language: "es" | "en";
 }
 
+export interface LinkStatus {
+  url: string;
+  /** Seconds since the epoch. Past this, the link has stopped on its own. */
+  expiresAt: number;
+}
+
 export interface CodePreview {
   deviceName: string;
   folderLabel: string;
@@ -96,12 +102,10 @@ export const api = {
     invoke<void>("redeem_code", { code, localPath, password: password ?? null }),
   setFolderPassword: (folderId: string, password: string) =>
     invoke<void>("set_folder_password", { folderId, password }),
-  linkReady: () => invoke<boolean>("link_ready"),
-  linkJoin: (token: string) => invoke<void>("link_join", { token }),
   linkStart: (folderId: string, path: string, password: string) =>
-    invoke<string>("link_start", { folderId, path, password }),
+    invoke<LinkStatus>("link_start", { folderId, path, password }),
   linkStop: (folderId: string) => invoke<void>("link_stop", { folderId }),
-  linkFor: (folderId: string) => invoke<string | null>("link_for", { folderId }),
+  linkFor: (folderId: string) => invoke<LinkStatus | null>("link_for", { folderId }),
   resolveDestination: (chosen: string, label: string, pick?: Pick) =>
     invoke<Destination>("resolve_destination", { chosen, label, pick: pick ?? null }),
   setFolderReadOnly: (folderId: string, readOnly: boolean) =>

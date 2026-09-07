@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use homecore::destination;
-use homecore::link::Links;
+use homecore::link::{Links, DEFAULT_LIFETIME};
 use homecore::model::{Invitation, Settings};
 use homecore::Syncthing;
 use jni::objects::{JClass, JString};
@@ -146,24 +146,15 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
         // Nothing to do with the sync engine, so these must not wait for it to
         // be up: a folder can be handed out as a link while syncing is still
         // starting, or broken.
+        // Points the core at both helper binaries. The path can only come
+        // from here: only the platform knows where this app's native
+        // libraries were unpacked.
         "linkSetup" => {
-            let binary = std::path::PathBuf::from(arg!(args, "binary"));
-            let home = std::path::PathBuf::from(arg!(args, "home"));
+            let share = std::path::PathBuf::from(arg!(args, "shareBinary"));
+            let tunnel = std::path::PathBuf::from(arg!(args, "tunnelBinary"));
             if let Ok(mut slot) = links_slot().write() {
-                *slot = Some(Arc::new(Links::new(binary, home)));
+                *slot = Some(Arc::new(Links::new(share, tunnel)));
             }
-            return Ok(Value::Null);
-        }
-
-        "linkReady" => {
-            let links = links()?;
-            return Ok(Value::Bool(runtime().block_on(links.is_ready())));
-        }
-
-        "linkJoin" => {
-            let links = links()?;
-            let token = arg!(args, "token");
-            runtime().block_on(links.join(&token)).map_err(plain)?;
             return Ok(Value::Null);
         }
 
@@ -172,10 +163,15 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
             let folder_id = arg!(args, "folderId");
             let path = arg!(args, "path");
             let auth = args["basicAuth"].as_str().unwrap_or("").to_string();
-            let url = runtime()
-                .block_on(links.start(&folder_id, std::path::Path::new(&path), &auth))
+            let status = runtime()
+                .block_on(links.start(
+                    &folder_id,
+                    std::path::Path::new(&path),
+                    &auth,
+                    DEFAULT_LIFETIME,
+                ))
                 .map_err(plain)?;
-            return Ok(Value::String(url));
+            return Ok(serde_json::to_value(status).map_err(plain)?);
         }
 
         "linkStop" => {
@@ -187,8 +183,8 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
 
         "linkFor" => {
             let links = links()?;
-            return Ok(match links.url_for(&arg!(args, "folderId")) {
-                Some(url) => Value::String(url),
+            return Ok(match links.status_for(&arg!(args, "folderId")) {
+                Some(status) => serde_json::to_value(status).map_err(plain)?,
                 None => Value::Null,
             });
         }

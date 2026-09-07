@@ -11,6 +11,7 @@ import {
   type CodePreview,
   type Destination,
   type Invitation,
+  type LinkStatus,
   type Readiness,
   type SharedFolder,
 } from "./api";
@@ -719,10 +720,12 @@ function FolderSheet({
 /**
  * Handing a folder out as a link, for people who will not install anything.
  *
- * This is not syncing and does not pretend to be: while the link is up, this
- * device is serving the folder over a zrok tunnel, and closing HomeCloud takes
- * it down. Both facts are on screen, because a link that quietly stops working
- * is worse than one that never existed.
+ * This is not syncing and does not pretend to be. There is no account behind
+ * it — a Cloudflare Quick Tunnel needs none — which is the same reason it is
+ * temporary: a quick tunnel gets a new address every time and Cloudflare
+ * promises no uptime, so pretending otherwise would be a lie the app tells on
+ * the user's behalf. What is on screen instead is the truth: a countdown to
+ * when it stops, and that closing HomeCloud stops it early.
  */
 function ShareLink({
   folder,
@@ -731,21 +734,28 @@ function ShareLink({
   folder: SharedFolder;
   onError: (message: string) => void;
 }) {
-  const [ready, setReady] = useState<boolean | null>(null);
-  const [url, setUrl] = useState<string | null>(null);
+  const [status, setStatus] = useState<LinkStatus | null>(null);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    void api.linkReady().then(setReady).catch(() => setReady(false));
-    void api.linkFor(folder.id).then(setUrl).catch(() => undefined);
+    void api.linkFor(folder.id).then(setStatus).catch(() => undefined);
   }, [folder.id]);
+
+  // Only ticks while a link is actually up: a countdown nobody is showing
+  // costs nothing to skip.
+  useEffect(() => {
+    if (!status) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [status]);
 
   async function start() {
     setBusy(true);
     try {
-      setUrl(await api.linkStart(folder.id, folder.path, password));
+      setStatus(await api.linkStart(folder.id, folder.path, password));
     } catch (e) {
       onError(String(e));
     } finally {
@@ -757,7 +767,7 @@ function ShareLink({
     setBusy(true);
     try {
       await api.linkStop(folder.id);
-      setUrl(null);
+      setStatus(null);
     } catch (e) {
       onError(String(e));
     } finally {
@@ -765,36 +775,31 @@ function ShareLink({
     }
   }
 
-  if (ready === false) {
-    return (
-      <div className="folder-password">
-        <p className="section">Compartir por enlace</p>
-        <p className="hint">
-          Para dar un enlace a alguien que no tiene HomeCloud hace falta una cuenta de zrok, que es
-          gratis. Pega su token en Ajustes y esto se activa.
-        </p>
-      </div>
-    );
+  const secondsLeft = status ? Math.max(0, Math.round(status.expiresAt - now / 1000)) : 0;
+  // hcshare stops itself once its time is up; a link still shown as live past
+  // that point would be this screen lying about something it can check.
+  if (status && secondsLeft <= 0) {
+    setStatus(null);
   }
 
   return (
     <div className="folder-password">
       <p className="section">Compartir por enlace</p>
 
-      {url ? (
+      {status && secondsLeft > 0 ? (
         <>
           <p className="destination-path">
-            <span>{url}</span>
+            <span>{status.url}</span>
           </p>
           <p className="hint">
-            Funciona mientras HomeCloud esté abierto en este ordenador. Al cerrarlo, el enlace deja
-            de existir.
+            Caduca en {formatCountdown(secondsLeft)}, o antes si cierras HomeCloud en este
+            ordenador.
           </p>
           <div className="destination-actions">
             <button
               className="btn btn-small"
               onClick={async () => {
-                setCopied(await copyText(url));
+                setCopied(await copyText(status.url));
                 setTimeout(() => setCopied(false), 2000);
               }}
             >
@@ -810,7 +815,8 @@ function ShareLink({
         <>
           <p className="hint">
             Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un
-            navegador y sin instalar nada. No podrá cambiar ni borrar nada.
+            navegador y sin instalar nada. No podrá cambiar ni borrar nada. El enlace caduca solo
+            a las pocas horas: no hace falta cuenta en ningún sitio, y esa es la contrapartida.
           </p>
           <input
             type="password"
@@ -819,8 +825,8 @@ function ShareLink({
             placeholder="Contraseña para el enlace (opcional)"
           />
           <p className="hint">
-            Sin contraseña, el enlace lo abre quien lo tenga. La comprueba zrok, no este
-            ordenador.
+            Sin contraseña, el enlace lo abre quien lo tenga. Con ella, la comprueba este
+            ordenador, no un tercero.
           </p>
           <button className="btn btn-small btn-primary" onClick={start} disabled={busy}>
             <LinkIcon />
@@ -832,7 +838,16 @@ function ShareLink({
   );
 }
 
+function formatCountdown(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0) return `${hours} h ${minutes} min`;
+  if (minutes > 0) return `${minutes} min`;
+  return `${seconds} s`;
+}
+
 /**
+ * The password on a folder./**
  * The password on a folder.
  *
  * It is not a password the engine checks — there is nowhere in the protocol for

@@ -4,7 +4,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { api, type Settings } from "./api";
 import { isNewer, latestRelease, type Release } from "./updates";
-import { BroomIcon, CheckIcon, CopyIcon, LinkIcon, RefreshIcon } from "./Icons";
+import { BroomIcon, CheckIcon, CopyIcon, RefreshIcon } from "./Icons";
 
 /**
  * Everything that is not a folder. The device name is at the top because it is
@@ -18,9 +18,6 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
   const [copied, setCopied] = useState(false);
   const [tidyState, setTidyState] = useState<string | null>(null);
   const [autostart, setAutostart] = useState(false);
-  const [zrokToken, setZrokToken] = useState("");
-  const [linkReady, setLinkReady] = useState(false);
-  const [joining, setJoining] = useState(false);
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<Release | null>(null);
   const [updateState, setUpdateState] = useState<string | null>(null);
@@ -29,7 +26,6 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
   useEffect(() => {
     void api.autostartEnabled().then(setAutostart).catch(() => setAutostart(false));
     void getVersion().then(setVersion).catch(() => setVersion(""));
-    void api.linkReady().then(setLinkReady).catch(() => setLinkReady(false));
   }, []);
 
   async function checkForUpdate() {
@@ -244,48 +240,6 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
       </p>
 
       <hr className="rule" />
-
-      <p className="section">Enlaces públicos</p>
-      <p className="hint">
-        Para dar un enlace a alguien que no tiene HomeCloud, la carpeta se sirve a través de{" "}
-        <button className="link-like" onClick={() => void openUrl("https://zrok.io")}>
-          zrok
-        </button>
-        , que es gratis y de código abierto. Crea una cuenta, copia el token que te da y pégalo
-        aquí. Se hace una vez por dispositivo.
-      </p>
-      {linkReady ? (
-        <p className="hint">Este dispositivo ya está conectado a tu cuenta de zrok.</p>
-      ) : (
-        <>
-          <input
-            type="password"
-            value={zrokToken}
-            onChange={(e) => setZrokToken(e.target.value)}
-            placeholder="El token de tu cuenta de zrok"
-          />
-          <button
-            className="btn"
-            disabled={zrokToken.trim().length === 0 || joining}
-            onClick={async () => {
-              setJoining(true);
-              setProblem(null);
-              try {
-                await api.linkJoin(zrokToken);
-                setLinkReady(true);
-                setZrokToken("");
-              } catch (e) {
-                setProblem(String(e));
-              } finally {
-                setJoining(false);
-              }
-            }}
-          >
-            <LinkIcon />
-            {joining ? "Conectando…" : "Conectar con zrok"}
-          </button>
-        </>
-      )}
 
       <hr className="rule" />
 

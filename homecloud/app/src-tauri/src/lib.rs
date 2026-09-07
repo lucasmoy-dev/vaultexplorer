@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use homecore::destination::{self, Pick};
-use homecore::link::{link_binary, Links};
+use homecore::link::{share_binary, tunnel_binary, LinkStatus, Links, DEFAULT_LIFETIME};
 use homecore::model::{Invitation, Settings, SharedFolder, ThisDevice};
 use homecore::supervisor::{engine_binary, Engine};
 use homecore::PairingCode;
@@ -159,28 +159,19 @@ async fn code_for(state: State<'_, AppState>, folder_id: String) -> UiResult<Str
 }
 
 // ---- public links ---------------------------------------------------------
+//
+// No account, no setup: a quick tunnel needs neither, which is also why every
+// link is temporary and the interface is told exactly when it dies.
 
-/// Whether this device has joined a zrok account, which is what a link needs.
-#[tauri::command]
-async fn link_ready(state: State<'_, AppState>) -> UiResult<bool> {
-    Ok(state.links.is_ready().await)
-}
-
-/// Joins the zrok account a token belongs to. Once per device.
-#[tauri::command]
-async fn link_join(state: State<'_, AppState>, token: String) -> UiResult<()> {
-    state.links.join(&token).await.map_err(plain)
-}
-
-/// Starts serving a folder and returns the address to hand out. `password`
-/// empty means a link with no password at all, which is said on screen.
+/// Starts serving a folder and returns its address and expiry. `password`
+/// empty means a link anyone with the URL can open, which is said on screen.
 #[tauri::command]
 async fn link_start(
     state: State<'_, AppState>,
     folder_id: String,
     path: String,
     password: String,
-) -> UiResult<String> {
+) -> UiResult<LinkStatus> {
     let auth = if password.trim().is_empty() {
         String::new()
     } else {
@@ -188,7 +179,7 @@ async fn link_start(
     };
     state
         .links
-        .start(&folder_id, Path::new(&path), &auth)
+        .start(&folder_id, Path::new(&path), &auth, DEFAULT_LIFETIME)
         .await
         .map_err(plain)
 }
@@ -198,10 +189,10 @@ async fn link_stop(state: State<'_, AppState>, folder_id: String) -> UiResult<()
     state.links.stop(&folder_id).await.map_err(plain)
 }
 
-/// The address a folder is being served at, or nothing when it is not.
+/// The link a folder is being served at, or nothing when it is not.
 #[tauri::command]
-async fn link_for(state: State<'_, AppState>, folder_id: String) -> UiResult<Option<String>> {
-    Ok(state.links.url_for(&folder_id))
+async fn link_for(state: State<'_, AppState>, folder_id: String) -> UiResult<Option<LinkStatus>> {
+    Ok(state.links.status_for(&folder_id))
 }
 
 /// Puts a password on a folder, or takes it off when `password` is empty.
@@ -635,8 +626,8 @@ pub fn run() {
                 default_root: home_dir.join("HomeCloud"),
                 home_dir: home_dir.clone(),
                 links: Links::new(
-                    link_binary(resource_dir.as_deref()).unwrap_or_else(|_| PathBuf::from("hcshare")),
-                    data_dir.join("zrok"),
+                    share_binary(resource_dir.as_deref()).unwrap_or_else(|_| PathBuf::from("hcshare")),
+                    tunnel_binary(resource_dir.as_deref()).unwrap_or_else(|_| PathBuf::from("cloudflared")),
                 ),
                 resource_dir,
                 engine_home: data_dir.join("engine"),
@@ -700,8 +691,6 @@ pub fn run() {
             set_folder_read_only,
             set_folder_wifi_only,
             set_folder_password,
-            link_ready,
-            link_join,
             link_start,
             link_stop,
             link_for,

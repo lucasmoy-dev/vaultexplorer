@@ -187,6 +187,16 @@ fun formatRate(bytesPerSecond: Long): String {
     return if (mb >= 1) String.format("%.1f MB/s", mb) else "${bytesPerSecond / 1000} kB/s"
 }
 
+/** A folder being served as a public link, and when that stops on its own. */
+data class LinkStatus(val url: String, val expiresAt: Long) {
+    companion object {
+        fun from(json: JSONObject) = LinkStatus(
+            url = json.getString("url"),
+            expiresAt = json.getLong("expiresAt"),
+        )
+    }
+}
+
 /** The head of a device ID: what tells two devices with the same name apart. */
 fun shortId(id: String): String = id.substringBefore('-')
 

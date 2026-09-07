@@ -913,58 +913,61 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
 /**
  * Handing a folder out as a link, for people who will not install anything.
  *
- * This is not syncing and does not pretend to be: while the link is up, the
- * phone is serving the folder over a zrok tunnel, and it dies with the app.
- * Both facts are on screen, because a link that quietly stops working is worse
- * than one that never existed.
+ * There is no account behind it — a Cloudflare Quick Tunnel needs none —
+ * which is the same reason it is temporary: a quick tunnel gets a new address
+ * every time and Cloudflare promises no uptime, so pretending otherwise would
+ * be a lie the app tells on the user's behalf. What is on screen instead is
+ * the truth: a countdown to when it stops, and that closing HomeCloud stops
+ * it early.
  */
 @Composable
 private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var ready by remember { mutableStateOf<Boolean?>(null) }
-    var url by remember { mutableStateOf<String?>(null) }
+    var status by remember { mutableStateOf<LinkStatus?>(null) }
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var secondsLeft by remember { mutableStateOf(0L) }
 
     LaunchedEffect(folder.id) {
-        withContext(Dispatchers.IO) {
-            val isReady = runCatching { Repo.linkReady() }.getOrDefault(false)
-            val existing = runCatching { Repo.linkFor(folder.id) }.getOrNull()
-            withContext(Dispatchers.Main) {
-                ready = isReady
-                url = existing
+        val existing = withContext(Dispatchers.IO) { runCatching { Repo.linkFor(folder.id) }.getOrNull() }
+        status = existing
+    }
+
+    // Ticks only while a link is actually up: nothing to count down otherwise.
+    LaunchedEffect(status) {
+        val current = status ?: return@LaunchedEffect
+        while (true) {
+            val left = current.expiresAt - System.currentTimeMillis() / 1000
+            secondsLeft = left
+            // hcshare stops itself once its time is up; reporting a link past
+            // that point would be this screen lying about something it can
+            // check.
+            if (left <= 0) {
+                status = null
+                return@LaunchedEffect
             }
+            delay(1000)
         }
     }
 
     Text("Compartir por enlace", style = MaterialTheme.typography.labelMedium)
 
-    if (ready == false) {
+    val current = status
+    if (current != null && secondsLeft > 0) {
+        Text(current.url, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
         Text(
-            "Para dar un enlace a alguien que no tiene HomeCloud hace falta una cuenta de zrok, " +
-                "que es gratis. Pega su token en Ajustes y esto se activa.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        return
-    }
-
-    val current = url
-    if (current != null) {
-        Text(current, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-        Text(
-            "Funciona mientras HomeCloud siga en marcha en este teléfono.",
+            "Caduca en ${countdown(secondsLeft)}, o antes si cierras HomeCloud en este teléfono.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { copyToClipboard(context, current) }) {
+            TextButton(onClick = { copyToClipboard(context, current.url) }) {
                 Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Copiar")
             }
-            TextButton(onClick = { shareCode(context, folder.label, current) }) {
+            TextButton(onClick = { shareCode(context, folder.label, current.url) }) {
                 Icon(Icons.Filled.Share, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Compartir")
@@ -974,14 +977,9 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
                 onClick = {
                     busy = true
                     scope.launch {
-                        val outcome = withContext(Dispatchers.IO) {
-                            runCatching { Repo.linkStop(folder.id) }
-                        }
+                        val outcome = withContext(Dispatchers.IO) { runCatching { Repo.linkStop(folder.id) } }
                         busy = false
-                        outcome.fold(
-                            onSuccess = { url = null },
-                            onFailure = { onError(it.message ?: "") },
-                        )
+                        outcome.fold(onSuccess = { status = null }, onFailure = { onError(it.message ?: "") })
                     }
                 },
             ) { Text("Dejar de compartir") }
@@ -991,7 +989,8 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
 
     Text(
         "Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un " +
-            "navegador y sin instalar nada. No podrá cambiar ni borrar nada.",
+            "navegador y sin instalar nada. No podrá cambiar ni borrar nada. Caduca solo a las " +
+            "pocas horas: no hace falta cuenta en ningún sitio, y esa es la contrapartida.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -1014,7 +1013,7 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
                 }
                 busy = false
                 outcome.fold(
-                    onSuccess = { url = it },
+                    onSuccess = { status = it },
                     onFailure = { onError(it.message ?: "No se pudo crear el enlace") },
                 )
             }
@@ -1023,6 +1022,16 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
         Icon(Icons.Filled.Link, null, Modifier.size(18.dp))
         Spacer(Modifier.width(6.dp))
         Text(if (busy) "Creando el enlace…" else "Crear el enlace")
+    }
+}
+
+private fun countdown(seconds: Long): String {
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
+    return when {
+        hours > 0 -> "$hours h $minutes min"
+        minutes > 0 -> "$minutes min"
+        else -> "$seconds s"
     }
 }
 
@@ -1191,9 +1200,6 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
                         }
                     }
                     Spacer(Modifier.height(14.dp))
-                    ZrokRow(onError = onError)
-
-                    Spacer(Modifier.height(14.dp))
                     UpdateRow(onError = onError)
 
                     Spacer(Modifier.height(14.dp))
@@ -1271,69 +1277,6 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
-}
-
-/**
- * Joining a zrok account, which is what public links need.
- *
- * Once per device: after that every folder can be handed out as a link without
- * anyone typing a token again.
- */
-@Composable
-private fun ZrokRow(onError: (String) -> Unit) {
-    val scope = rememberCoroutineScope()
-    var ready by remember { mutableStateOf<Boolean?>(null) }
-    var token by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        val isReady = withContext(Dispatchers.IO) { runCatching { Repo.linkReady() }.getOrDefault(false) }
-        ready = isReady
-    }
-
-    Text("Enlaces públicos", style = MaterialTheme.typography.labelMedium)
-    if (ready == true) {
-        Text(
-            "Este teléfono ya está conectado a tu cuenta de zrok.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        return
-    }
-    Text(
-        "Para dar un enlace a alguien que no tiene HomeCloud, la carpeta se sirve a través de " +
-            "zrok.io, que es gratis y de código abierto. Crea una cuenta, copia el token que te " +
-            "da y pégalo aquí.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    OutlinedTextField(
-        value = token,
-        onValueChange = { token = it },
-        label = { Text("El token de tu cuenta de zrok") },
-        singleLine = true,
-        visualTransformation = PasswordVisualTransformation(),
-        modifier = Modifier.fillMaxWidth(),
-    )
-    TextButton(
-        enabled = token.isNotBlank() && !busy,
-        onClick = {
-            busy = true
-            val chosen = token.trim()
-            scope.launch {
-                val outcome = withContext(Dispatchers.IO) { runCatching { Repo.linkJoin(chosen) } }
-                busy = false
-                outcome.fold(
-                    onSuccess = { ready = true; token = "" },
-                    onFailure = { onError(it.message ?: "No se pudo conectar con zrok") },
-                )
-            }
-        },
-    ) {
-        Icon(Icons.Filled.Link, null, Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(if (busy) "Conectando…" else "Conectar con zrok")
-    }
 }
 
 /**

@@ -99,32 +99,34 @@ object Repo {
     // ---- public links ---------------------------------------------------
 
     /**
-     * Points the core at the link helper. The path can only come from here:
-     * only the platform knows where this app's native libraries were unpacked.
+     * Points the core at both helper binaries. The paths can only come from
+     * here: only the platform knows where this app's native libraries were
+     * unpacked.
      */
-    fun linkSetup(binary: String, home: String) {
-        Native.request("linkSetup", JSONObject().put("binary", binary).put("home", home))
-    }
-
-    /** Whether this device has joined a zrok account. */
-    fun linkReady(): Boolean = Native.request("linkReady") as Boolean
-
-    fun linkJoin(token: String) {
-        Native.request("linkJoin", JSONObject().put("token", token))
-    }
-
-    /** Starts serving a folder; returns the address to hand out. */
-    fun linkStart(folderId: String, path: String, basicAuth: String): String =
+    fun linkSetup(shareBinary: String, tunnelBinary: String) {
         Native.request(
-            "linkStart",
-            JSONObject().put("folderId", folderId).put("path", path).put("basicAuth", basicAuth),
-        ) as String
+            "linkSetup",
+            JSONObject().put("shareBinary", shareBinary).put("tunnelBinary", tunnelBinary),
+        )
+    }
+
+    /** Starts serving a folder; returns its address and when it expires. */
+    fun linkStart(folderId: String, path: String, basicAuth: String): LinkStatus =
+        LinkStatus.from(
+            Native.request(
+                "linkStart",
+                JSONObject().put("folderId", folderId).put("path", path).put("basicAuth", basicAuth),
+            ) as JSONObject,
+        )
 
     fun linkStop(folderId: String) {
         Native.request("linkStop", JSONObject().put("folderId", folderId))
     }
 
-    fun linkFor(folderId: String): String? = Native.request("linkFor", JSONObject().put("folderId", folderId)) as? String
+    fun linkFor(folderId: String): LinkStatus? =
+        (Native.request("linkFor", JSONObject().put("folderId", folderId)) as? JSONObject)?.let {
+            LinkStatus.from(it)
+        }
 
     /** Tells the core where it may put folders it accepts on its own. */
     fun rescan(folderId: String) {
