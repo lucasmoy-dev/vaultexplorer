@@ -87,7 +87,7 @@ func share(dir, cloudflaredBin, auth string, duration time.Duration) {
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	var handler http.Handler = readOnly(http.FileServer(http.Dir(absolute)))
+	var handler http.Handler = readOnly(shareHandler(absolute))
 	if auth != "" {
 		user, pass, ok := strings.Cut(auth, ":")
 		if !ok {
