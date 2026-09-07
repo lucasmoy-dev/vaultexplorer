@@ -951,7 +951,15 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
         }
     }
 
-    Text("Compartir por enlace", style = MaterialTheme.typography.labelMedium)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Compartir por enlace", style = MaterialTheme.typography.labelMedium)
+        Help(
+            "Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, sin instalar nada. " +
+                "Solo lectura: no podrá cambiar ni borrar nada. Caduca solo a las pocas horas, sin cuenta en " +
+                "ningún sitio. Sin contraseña, lo abre quien tenga el enlace; con ella, la comprueba este " +
+                "teléfono, no un tercero.",
+        )
+    }
 
     val current = status
     if (current != null && secondsLeft > 0) {
@@ -992,13 +1000,6 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
         return
     }
 
-    Text(
-        "Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un " +
-            "navegador y sin instalar nada. No podrá cambiar ni borrar nada. Caduca solo a las " +
-            "pocas horas: no hace falta cuenta en ningún sitio, y esa es la contrapartida.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
     OutlinedTextField(
         value = password,
         onValueChange = { password = it },
@@ -1036,6 +1037,36 @@ private fun ShareLink(folder: SharedFolder, onError: (String) -> Unit) {
         Icon(Icons.Filled.Link, null, Modifier.size(18.dp))
         Spacer(Modifier.width(6.dp))
         Text(if (busy) "Creando el enlace…" else "Crear el enlace")
+    }
+}
+
+/**
+ * A small "?" next to a label, popping its explanation only on demand.
+ *
+ * The alternative — a paragraph sitting under every control — is how a
+ * folder's sharing screen ends up reading like terms and conditions. Most
+ * people never need the explanation; anyone who does gets the whole thing.
+ */
+@Composable
+private fun Help(text: String) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }, modifier = Modifier.size(20.dp)) {
+            Text(
+                "?",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .widthIn(max = 260.dp),
+            )
+        }
     }
 }
 

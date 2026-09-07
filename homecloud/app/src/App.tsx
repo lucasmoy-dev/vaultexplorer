@@ -21,6 +21,7 @@ import { PairingCard } from "./PairingCard";
 import { SettingsSheet } from "./SettingsSheet";
 import { QrScanner } from "./QrScanner";
 import { showToast, ToastHost } from "./Toast";
+import { Help } from "./Help";
 import { setLanguage, t, tf } from "./i18n";
 import {
   CheckIcon,
@@ -802,7 +803,14 @@ function ShareLink({
 
   return (
     <div className="folder-password">
-      <p className="section">{t("Compartir por enlace")}</p>
+      <p className="section">
+        {t("Compartir por enlace")}
+        <Help>
+          {t(
+            "Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, sin instalar nada. Solo lectura: no podrá cambiar ni borrar nada. Caduca solo a las pocas horas, sin cuenta en ningún sitio. Sin contraseña, lo abre quien tenga el enlace; con ella, la comprueba este ordenador, no un tercero.",
+          )}
+        </Help>
+      </p>
 
       {status && secondsLeft > 0 ? (
         <>
@@ -832,20 +840,12 @@ function ShareLink({
         </>
       ) : (
         <>
-          <p className="hint">
-            {t(
-              "Cualquiera con el enlace podrá ver y descargar lo que hay en esta carpeta, desde un navegador y sin instalar nada. No podrá cambiar ni borrar nada. El enlace caduca solo a las pocas horas: no hace falta cuenta en ningún sitio, y esa es la contrapartida.",
-            )}
-          </p>
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder={t("Contraseña para el enlace (opcional)")}
           />
-          <p className="hint">
-            {t("Sin contraseña, el enlace lo abre quien lo tenga. Con ella, la comprueba este ordenador, no un tercero.")}
-          </p>
           <button className="btn btn-small btn-primary" onClick={start} disabled={busy}>
             <LinkIcon />
             {busy ? t("Creando el enlace…") : t("Crear el enlace")}
@@ -865,7 +865,6 @@ function formatCountdown(seconds: number): string {
 }
 
 /**
- * The password on a folder./**
  * The password on a folder.
  *
  * It is not a password the engine checks — there is nowhere in the protocol for

@@ -397,6 +397,40 @@ body {
   border-radius: 4px;
 }
 .section { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.section .help { text-transform: none; letter-spacing: normal; font-weight: 400; }
+
+.help { position: relative; display: inline-flex; vertical-align: middle; margin-left: 5px; }
+.help-btn {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.help-btn:hover, .help-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.help-pop {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  z-index: 60;
+  width: 236px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text);
+}
 .rule { border: none; border-top: 1px solid var(--line); margin: 6px 0; }
 .pair { display: flex; gap: 8px; }
 .pair .field { flex: 1; }
