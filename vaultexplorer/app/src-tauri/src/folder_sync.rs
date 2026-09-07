@@ -8,7 +8,7 @@
 //! against a journal of what the last pass saw, and copy or delete
 //! whichever side actually changed.
 //!
-//! It is deliberately the same journal-based model as `drive_rest.rs` --
+//! It is deliberately a journal-based model --
 //! that is what makes a deletion propagate as a deletion instead of the
 //! other side's copy immediately reappearing, and what makes a file
 //! edited on both sides a conflict (kept twice) rather than a silent
@@ -16,7 +16,6 @@
 //! storage and the shared storage a phone's other apps can see are two
 //! genuinely separate trees, and an SD card is a third.
 
-use crate::drive_rest::walk_local;
 use crate::errmap::{LockExt, ToStringErr};
 use crate::progress::ProgressReporter;
 use serde::{Deserialize, Serialize};
@@ -159,6 +158,50 @@ fn conflict_name(rel: &str, from: &str) -> String {
         Some(parent) => format!("{parent}/{renamed}"),
         None => renamed,
     }
+}
+
+pub(crate) struct LocalEntry {
+    pub size: u64,
+    pub mtime_ms: u64,
+    pub is_dir: bool,
+}
+
+/// Every file and folder under `root`, keyed by path relative to it.
+pub(crate) fn walk_local(root: &Path) -> Result<HashMap<String, LocalEntry>, String> {
+    let mut out = HashMap::new();
+    let mut stack = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            // A folder that disappeared mid-walk (or that this app can't
+            // read) shouldn't abort the whole pass.
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".vaultexplorer-part") {
+                continue; // our own interrupted download
+            }
+            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                out.insert(rel.clone(), LocalEntry { size: 0, mtime_ms: 0, is_dir: true });
+                stack.push((entry.path(), rel));
+            } else if meta.is_file() {
+                let mtime_ms = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                out.insert(rel, LocalEntry { size: meta.len(), mtime_ms, is_dir: false });
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// One full two-way pass over a pair.

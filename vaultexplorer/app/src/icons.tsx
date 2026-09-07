@@ -713,25 +713,6 @@ export function LocalSyncGlyph({ size = 15 }: GlyphProps) {
   );
 }
 
-// Lucide `cloud` (cloud sync badge), tinted blue.
-export function CloudSyncGlyph({ size = 15 }: GlyphProps) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="#0a84ff"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
-    </svg>
-  );
-}
-
 // Lucide `lock`.
 export function LockGlyph({ size = 15 }: GlyphProps) {
   return (

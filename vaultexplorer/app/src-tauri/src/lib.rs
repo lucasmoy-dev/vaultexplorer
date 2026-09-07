@@ -10,7 +10,6 @@ mod convert;
 #[cfg(desktop)]
 mod defaultapp;
 mod dirwalk;
-mod drive_rest;
 mod errmap;
 // Desktop-only: see the mobile-scoping note by this Cargo.toml section of
 // the same name for why these specifically can't come along to
@@ -22,8 +21,7 @@ mod filemanager1;
 mod freeze;
 mod git;
 mod git_sync;
-// Folder sync is a phone feature as much as a desktop one -- syncing a
-// folder with Drive is the whole reason it exists on a phone -- so it is
+// Folder sync is a phone feature as much as a desktop one, so it is
 // *not* desktop-gated.
 mod folder_sync;
 #[cfg(desktop)]
@@ -46,14 +44,11 @@ mod ops;
 #[cfg(desktop)]
 mod portal;
 mod progress;
-mod rclone;
 mod recovery;
 mod reorganize;
 mod share;
 mod shred;
-mod sync;
 mod syncthing;
-mod verify;
 mod terminal;
 mod cast;
 mod mediaserver;
@@ -1145,7 +1140,7 @@ pub(crate) fn home_dir() -> String {
 
 /// Lets the frontend adapt its own UI (hide the custom desktop titlebar/
 /// resize handles, skip menu entries for desktop-only integrations like
-/// git/cloud/P2P sync, freeze, machine tools, terminal) without needing a
+/// git/P2P sync, freeze, machine tools, terminal) without needing a
 /// separate mobile build of the JS bundle -- same binary, one runtime
 /// check.
 #[tauri::command]
@@ -1428,10 +1423,6 @@ fn start_background_loops(handle: tauri::AppHandle) {
         for pair in local_sync::list_pairs_pruning_missing() {
             local_sync::start_loop(&local_sync_state, pair.folder_a, pair.folder_b);
         }
-        let drive_sync_state = handle.state::<sync::DriveSyncState>();
-        for pair in sync::list_pairs() {
-            sync::start_loop(&drive_sync_state, pair);
-        }
         let git_sync_state = handle.state::<git_sync::GitSyncState>();
         for pair in git_sync::list_pairs() {
             git_sync::start_loop(&git_sync_state, pair.local_path);
@@ -1549,12 +1540,6 @@ pub fn run() {
         .manage(AppState::default())
         .manage(ops::OpRegistry::default())
         .manage(git_sync::GitSyncState::default())
-        // Managed on every platform, unlike the rclone-backed sync state
-        // below: this is the one cloud-sync backend that also works on
-        // Android (see drive_rest.rs), and its commands are registered
-        // unconditionally, so its state has to be too or every one of
-        // them fails at runtime on the platform it exists for.
-        .manage(drive_rest::MobileSyncState::default())
         .manage(folder_sync::FolderSyncState::default())
         .manage(archive_browse::ArchiveMountState::default());
     // Desktop-only managed state -- see the mobile-scoping note by the
@@ -1565,7 +1550,6 @@ pub fn run() {
         .manage(filemanager1::FileManagerState::default())
         .manage(FreezeState::default())
         .manage(local_sync::LocalSyncState::default())
-        .manage(sync::DriveSyncState::default())
         .manage(fs_watch::FsWatchState::default())
         .plugin(tauri_plugin_drag::init());
 
@@ -1576,10 +1560,10 @@ pub fn run() {
             // dialog for some *other* app. Such a launch must stay a lean picker
             // server -- it must NOT show the main window, re-run pkexec-gated
             // registration self-heal, or (crucially) start the background sync
-            // daemons below. A lingering activated instance running the Drive
-            // watch loop alongside the user's real instance meant two concurrent
-            // `rclone bisync` runs on the same remote -> the "prior lock file
-            // found" bisync failure. Hoisted here so every startup side-effect
+            // daemons below: a lingering activated instance running sync loops
+            // alongside the user's real instance means two concurrent syncers
+            // fighting over the same folders. Hoisted here so every startup
+            // side-effect
             // can gate on it, on both desktop and mobile (always false on mobile,
             // which has no portal).
             let portal_activated = std::env::args().any(|a| a == "--portal-activated");
@@ -1730,8 +1714,7 @@ pub fn run() {
                 // A `--portal-activated` launch is a transient picker server for
                 // another app's dialog; it must not resurrect the user's frozen
                 // mounts or start any background sync watcher (see the hoisted
-                // `portal_activated` comment -- double Drive loops = double
-                // `rclone bisync` = the "prior lock file found" failure). Those
+                // `portal_activated` comment). Those
                 // are the real launch's job -- started off the main thread so
                 // the blocking freeze remounts never stall the first paint.
                 if !portal_activated {
@@ -1747,20 +1730,13 @@ pub fn run() {
             // only ever fail every tick. Desktop's copy lives inside
             // start_background_loops.
             //
-            // Google Drive sync *does* have one, though: drive_rest.rs
-            // talks to the API in-process, so its pairs can resume on
-            // launch exactly like the desktop's rclone pairs do.
-            // Not `cfg(mobile)`-gated: the pair list lives in this app's
-            // own data dir and is empty on desktop (where the UI offers
-            // rclone-backed sync instead), so this starts nothing there --
-            // and staying uncompiled would mean it only ever gets type-
-            // checked by an Android build.
+            // Folder-to-folder sync resumes here on every platform: the
+            // pair list lives in this app's own data dir, so where it's
+            // empty this starts nothing -- and staying uncompiled on
+            // desktop would mean it only ever gets type-checked by an
+            // Android build.
             {
                 let handle = app.handle().clone();
-                let state = app.state::<drive_rest::MobileSyncState>();
-                for pair in drive_rest::list_pairs(&handle) {
-                    drive_rest::start_loop(&handle, &state, pair);
-                }
                 let folder_state = app.state::<folder_sync::FolderSyncState>();
                 for pair in folder_sync::list_pairs(&handle) {
                     folder_sync::start_loop(&handle, &folder_state, pair);
@@ -2007,40 +1983,11 @@ pub fn run() {
             encrypt_file_in_vault,
             decrypt_file_in_vault,
             vault_decrypt_to_temp,
-            rclone::rclone_installed,
-            rclone::rclone_providers,
-            rclone::rclone_is_connected,
-            rclone::rclone_connect,
-            rclone::rclone_disconnect,
-            #[cfg(desktop)]
-            rclone::rclone_read_conf_raw,
-            #[cfg(desktop)]
-            rclone::rclone_merge_conf_raw,
-            drive_rest::drive_rest_connection,
-            drive_rest::drive_rest_connect,
-            drive_rest::drive_rest_disconnect,
-            drive_rest::drive_rest_list_pairs,
-            drive_rest::drive_rest_add_pair,
-            drive_rest::drive_rest_remove_pair,
-            drive_rest::drive_rest_sync_now,
-            drive_rest::drive_rest_status,
-            drive_rest::drive_rest_syncing_now,
             folder_sync::folder_sync_list_pairs,
             folder_sync::folder_sync_add,
             folder_sync::folder_sync_remove,
             folder_sync::folder_sync_now,
             folder_sync::folder_sync_syncing_now,
-            sync::drive_list_pairs,
-            sync::drive_add_pair,
-            sync::drive_remove_pair,
-            sync::drive_sync_now,
-            sync::drive_syncing_now,
-            sync::drive_sync_activity,
-            sync::drive_sync_last_error,
-            verify::drive_verifying_now,
-            verify::sync_verify_states,
-            #[cfg(desktop)]
-            sync::drive_sync_is_active,
             #[cfg(desktop)]
             fs_watch::fs_watch_set,
             git_sync::git_sync_list_pairs,

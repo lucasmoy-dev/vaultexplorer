@@ -52,7 +52,7 @@ tauri-plugin-deep-link = "2.4.9"
 qrcode = "0.14.1"
 
 # Desktop-only integrations: every one of these either shells out to a
-# binary that simply isn't present on a mobile OS (git, rclone, syncthing,
+# binary that simply isn't present on a mobile OS (git, syncthing,
 # unison, ffmpeg-adjacent tools, a terminal emulator, pkexec) or depends on
 # a Linux-desktop-specific mechanism with no mobile equivalent (FUSE
 # mounting, xdg-desktop-portal/D-Bus, GTK-native drag-out, the OS trash

@@ -442,45 +442,6 @@ export const api = {
   // copy in the app's cache dir (shareable via FileProvider) instead.
   vaultDecryptToTemp: (relPath: string) => invoke<string>("vault_decrypt_to_temp", { relPath }),
 
-  // Cloud sync (Google Drive, OneDrive, Dropbox, ...), via rclone (see
-  // rclone.rs) -- no client ID/secret setup step, rclone's own bundled
-  // OAuth client per provider handles that.
-  rcloneInstalled: () => invoke<boolean>("rclone_installed"),
-  rcloneProviders: () => invoke<[string, string][]>("rclone_providers"),
-  rcloneIsConnected: (provider: string) => invoke<boolean>("rclone_is_connected", { provider }),
-  rcloneConnect: (provider: string, urlChannel: Channel<string>) =>
-    invoke<void>("rclone_connect", { provider, urlChannel }),
-  rcloneDisconnect: (provider: string) => invoke<void>("rclone_disconnect", { provider }),
-  rcloneReadConfRaw: () => invoke<string | null>("rclone_read_conf_raw"),
-  rcloneMergeConfRaw: (incoming: string) => invoke<void>("rclone_merge_conf_raw", { incoming }),
-  driveListPairs: () => invoke<SyncPair[]>("drive_list_pairs"),
-  driveAddPair: (provider: string, localPath: string) =>
-    invoke<SyncPair>("drive_add_pair", { provider, localPath }),
-  driveRemovePair: (localPath: string) => invoke<void>("drive_remove_pair", { localPath }),
-  driveSyncNow: (localPath: string) => invoke<SyncReport>("drive_sync_now", { localPath }),
-  driveSyncingNow: () => invoke<string[]>("drive_syncing_now"),
-  driveSyncIsActive: (localPath: string) => invoke<boolean>("drive_sync_is_active", { localPath }),
-  driveSyncLastError: (localPath: string) => invoke<string | null>("drive_sync_last_error", { localPath }),
-  driveVerifyingNow: () => invoke<string[]>("drive_verifying_now"),
-  driveSyncActivity: () =>
-    invoke<Record<string, { current: string | null; count: number }>>("drive_sync_activity"),
-  // Mobile Google Drive sync: same idea, none of the rclone -- there's no
-  // binary to shell out to on Android, so this talks to the Drive REST
-  // API in-process against the user's own OAuth client (see drive_rest.rs).
-  driveRestConnection: () => invoke<DriveConnection>("drive_rest_connection"),
-  driveRestConnect: (clientId: string, clientSecret: string, urlChannel: Channel<string>) =>
-    invoke<string>("drive_rest_connect", { clientId, clientSecret, urlChannel }),
-  driveRestDisconnect: () => invoke<void>("drive_rest_disconnect"),
-  driveRestListPairs: () => invoke<MobileSyncPair[]>("drive_rest_list_pairs"),
-  driveRestAddPair: (localPath: string) =>
-    invoke<MobileSyncPair>("drive_rest_add_pair", { localPath }),
-  driveRestRemovePair: (localPath: string) =>
-    invoke<void>("drive_rest_remove_pair", { localPath }),
-  driveRestSyncNow: (localPath: string, channel: Channel<ProgressEvent>) =>
-    invoke<MobileSyncOutcome>("drive_rest_sync_now", { localPath, channel }),
-  driveRestStatus: (localPath: string) =>
-    invoke<MobileSyncStatus>("drive_rest_status", { localPath }),
-  driveRestSyncingNow: () => invoke<boolean>("drive_rest_syncing_now"),
   // Folder-to-folder sync without unison (see folder_sync.rs) -- the
   // mobile counterpart of the localSync* calls below.
   folderSyncListPairs: () => invoke<FolderSyncPair[]>("folder_sync_list_pairs"),
@@ -490,8 +451,6 @@ export const api = {
   folderSyncNow: (folder: string, channel: Channel<ProgressEvent>) =>
     invoke<FolderSyncOutcome>("folder_sync_now", { folder, channel }),
   folderSyncSyncingNow: () => invoke<string[]>("folder_sync_syncing_now"),
-  syncVerifyStates: (kind: string, dir: string, names: string[]) =>
-    invoke<string[]>("sync_verify_states", { kind, dir, names }),
   fsWatchSet: (path: string | null) => invoke<void>("fs_watch_set", { path }),
   gitSyncListPairs: () => invoke<GitSyncPair[]>("git_sync_list_pairs"),
   gitSyncIsActive: (localPath: string) => invoke<boolean>("git_sync_is_active", { localPath }),
@@ -543,38 +502,6 @@ export const api = {
     }),
 };
 
-export interface SyncPair {
-  local_path: string;
-  provider: string;
-  drive_folder_name: string;
-  resynced: boolean;
-}
-
-export interface DriveConnection {
-  connected: boolean;
-  account_email: string;
-}
-
-export interface MobileSyncPair {
-  local_path: string;
-  remote_folder_name: string;
-}
-
-export interface MobileSyncStatus {
-  syncing: boolean;
-  last_error: string;
-}
-
-export interface MobileSyncOutcome {
-  uploaded: number;
-  downloaded: number;
-  deleted_local: number;
-  deleted_remote: number;
-  conflicts: string[];
-  skipped: string[];
-  summary: string;
-}
-
 export interface FolderSyncPair {
   folder_a: string;
   folder_b: string;
@@ -621,10 +548,6 @@ export interface SyncthingPendingFolder {
   id: string;
   label: string;
   offered_by_device_id: string;
-}
-
-export interface SyncReport {
-  summary: string;
 }
 
 export interface ClearResult {

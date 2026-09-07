@@ -42,7 +42,6 @@ import {
   CheckGlyph,
   TrashGlyph,
   GitBranchGlyph,
-  CloudSyncGlyph,
   LocalSyncGlyph,
   SettingsGlyph,
   NewFileGlyph,
@@ -92,8 +91,6 @@ import {
 } from "./components/sheets/vault-sheets";
 import {
   GitStatusSheet,
-  DriveSyncSheet,
-  MobileDriveSyncSheet,
   MobileFolderSyncSheet,
   GitSyncSheet,
   LocalSyncSheet,
@@ -853,47 +850,18 @@ function Explorer({ home }: { home: string }) {
       .catch(() => setFrozenPaths(new Set()));
   }, []);
 
-  // Which folders currently sync (Drive and/or Git), for the sidebar/grid
+  // Which folders currently sync (Git and/or local), for the sidebar/grid
   // badge and for showing "Unsync" instead of "Sync…" in the menu.
-  const [driveSyncedPaths, setDriveSyncedPaths] = useState<Set<string>>(new Set());
-  // path -> provider id ("drive"/"onedrive"/"dropbox"), for the Sync
-  // submenu's per-provider checkmark -- `driveSyncedPaths` alone (used
-  // for the badge, which looks the same regardless of provider) can't
-  // tell which specific one a path is linked to.
-  const [drivePairsByPath, setDrivePairsByPath] = useState<Map<string, string>>(new Map());
   const [gitSyncedPaths, setGitSyncedPaths] = useState<Set<string>>(new Set());
   const [localSyncedPaths, setLocalSyncedPaths] = useState<Set<string>>(new Set());
   const refreshSyncStatus = useCallback(() => {
-    // On mobile the pairs come from the in-process Drive client instead
-    // (drive_rest.rs) -- `drive_list_pairs` is the rclone-backed one and
-    // has nothing to report there.
     if (mobile) {
-      api
-        .driveRestListPairs()
-        .then((list) => {
-          setDriveSyncedPaths(new Set(list.map((p) => p.local_path)));
-          setDrivePairsByPath(new Map(list.map((p) => [p.local_path, "drive"])));
-        })
-        .catch(() => {
-          setDriveSyncedPaths(new Set());
-          setDrivePairsByPath(new Map());
-        });
       api
         .folderSyncListPairs()
         .then((list) => setLocalSyncedPaths(new Set(list.flatMap((p) => [p.folder_a, p.folder_b]))))
         .catch(() => setLocalSyncedPaths(new Set()));
       return;
     }
-    api
-      .driveListPairs()
-      .then((list) => {
-        setDriveSyncedPaths(new Set(list.map((p) => p.local_path)));
-        setDrivePairsByPath(new Map(list.map((p) => [p.local_path, p.provider])));
-      })
-      .catch(() => {
-        setDriveSyncedPaths(new Set());
-        setDrivePairsByPath(new Map());
-      });
     api
       .gitSyncListPairs()
       .then((list) => setGitSyncedPaths(new Set(list.map((p) => p.local_path))))
@@ -918,13 +886,10 @@ function Explorer({ home }: { home: string }) {
   useEffect(() => {
     let cancelled = false;
     let prev = new Set<string>();
-    let prevVerifying = new Set<string>();
-    // Drive's background auto-sync loop is entirely best-effort (same as
-    // git/local sync's loops) -- a pair stuck failing every tick (e.g.
-    // rclone's own "too many deletes" safety abort) would otherwise fail
-    // silently forever with nothing ever telling the user. Tracked per
-    // path so the same failure doesn't re-show the banner every poll.
-    const shownDriveErrors = new Map<string, string>();
+    // The background auto-sync loops are entirely best-effort -- a pair
+    // stuck failing every tick would otherwise fail silently forever with
+    // nothing ever telling the user. Tracked per path so the same failure
+    // doesn't re-show the banner every poll.
     const shownGitSyncErrors = new Map<string, string>();
     // Background sync/verify activity also shows as rows in the bottom-right
     // progress panel, same as any user-started operation -- synthetic ops
@@ -954,48 +919,16 @@ function Explorer({ home }: { home: string }) {
       Promise.all([
         api.gitSyncSyncingNow().catch(() => []),
         api.localSyncSyncingNow().catch(() => []),
-        api.driveSyncingNow().catch(() => []),
         api.syncthingSyncingNow().catch(() => []),
-        api.driveVerifyingNow().catch(() => []),
-        api.driveSyncActivity().catch(() => ({}) as Record<string, { current: string | null; count: number }>),
-        // Mobile's Drive sync keeps its own "is this pair syncing" state
-        // (drive_rest.rs), asked per pair -- there's no rclone process to
-        // ask about instead.
-        mobile
-          ? Promise.all([
-              Promise.all(
-                [...driveSyncedPaths].map((p) =>
-                  api
-                    .driveRestStatus(p)
-                    .then((st) => (st.syncing ? p : null))
-                    .catch(() => null)
-                )
-              ).then((rows) => rows.filter((p): p is string => !!p)),
-              api.folderSyncSyncingNow().catch(() => [] as string[]),
-            ]).then(([drive, folders]) => [...drive, ...folders])
-          : Promise.resolve([] as string[]),
+        mobile ? api.folderSyncSyncingNow().catch(() => [] as string[]) : Promise.resolve([] as string[]),
       ]).then((results) => {
         if (cancelled) return;
-        const verifying = new Set(results[4] as string[]);
-        const activity = results[5] as Record<string, { current: string | null; count: number }>;
-        const next = new Set([...(results.slice(0, 4) as string[][]).flat(), ...(results[6] as string[])]);
+        const next = new Set(results.flat());
         const justFinished = [...prev].filter((p) => !next.has(p));
         for (const p of next) {
-          // Narrate the specific file mid-transfer when the backend can name
-          // it (decrypted for unlocked vaults); fall back to the folder.
-          const act = activity[p];
-          const label = act?.current
-            ? `Syncing "${baseName(act.current)}"`
-            : act?.count
-            ? `Syncing "${baseName(p)}" · ${act.count} ${act.count === 1 ? "file" : "files"}`
-            : `Syncing "${baseName(p)}"`;
-          beginTask(`sync:${p}`, label);
+          beginTask(`sync:${p}`, `Syncing "${baseName(p)}"`);
         }
         for (const p of prev) if (!next.has(p)) endTask(`sync:${p}`);
-        for (const p of verifying)
-          if (!prevVerifying.has(p)) beginTask(`verify:${p}`, `Verifying "${baseName(p)}" in cloud`);
-        for (const p of prevVerifying) if (!verifying.has(p)) endTask(`verify:${p}`);
-        prevVerifying = verifying;
         prev = next;
         setSyncingPaths(next);
         if (justFinished.length) {
@@ -1010,22 +943,6 @@ function Explorer({ home }: { home: string }) {
           }, 2500);
         }
       });
-      for (const path of driveSyncedPaths) {
-        (mobile
-          ? api.driveRestStatus(path).then((st) => st.last_error || null)
-          : api.driveSyncLastError(path)
-        )
-          .then((err) => {
-            if (cancelled) return;
-            if (err && shownDriveErrors.get(path) !== err) {
-              shownDriveErrors.set(path, err);
-              setError(`Drive sync failed for "${baseName(path)}": ${err}`);
-            } else if (!err) {
-              shownDriveErrors.delete(path);
-            }
-          })
-          .catch(() => {});
-      }
       for (const path of gitSyncedPaths) {
         api
           .gitSyncLastError(path)
@@ -1047,7 +964,7 @@ function Explorer({ home }: { home: string }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [driveSyncedPaths, gitSyncedPaths, mobile]);
+  }, [gitSyncedPaths, mobile]);
   const [sortKey, setSortKey] = useState<"name" | "date" | "size" | "kind" | "created">("name");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const selection = useSelection();
@@ -1185,7 +1102,6 @@ function Explorer({ home }: { home: string }) {
     error: string;
   } | null>(null);
   const [encryptTarget, setEncryptTarget] = useState<Entry | null>(null);
-  const [driveTarget, setDriveTarget] = useState<{ path: string; provider: string } | null>(null);
   const [gitSyncTarget, setGitSyncTarget] = useState<string | null>(null);
   const [localSyncTarget, setLocalSyncTarget] = useState<string | null>(null);
   const [syncthingTarget, setSyncthingTarget] = useState<string | null>(null);
@@ -1214,10 +1130,8 @@ function Explorer({ home }: { home: string }) {
     fullPath: string;
     inVault: boolean;
   } | null>(null);
-  // Which folder the mobile "Sync → Google Drive" sheet is open for (the
-  // in-process Drive client, not rclone -- see drive_rest.rs).
-  const [mobileDriveTarget, setMobileDriveTarget] = useState<string | null>(null);
-  // Same, for folder-to-folder sync on mobile (folder_sync.rs).
+  // Which folder the mobile folder-to-folder sync sheet is open for
+  // (folder_sync.rs).
   const [mobileFolderSyncTarget, setMobileFolderSyncTarget] = useState<string | null>(null);
   const [iconScale, setIconScale] = useState(1);
   const [trashPath, setTrashPath] = useState<string | null>(null);
@@ -1498,44 +1412,6 @@ function Explorer({ home }: { home: string }) {
   }, [curDir]);
   const savedSearchExt = mobile || loc.kind !== "fs" ? null : savedSearchExtOf(entries);
   const showDigest = !!savedSearchExt && !digestDismissed;
-
-  // Per-entry "truly synced" state for the folder on screen: "verified"
-  // means the last `rclone check` matched this file's checksum against the
-  // cloud copy AND nothing changed locally since -- a strictly stronger
-  // claim than "a sync pass ran". Entries inside an unlocked vault are
-  // covered too (the backend maps them to their ciphertext files). Polled
-  // on the same rhythm as the syncing badges.
-  const [verifyStates, setVerifyStates] = useState<Map<string, string>>(new Map());
-  useEffect(() => {
-    let cancelled = false;
-    const treeRoot = loc.kind === "vault" ? loc.root : loc.path;
-    function poll() {
-      const covered =
-        entries.length > 0 &&
-        [...driveSyncedPaths].some((p) => treeRoot === p || treeRoot.startsWith(p + "/"));
-      if (!covered) {
-        setVerifyStates((cur) => (cur.size ? new Map() : cur));
-        return;
-      }
-      api
-        .syncVerifyStates(
-          loc.kind,
-          curDir,
-          entries.map((e) => e.name)
-        )
-        .then((states) => {
-          if (cancelled) return;
-          setVerifyStates(new Map(entries.map((e, i) => [e.name, states[i]])));
-        })
-        .catch(() => {});
-    }
-    poll();
-    const interval = setInterval(poll, 2500);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [entries, loc, curDir, driveSyncedPaths]);
 
   // "Show in folder"-type actions from other apps (Chrome's Downloads
   // panel, OBS's "Show Recordings") when VaultExplorer is the system's
@@ -2080,7 +1956,7 @@ function Explorer({ home }: { home: string }) {
       } else {
         // Preserve selection across SAME-folder reloads -- the instant
         // "fs-changed" watch (and the 20s poll) call refresh() whenever the
-        // open folder changes on disk (e.g. Drive sync writing into it), and
+        // open folder changes on disk (e.g. a sync loop writing into it), and
         // blindly clearing here wiped the user's selection out from under a
         // click ("I select an icon and it deselects itself"). Keeping only
         // names that still exist means navigating to a DIFFERENT folder
@@ -2179,7 +2055,7 @@ function Explorer({ home }: { home: string }) {
 
   // Periodic background refresh while a real-fs folder stays open, so
   // changes from an external source (git auto-sync's own ~25s poll loop,
-  // Drive sync, another program) actually show up instead of requiring a
+  // another program) actually show up instead of requiring a
   // manual refresh or a navigate-away-and-back. Skipped for a tick
   // whenever something's selected or mid-rename, via refs rather than
   // effect deps, so the interval itself doesn't get torn down and reset
@@ -2200,7 +2076,7 @@ function Explorer({ home }: { home: string }) {
 
   // Instant version of the same idea: watch the real-fs folder currently
   // open and refresh the moment something changes it from outside the app
-  // (a terminal `rm`, a browser download landing in it, git/Drive sync
+  // (a terminal `rm`, a browser download landing in it, git sync
   // writing to it) instead of waiting for the 20s poll above -- that poll
   // stays as a safety net for setups where the underlying watch mechanism
   // doesn't work (some network mounts). Only one folder is ever watched
@@ -3637,17 +3513,7 @@ function Explorer({ home }: { home: string }) {
   // layout (e.g. a Linux `/home/you/...` favorite pasted on Android
   // becomes a real `/storage/emulated/0/...` one, not a dead path) --
   // exactly the "paste this on my phone" case this was built for.
-  //
-  // `includeCloud` bundles the live rclone OAuth tokens too, for
-  // reconnecting cloud sync from wherever this gets pasted next without
-  // re-authenticating -- opt-in and off by default (see the Settings
-  // checkbox this is wired to): those tokens are as good as the account
-  // password for whatever they're scoped to, and this puts them on the
-  // plain OS clipboard, readable by any clipboard manager/sync service
-  // that happens to be watching. Desktop-only either way -- there's no
-  // `rclone` binary on Android for a receiving mobile device to use them
-  // with regardless of whether they're included.
-  async function buildConfigExportBlob(includeCloud: boolean): Promise<string> {
+  function buildConfigExportBlob(): string {
     const data: Record<string, string> = {};
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -3657,28 +3523,14 @@ function Explorer({ home }: { home: string }) {
       version: 1;
       sourceHome: string;
       data: Record<string, string>;
-      rcloneConf?: string;
     } = { version: 1, sourceHome: home, data };
-    if (includeCloud && !mobile) {
-      try {
-        const conf = await api.rcloneReadConfRaw();
-        if (conf) payload.rcloneConf = conf;
-      } catch {
-        /* rclone not installed -- nothing to include */
-      }
-    }
     return JSON.stringify(payload);
   }
 
-  async function exportConfigToClipboard(includeCloud: boolean) {
+  async function exportConfigToClipboard() {
     try {
-      const blob = await buildConfigExportBlob(includeCloud);
-      await navigator.clipboard.writeText(blob);
-      setInfoMsg(
-        includeCloud
-          ? "Config + cloud credentials copied to clipboard"
-          : "Config copied to clipboard"
-      );
+      await navigator.clipboard.writeText(buildConfigExportBlob());
+      setInfoMsg("Config copied to clipboard");
     } catch (e) {
       setError(String(e));
     }
@@ -3698,7 +3550,7 @@ function Explorer({ home }: { home: string }) {
       setError(String(e));
       return;
     }
-    let payload: { version?: number; sourceHome?: string; data?: Record<string, string>; rcloneConf?: string };
+    let payload: { version?: number; sourceHome?: string; data?: Record<string, string> };
     try {
       payload = JSON.parse(text);
     } catch {
@@ -3725,21 +3577,13 @@ function Explorer({ home }: { home: string }) {
       }
       localStorage.setItem(key, value);
     }
-    if (payload.rcloneConf && !mobile) {
-      try {
-        await api.rcloneMergeConfRaw(payload.rcloneConf);
-      } catch (e) {
-        setError(String(e));
-        return;
-      }
-    }
     // Every setting above is read once at mount (`useState(() => ...
     // localStorage...)`) -- reapplying all of it live would mean
     // duplicating that same read for every single one of those states
     // instead of the one source of truth localStorage already is. A
     // reload is what actually re-runs them.
     setInfoMsg(
-      `Imported${payload.rcloneConf ? " + cloud credentials" : ""}${remapped ? ` (${remapped} path${remapped === 1 ? "" : "s"} remapped)` : ""} — reloading…`
+      `Imported${remapped ? ` (${remapped} path${remapped === 1 ? "" : "s"} remapped)` : ""} — reloading…`
     );
     setTimeout(() => window.location.reload(), 900);
   }
@@ -4983,21 +4827,17 @@ function Explorer({ home }: { home: string }) {
           : { label: "Add to Favorites", onClick: () => addFavorite(path) }
       );
       // On desktop every provider here shells out to a binary
-      // (rclone/git/unison/syncthing); on Android none of those exist, so
-      // the submenu narrows to the one backend that works there -- Google
-      // Drive over its REST API, in-process (see drive_rest.rs).
+      // (git/unison/syncthing); on Android none of those exist, so the
+      // submenu narrows to the in-process folder-to-folder sync.
       if (!inVault) {
         moreItems.push(
           buildSyncSubmenu(path, {
-            drivePairsByPath,
             gitSyncedPaths,
             localSyncedPaths,
-            setDriveTarget,
             setGitSyncTarget,
             setLocalSyncTarget,
             setSyncthingTarget,
             mobile,
-            setMobileDriveTarget,
             setMobileFolderSyncTarget,
           })
         );
@@ -5382,7 +5222,6 @@ function Explorer({ home }: { home: string }) {
       if (resizeTarget) return setResizeTarget(null);
       if (convertTarget) return setConvertTarget(null);
       if (formatTarget) return setFormatTarget(null);
-      if (driveTarget) return setDriveTarget(null);
       if (gitSyncTarget) return setGitSyncTarget(null);
       if (localSyncTarget) return setLocalSyncTarget(null);
       if (syncthingTarget) return setSyncthingTarget(null);
@@ -5411,7 +5250,6 @@ function Explorer({ home }: { home: string }) {
     resizeTarget,
     convertTarget,
     formatTarget,
-    driveTarget,
     gitSyncTarget,
     localSyncTarget,
     syncthingTarget,
@@ -5469,11 +5307,10 @@ function Explorer({ home }: { home: string }) {
   // exact match) looking for a synced root -- a file several folders deep
   // inside a paired tree is still "inside a synced folder" and should
   // still show its badge, not just direct children of the paired root.
-  function syncRootFor(path: string): { badge: "git" | "drive" | "local"; root: string } | null {
+  function syncRootFor(path: string): { badge: "git" | "local"; root: string } | null {
     let p = path;
     while (p) {
       if (gitSyncedPaths.has(p)) return { badge: "git", root: p };
-      if (driveSyncedPaths.has(p)) return { badge: "drive", root: p };
       if (localSyncedPaths.has(p)) return { badge: "local", root: p };
       const parent = parentPath(p);
       if (parent === p) return null;
@@ -5483,33 +5320,15 @@ function Explorer({ home }: { home: string }) {
   }
 
   function syncInfoFor(entry: Entry): {
-    badge: "git" | "drive" | "local" | null;
-    state: "syncing" | "synced" | "verified" | "pending" | null;
+    badge: "git" | "local" | null;
+    state: "syncing" | "synced" | null;
   } {
     const path = joinPath(curDir, entry.name);
-    // Checksum-verified state from the poll above. Falls back through the
-    // path-based badge logic when absent (git/local pairs, or no check yet).
-    const vstate = verifyStates.get(entry.name);
     const hit = (entry.is_dir ? syncRootFor(path) : null) ?? syncRootFor(curDir);
-    if (!hit) {
-      // Inside a vault the fs-path walk can't match (paths here are
-      // vault-relative) -- the verify poll is what knows this entry's
-      // ciphertext is under a Drive pair, so it alone drives the badge.
-      // "unknown" = under a pair but no check result yet: show the plain
-      // static badge right away rather than nothing until the first
-      // check lands.
-      if (vstate === "verified") return { badge: "drive", state: "verified" };
-      if (vstate === "pending") return { badge: "drive", state: "pending" };
-      if (vstate === "unknown") return { badge: "drive", state: null };
-      return { badge: null, state: null };
-    }
+    if (!hit) return { badge: null, state: null };
     const { badge, root } = hit;
     if (syncingPaths.has(root) || syncingPaths.has(path)) return { badge, state: "syncing" };
     if (justSyncedPaths.has(root) || justSyncedPaths.has(path)) return { badge, state: "synced" };
-    if (badge === "drive") {
-      if (vstate === "verified") return { badge, state: "verified" };
-      if (vstate === "pending") return { badge, state: "pending" };
-    }
     return { badge, state: null };
   }
 
@@ -5883,15 +5702,12 @@ function Explorer({ home }: { home: string }) {
                 if (f.path !== "/" && !inVault) {
                   items.push(
                     buildSyncSubmenu(f.path, {
-                      drivePairsByPath,
                       gitSyncedPaths,
                       localSyncedPaths,
-                      setDriveTarget,
                       setGitSyncTarget,
                       setLocalSyncTarget,
                       setSyncthingTarget,
                       mobile,
-                      setMobileDriveTarget,
                       setMobileFolderSyncTarget,
                     })
                   );
@@ -5971,7 +5787,7 @@ function Explorer({ home }: { home: string }) {
                     color={TAG_COLORS.find((c) => c.key === favTags[f.path])?.hex}
                   />
                 )}
-                {(gitSyncedPaths.has(f.path) || driveSyncedPaths.has(f.path) || localSyncedPaths.has(f.path)) && (
+                {(gitSyncedPaths.has(f.path) || localSyncedPaths.has(f.path)) && (
                   <span
                     className={`sync-badge ${syncingPaths.has(f.path) ? "syncing" : ""} ${
                       justSyncedPaths.has(f.path) ? "synced" : ""
@@ -5983,8 +5799,6 @@ function Explorer({ home }: { home: string }) {
                       <RefreshGlyph size={11} />
                     ) : gitSyncedPaths.has(f.path) ? (
                       <GitBranchGlyph size={11} />
-                    ) : driveSyncedPaths.has(f.path) ? (
-                      <CloudSyncGlyph size={11} />
                     ) : (
                       <LocalSyncGlyph size={11} />
                     )}
@@ -6846,16 +6660,6 @@ function Explorer({ home }: { home: string }) {
           }}
         />
       )}
-      {driveTarget && (
-        <DriveSyncSheet
-          localPath={driveTarget.path}
-          provider={driveTarget.provider}
-          onClose={() => {
-            setDriveTarget(null);
-            refreshSyncStatus();
-          }}
-        />
-      )}
       {mobileFolderSyncTarget && (
         <MobileFolderSyncSheet
           folderA={mobileFolderSyncTarget}
@@ -6863,16 +6667,6 @@ function Explorer({ home }: { home: string }) {
             setMobileFolderSyncTarget(null);
             refreshSyncStatus();
             refresh();
-          }}
-        />
-      )}
-      {mobileDriveTarget && (
-        <MobileDriveSyncSheet
-          localPath={mobileDriveTarget}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onClose={() => {
-            setMobileDriveTarget(null);
-            refreshSyncStatus();
           }}
         />
       )}

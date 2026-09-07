@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Entry, api, osOpen } from "../api";
 import { View } from "../types";
 import { formatSize, formatDate } from "../api";
-import { FileIcon, GitBranchGlyph, CloudSyncGlyph, LocalSyncGlyph, CheckGlyph, PinGlyph, RefreshGlyph, LockGlyph, PhoneGlyph, ChatGlyph, PersonGlyph } from "../icons";
+import { FileIcon, GitBranchGlyph, LocalSyncGlyph, CheckGlyph, PinGlyph, RefreshGlyph, LockGlyph, PhoneGlyph, ChatGlyph, PersonGlyph } from "../icons";
 import { displayEntryName, kindLabel } from "../entryHelpers";
 import { useThumbnail } from "../hooks/useThumbnail";
 import { parseVCard, cleanPhoneForLink, ParsedVCard } from "../vcard";
@@ -89,8 +89,8 @@ export function EntryTile({
   hideExtensions?: boolean;
   pinned?: boolean;
   sensitive?: boolean;
-  syncBadge?: "git" | "drive" | "local" | null;
-  syncState?: "syncing" | "synced" | "verified" | "pending" | null;
+  syncBadge?: "git" | "local" | null;
+  syncState?: "syncing" | "synced" | null;
   mobile?: boolean;
   editing: boolean;
   editValue: string;
@@ -176,26 +176,14 @@ export function EntryTile({
         {syncBadge && (
           <span
             className={`entry-tag-dot entry-sync-badge ${syncState ?? ""}`}
-            title={
-              syncState === "verified"
-                ? "Verified in cloud (checksums match)"
-                : syncState === "pending"
-                ? "Not yet verified in cloud"
-                : syncState === "syncing"
-                ? "Syncing…"
-                : undefined
-            }
+            title={syncState === "syncing" ? "Syncing…" : undefined}
           >
-            {syncState === "synced" || syncState === "verified" ? (
+            {syncState === "synced" ? (
               <CheckGlyph size={16} />
             ) : syncState === "syncing" ? (
               <RefreshGlyph size={16} />
-            ) : syncState === "pending" ? (
-              <CloudSyncGlyph size={16} />
             ) : syncBadge === "git" ? (
               <GitBranchGlyph size={18} />
-            ) : syncBadge === "drive" ? (
-              <CloudSyncGlyph size={18} />
             ) : (
               <LocalSyncGlyph size={18} />
             )}
