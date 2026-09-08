@@ -15,6 +15,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- So Doze does not throttle the foreground sync service's own network
+         callback and delay noticing a wifi/data switch. Only meaningful outside
+         Play, which is why HomeCloud can ask for it directly. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Updating from inside the app. The system installer still shows its own
          confirmation; this only opens it. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />

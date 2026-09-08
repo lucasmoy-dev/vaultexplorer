@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -36,6 +37,13 @@ class MainActivity : ComponentActivity() {
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        // Some OEMs throttle a foreground service's background network access
+        // hard enough that a wifi/data switch is missed and syncing quietly
+        // never reconnects. Standing outside battery optimization is what
+        // keeps the reconnect prompt (SyncService's network callback) firing
+        // on time instead of whenever Doze next wakes the app.
+        requestUnrestrictedBattery()
+
         SyncService.start(this)
 
         setContent {
@@ -56,6 +64,20 @@ class MainActivity : ComponentActivity() {
 
     private fun hasAllFilesAccess(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+
+    /** Same system dialog kind as the notification one: asked once, up front. */
+    private fun requestUnrestrictedBattery() {
+        val power = getSystemService(PowerManager::class.java) ?: return
+        if (power.isIgnoringBatteryOptimizations(packageName)) return
+        runCatching {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                )
+            )
+        }
+    }
 
     /**
      * There is no in-app prompt for this one: the system only grants it from its
