@@ -35,12 +35,23 @@ class SyncService : Service() {
      * believes in and the other has given up on — the desktop saying
      * "connected" while the phone says "disconnected". Nothing recovers from
      * that on its own quickly, so every change dials again.
+     *
+     * Android fires `onCapabilitiesChanged` on its own every few seconds on
+     * cellular — signal strength and bandwidth estimates update constantly,
+     * with no connectivity change behind them. Reconnecting on every one of
+     * those was tearing a real connection down almost as soon as it came up
+     * (seen live as ~5s connections, over and over): the fix meant to notice
+     * a real network change was itself the thing breaking the connection.
+     * [lastMetered] makes only an actual flip of "metered" count as one;
+     * `onAvailable`/`onLost` already are one.
      */
+    private var lastMetered: Boolean? = null
+
     private val networkWatcher = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = onNetworkChanged()
-        override fun onLost(network: Network) = onNetworkChanged()
+        override fun onAvailable(network: Network) = onNetworkChanged(force = true)
+        override fun onLost(network: Network) = onNetworkChanged(force = true)
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) =
-            onNetworkChanged()
+            onNetworkChanged(force = false)
     }
 
     override fun onCreate() {
@@ -82,8 +93,13 @@ class SyncService : Service() {
     /**
      * Reacts to the connection changing: reconnects, and applies each folder's
      * "only on wifi" preference to the network there is now.
+     *
+     * `force` is true for an actual network appearing or disappearing;
+     * otherwise this only acts when "metered" itself flipped, so a capability
+     * tick that changes nothing relevant is a no-op instead of a fresh
+     * pause-then-resume of every device.
      */
-    private fun onNetworkChanged() {
+    private fun onNetworkChanged(force: Boolean) {
         Thread {
             runCatching {
                 val manager = getSystemService(ConnectivityManager::class.java)
@@ -91,6 +107,8 @@ class SyncService : Service() {
                 val metered = capabilities?.hasCapability(
                     NetworkCapabilities.NET_CAPABILITY_NOT_METERED
                 ) != true
+                if (!force && metered == lastMetered) return@runCatching
+                lastMetered = metered
                 Repo.applyMeteredPolicy(metered)
                 Repo.reconnectAll()
             }

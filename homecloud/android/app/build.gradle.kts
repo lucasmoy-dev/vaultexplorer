@@ -34,8 +34,8 @@ android {
         // from nativeLibraryDir. Below that the layout would have to differ.
         minSdk = 29
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.12.2"
+        versionCode = 16
+        versionName = "0.12.3"
         ndk { abiFilters += rustAbis }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
