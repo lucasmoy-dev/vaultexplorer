@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1355,7 +1356,11 @@ private fun UpdateRow(onError: (String) -> Unit) {
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Once an update is found, offering "search again" next to "install this
+    // now" is two buttons fighting for a dialog's width for no reason —
+    // that crowding is what was breaking the label into two lines.
+    val available = found
+    if (available == null) {
         TextButton(
             enabled = !busy,
             onClick = {
@@ -1365,9 +1370,9 @@ private fun UpdateRow(onError: (String) -> Unit) {
                     val outcome = withContext(Dispatchers.IO) { Updater.check(current) }
                     busy = false
                     outcome.fold(
-                        onSuccess = { available ->
-                            if (available.hasUpdate) {
-                                found = available
+                        onSuccess = { result ->
+                            if (result.hasUpdate) {
+                                found = result
                                 state = null
                             } else {
                                 found = null
@@ -1378,41 +1383,40 @@ private fun UpdateRow(onError: (String) -> Unit) {
                     )
                 }
             },
-        ) { Text(if (busy) "Comprobando…" else "Buscar actualizaciones") }
-
-        found?.let { available ->
-            Button(
-                enabled = !busy,
-                onClick = {
-                    // Checked before downloading tens of megabytes that could
-                    // not be installed at the end of it.
-                    if (!Updater.canInstall(context)) {
-                        state = "Permite instalar apps de HomeCloud y vuelve a intentarlo."
-                        runCatching { context.startActivity(Updater.installPermissionIntent(context)) }
-                        return@Button
-                    }
-                    busy = true
-                    scope.launch {
-                        val outcome = withContext(Dispatchers.IO) {
-                            runCatching {
-                                Updater.download(context, available.apkUrl) { fraction ->
-                                    state = "Descargando… ${(fraction * 100).toInt()}%"
-                                }
+        ) { Text(if (busy) "Comprobando…" else "Buscar actualizaciones", maxLines = 1) }
+    } else {
+        Button(
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                // Checked before downloading tens of megabytes that could
+                // not be installed at the end of it.
+                if (!Updater.canInstall(context)) {
+                    state = "Permite instalar apps de HomeCloud y vuelve a intentarlo."
+                    runCatching { context.startActivity(Updater.installPermissionIntent(context)) }
+                    return@Button
+                }
+                busy = true
+                scope.launch {
+                    val outcome = withContext(Dispatchers.IO) {
+                        runCatching {
+                            Updater.download(context, available.apkUrl) { fraction ->
+                                state = "Descargando… ${(fraction * 100).toInt()}%"
                             }
                         }
-                        busy = false
-                        outcome.fold(
-                            onSuccess = { apk ->
-                                state = "Confirma la instalación."
-                                runCatching { context.startActivity(Updater.installIntent(context, apk)) }
-                                    .onFailure { onError(it.message ?: "No se pudo abrir el instalador") }
-                            },
-                            onFailure = { state = "No se pudo descargar: ${it.message}" },
-                        )
                     }
-                },
-            ) { Text("Actualizar a ${available.latest}") }
-        }
+                    busy = false
+                    outcome.fold(
+                        onSuccess = { apk ->
+                            state = "Confirma la instalación."
+                            runCatching { context.startActivity(Updater.installIntent(context, apk)) }
+                                .onFailure { onError(it.message ?: "No se pudo abrir el instalador") }
+                        },
+                        onFailure = { state = "No se pudo descargar: ${it.message}" },
+                    )
+                }
+            },
+        ) { Text("Actualizar a ${available.latest}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
     }
     state?.let {
         Text(
