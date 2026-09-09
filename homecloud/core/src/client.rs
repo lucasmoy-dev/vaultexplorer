@@ -909,7 +909,14 @@ impl Syncthing {
     /// ever found, so they are moved over once — and only once, so that
     /// choosing something else later is not undone at the next launch.
     pub async fn ensure_deletion_policy(&self) -> Result<()> {
-        if self.read_preferences()["deletionPolicySet"].as_bool() == Some(true) {
+        let command = self.trash_command();
+        let versioning = self
+            .get("/rest/config/defaults/folder")
+            .await
+            .map(|defaults| defaults["versioning"].clone())
+            .unwrap_or(Value::Null);
+        let chosen_already = self.read_preferences()["deletionPolicySet"].as_bool() == Some(true);
+        if chosen_already && !points_somewhere_else(&versioning, command.as_deref()) {
             return Ok(());
         }
         self.apply_deletion_policy(DeletionPolicy::Bin, DEFAULT_KEPT_COPIES)
@@ -1629,6 +1636,19 @@ fn versioning_for(policy: DeletionPolicy, keep: u32, trash_command: Option<&str>
     }
 }
 
+/// Whether the engine is set to call a binary that is no longer the one
+/// running.
+///
+/// The command is this executable's own path, so installing the .deb over a
+/// build from source — or the other way round — leaves the engine calling
+/// something that is not there. A versioner that fails is a deletion that
+/// never completes and a folder stuck on an error, so the path is checked on
+/// every launch and put right when it has moved.
+fn points_somewhere_else(versioning: &Value, command: Option<&str>) -> bool {
+    let Some(command) = command else { return false };
+    versioning["type"] == "external" && versioning["params"]["command"] != command
+}
+
 fn policy_from_versioning(versioning: &Value) -> DeletionPolicy {
     match versioning["type"].as_str().unwrap_or("") {
         "external" => DeletionPolicy::Bin,
@@ -1925,6 +1945,20 @@ mod tests {
         let fallback = versioning_for(DeletionPolicy::Bin, 0, None);
         assert_eq!(fallback["type"], json!("simple"));
         assert_eq!(policy_from_versioning(&fallback), DeletionPolicy::Copies);
+    }
+
+    #[test]
+    fn a_binary_that_moved_is_noticed_and_a_deliberate_choice_is_not() {
+        let bin = versioning_for(DeletionPolicy::Bin, 5, Some("/usr/bin/homecloud --trash"));
+        assert!(!points_somewhere_else(&bin, Some("/usr/bin/homecloud --trash")));
+        assert!(points_somewhere_else(&bin, Some("/opt/homecloud --trash")));
+
+        // Someone who asked for hidden copies, or for nothing, must not have
+        // the recycle bin put back under them at the next launch.
+        let copies = versioning_for(DeletionPolicy::Copies, 5, None);
+        assert!(!points_somewhere_else(&copies, Some("/opt/homecloud --trash")));
+        let nothing = versioning_for(DeletionPolicy::Nothing, 5, None);
+        assert!(!points_somewhere_else(&nothing, Some("/opt/homecloud --trash")));
     }
 
     #[test]
