@@ -89,9 +89,10 @@ emulator running the real engine:
 
 ## Known gaps
 
-- **The phone cannot scan a QR yet.** It shows and accepts codes as text; the
-  camera path needs CameraX and is the obvious next piece of the "just scan it"
-  promise.
+- **Scanning has only been proved frame by frame, not through a lens.** The
+  phone reads QRs with CameraX now, and the decoder is unit-tested against
+  camera-shaped frames, but how well it does in a dim room at an angle is not
+  something a test on this machine can answer.
 - **The engine can be orphaned on the desktop.** It is stopped when the window
   closes, but a `SIGKILL` leaves the child process running. The next launch now
   says so instead of hanging, but it should adopt the stray engine rather than

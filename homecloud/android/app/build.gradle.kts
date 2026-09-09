@@ -34,8 +34,8 @@ android {
         // from nativeLibraryDir. Below that the layout would have to differ.
         minSdk = 29
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.12.3"
+        versionCode = 17
+        versionName = "0.13.0"
         ndk { abiFilters += rustAbis }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -84,6 +84,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.service)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
@@ -92,7 +93,10 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons)
     implementation(libs.zxing.core)
-    implementation(libs.zxing.embedded)
+    implementation(libs.camerax.core)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

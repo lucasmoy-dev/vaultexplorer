@@ -27,12 +27,19 @@ sealed interface FolderState {
     }
 }
 
-data class Peer(val id: String, val name: String, val connected: Boolean) {
+data class Peer(
+    val id: String,
+    val name: String,
+    val connected: Boolean,
+    /** How much of the folder that device has, 0-100, or null if unknown. */
+    val completion: Int?,
+) {
     companion object {
         fun from(json: JSONObject) = Peer(
             id = json.getString("id"),
             name = json.getString("name"),
             connected = json.getBoolean("connected"),
+            completion = if (json.isNull("completion")) null else json.optInt("completion"),
         )
     }
 }
@@ -53,6 +60,8 @@ data class SharedFolder(
     val wifiOnly: Boolean,
     val pausedByNetwork: Boolean,
     val hasPassword: Boolean,
+    /** Seconds left at the speed measured just now, null when nothing moves. */
+    val etaSeconds: Long?,
 ) {
     companion object {
         fun from(json: JSONObject) = SharedFolder(
@@ -71,6 +80,7 @@ data class SharedFolder(
             wifiOnly = json.optBoolean("wifiOnly"),
             pausedByNetwork = json.optBoolean("pausedByNetwork"),
             hasPassword = json.optBoolean("hasPassword"),
+            etaSeconds = if (json.isNull("etaSeconds")) null else json.optLong("etaSeconds"),
         )
     }
 }
@@ -185,6 +195,32 @@ fun formatRate(bytesPerSecond: Long): String {
     if (bytesPerSecond <= 0) return ""
     val mb = bytesPerSecond / 1_000_000.0
     return if (mb >= 1) String.format("%.1f MB/s", mb) else "${bytesPerSecond / 1000} kB/s"
+}
+
+/**
+ * How long is left, in the roundest terms still worth reading: "2 h 15 min",
+ * "8 min", "45 s". A percentage on its own never answers the question people
+ * actually have, which is whether to wait for it.
+ */
+fun formatEta(seconds: Long): String {
+    if (seconds >= 36 * 3600) return "más de un día"
+    val hours = seconds / 3600
+    val minutes = ((seconds % 3600) + 30) / 60
+    return when {
+        hours > 0 && minutes > 0 -> "$hours h $minutes min"
+        hours > 0 -> "$hours h"
+        seconds >= 60 -> "${maxOf(1, (seconds + 30) / 60)} min"
+        else -> "${maxOf(1, seconds)} s"
+    }
+}
+
+/** What is left of a sync, as one line: "faltan 2 h 15 min · 15,0 MB/s". */
+fun remaining(folder: SharedFolder): String? {
+    val parts = buildList {
+        folder.etaSeconds?.let { add("faltan ${formatEta(it)}") }
+        formatRate(folder.bytesPerSecond).takeIf { it.isNotEmpty() }?.let { add(it) }
+    }
+    return parts.joinToString(" · ").ifEmpty { null }
 }
 
 /** A folder being served as a public link, and when that stops on its own. */

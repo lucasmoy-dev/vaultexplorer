@@ -384,9 +384,11 @@ private fun FolderRow(folder: SharedFolder, onClick: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (folder.bytesPerSecond > 0) {
+            // "Sincronizando 9%" says nothing about whether to wait for it.
+            // How long is left, and how fast, is what does.
+            remaining(folder)?.let {
                 Text(
-                    formatRate(folder.bytesPerSecond),
+                    it,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -416,6 +418,8 @@ private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Compartir «$label»") },
         text = {
+            // While this is up, the other device is pointing a camera at it.
+            KeepScreenReadable(bright = true)
             Column(
                 Modifier.verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -429,7 +433,7 @@ private fun CodeDialog(label: String, code: String, onDismiss: () -> Unit) {
                     Image(
                         bitmap = qr,
                         contentDescription = "Código QR para compartir $label",
-                        modifier = Modifier.size(220.dp).clip(RoundedCornerShape(10.dp)),
+                        modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(10.dp)),
                     )
                 } else {
                     Text("No se pudo dibujar el QR", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -515,7 +519,7 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
     var password by remember { mutableStateOf("") }
     var needsPassword by remember { mutableStateOf(false) }
 
-    val scan = rememberQrScanner { scanned -> code = scanned }
+    var scanning by remember { mutableStateOf(false) }
 
     // Reading the code as it is typed means a wrong one is caught before the
     // user commits to a destination.
@@ -559,7 +563,7 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
         title = { Text("Unirme a una carpeta") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                OutlinedButton(onClick = scan, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { scanning = true }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Escanear el QR del otro dispositivo")
@@ -681,6 +685,16 @@ private fun JoinDialog(onDismiss: () -> Unit, onJoined: () -> Unit, onError: (St
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
 
+    if (scanning) {
+        QrScannerSheet(
+            onScanned = { scanned ->
+                code = scanned
+                scanning = false
+            },
+            onClose = { scanning = false },
+        )
+    }
+
     if (pickPath) {
         val read = preview
         DirectoryPicker(
@@ -713,6 +727,16 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
     // when a folder is set up and never again. The actions come first.
     var advancedOpen by remember { mutableStateOf(false) }
     val paused = folder.state == FolderState.Paused
+    // What the user just asked for, until the next poll confirms it. These
+    // used to close the whole sheet and then take a second and a half to show
+    // the new value, so the box looked untouched and got ticked twice.
+    var wantedReadOnly by remember(folder.id) { mutableStateOf<Boolean?>(null) }
+    var wantedWifiOnly by remember(folder.id) { mutableStateOf<Boolean?>(null) }
+    // Once the engine agrees, the guess has nothing left to say.
+    LaunchedEffect(folder.readOnly, folder.wifiOnly) {
+        if (wantedReadOnly == folder.readOnly) wantedReadOnly = null
+        if (wantedWifiOnly == folder.wifiOnly) wantedWifiOnly = null
+    }
 
     code?.let {
         CodeDialog(label = folder.label, code = it, onDismiss = onDismiss)
@@ -724,12 +748,14 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
         title = { Text(folder.label) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    buildString {
-                        append(stateLabel(folder.state))
-                        if (folder.bytesPerSecond > 0) append(" · ${formatRate(folder.bytesPerSecond)}")
-                    },
-                )
+                Text(stateLabel(folder.state))
+                remaining(folder)?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     buildString {
                         append("${folder.files} ficheros · ${formatBytes(folder.bytes)}")
@@ -738,6 +764,16 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // A folder stopped halfway still has a real size and a real
+                // amount left; the engine simply refuses to say so while it
+                // is paused, which used to leave "0 B" on screen.
+                if (paused && folder.pendingBytes > 0) {
+                    Text(
+                        "Le faltan ${formatBytes(folder.pendingBytes)} por bajar.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
 
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -811,9 +847,12 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                 if (advancedOpen) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
-                            checked = folder.readOnly,
+                            checked = wantedReadOnly ?: folder.readOnly,
                             onCheckedChange = { wanted ->
-                                scope.engineCall(onError, onDismiss) {
+                                wantedReadOnly = wanted
+                                // A guess that turned out wrong must not
+                                // outlive the attempt.
+                                scope.engineCall({ wantedReadOnly = null; onError(it) }) {
                                     Repo.setFolderReadOnly(folder.id, wanted)
                                 }
                             },
@@ -829,9 +868,10 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
-                            checked = folder.wifiOnly,
+                            checked = wantedWifiOnly ?: folder.wifiOnly,
                             onCheckedChange = { wanted ->
-                                scope.engineCall(onError, onDismiss) {
+                                wantedWifiOnly = wanted
+                                scope.engineCall({ wantedWifiOnly = null; onError(it) }) {
                                     Repo.setFolderWifiOnly(folder.id, wanted)
                                 }
                             },
@@ -884,6 +924,17 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                                 fontFamily = FontFamily.Monospace,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // Whether the other end has finished. Without it
+                            // this phone reads "Al día" while the laptop it
+                            // shares with is still at four per cent.
+                            peer.completion?.let { done ->
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    if (done >= 100) "al día" else "$done%",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
 

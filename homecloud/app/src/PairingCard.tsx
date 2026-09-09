@@ -18,7 +18,11 @@ export function PairingCard({ code, label }: { code: string; label: string }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   useEffect(() => {
-    QRCode.toDataURL(code, { margin: 1, width: 260, errorCorrectionLevel: "M" })
+    // Drawn as large as the sheet allows and with the lightest error
+    // correction: this is read off a lit screen a hand's width away, where
+    // spare correction buys nothing and only packs the squares tighter. The
+    // wider the squares, the sooner the other device's camera locks on.
+    QRCode.toDataURL(code, { margin: 2, width: 320, errorCorrectionLevel: "L" })
       .then(setQr)
       .catch(() => setQr(null));
   }, [code]);

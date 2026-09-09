@@ -6,12 +6,13 @@ lifecycle = "2.8.7"
 activityCompose = "1.9.3"
 composeBom = "2024.11.00"
 zxingCore = "3.5.3"
-zxingEmbedded = "4.3.0"
 composeMaterialIcons = "1.7.5"
+camerax = "1.4.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
 androidx-lifecycle-service = { group = "androidx.lifecycle", name = "lifecycle-service", version.ref = "lifecycle" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -22,10 +23,16 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-compose-material-icons = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "composeMaterialIcons" }
 # Writes the QR on this screen. Pure Java, no camera, no services.
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
-# Reads one from the camera. Chosen over ML Kit because it is self-contained:
-# no Play Services, no model download, and it works on a phone that has never
-# seen the Play Store -- which is every phone HomeCloud is sideloaded onto.
-zxing-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
+# Drives the camera the scanner reads from. The zxing-android-embedded
+# activity that used to do this is built on the deprecated Camera1 API: a
+# preview at a few frames a second and an autofocus that never settled, which
+# is why scanning a QR could take minutes and usually ended in typing the code.
+# Decoding is still zxing core, so nothing here needs Play Services or a
+# downloaded model -- the app is sideloaded and must work without either.
+camerax-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
+camerax-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+camerax-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+camerax-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

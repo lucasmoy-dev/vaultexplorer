@@ -8,7 +8,11 @@ import { CloseIcon } from "./Icons";
  *
  * Decoding happens here rather than in the browser's own barcode detector,
  * which WebKitGTK — the engine behind this window on Linux — does not
- * implement.
+ * implement. It happens in a worker rather than on this thread, because it
+ * used to share a thread with the video: every decode froze the preview, the
+ * picture crawled, and aiming at a small square on another screen while the
+ * image stutters is most of why scanning failed and the code got typed by
+ * hand instead.
  */
 
 /**
@@ -30,6 +34,14 @@ const WANTED: MediaTrackConstraints = {
  */
 const DECODE_SIZE = 480;
 
+/**
+ * How much of the frame's short side that crop covers. The tight one is where
+ * a code held up to the camera lands; the wide one catches a code further away
+ * or off to one side, which otherwise never decodes no matter how long the
+ * user waits. They alternate, so both are tried about ten times a second.
+ */
+const CROPS = [0.7, 1];
+
 export function QrScanner({
   onScanned,
   onClose,
@@ -46,8 +58,9 @@ export function QrScanner({
 
   useEffect(() => {
     let stream: MediaStream | null = null;
-    let frame = 0;
+    let timer = 0;
     let stopped = false;
+    let attempt = 0;
 
     // One canvas for the whole session: allocating per frame is what turns a
     // scan into a slideshow.
@@ -56,37 +69,93 @@ export function QrScanner({
     canvas.height = DECODE_SIZE;
     const context = canvas.getContext("2d", { willReadFrequently: true });
 
+    // A worker keeps the decoding off the thread that paints the preview. If
+    // this window cannot make one, the scanner still works — just on one
+    // thread, as it always used to.
+    let worker: Worker | null = null;
+    try {
+      worker = new Worker(new URL("./qrWorker.ts", import.meta.url));
+    } catch (error) {
+      report(`worker unavailable: ${describe(error)}`);
+    }
+
+    function found(code: string) {
+      stopped = true;
+      onScanned(code);
+    }
+
+    /** Copies the middle of the current frame into the canvas. */
+    function grab(): ImageData | null {
+      const video = videoRef.current;
+      if (!video || !context || video.readyState < video.HAVE_CURRENT_DATA) return null;
+      const shortest = Math.min(video.videoWidth, video.videoHeight);
+      if (shortest <= 0) return null;
+      const side = shortest * CROPS[attempt % CROPS.length];
+      attempt += 1;
+      context.drawImage(
+        video,
+        (video.videoWidth - side) / 2,
+        (video.videoHeight - side) / 2,
+        side,
+        side,
+        0,
+        0,
+        DECODE_SIZE,
+        DECODE_SIZE,
+      );
+      return context.getImageData(0, 0, DECODE_SIZE, DECODE_SIZE);
+    }
+
+    function next(delay = 40) {
+      if (stopped) return;
+      timer = window.setTimeout(read, delay);
+    }
+
     function read() {
       if (stopped) return;
-      const video = videoRef.current;
-      if (video && context && video.readyState >= video.HAVE_CURRENT_DATA) {
-        const side = Math.min(video.videoWidth, video.videoHeight);
-        if (side > 0) {
-          context.drawImage(
-            video,
-            (video.videoWidth - side) / 2,
-            (video.videoHeight - side) / 2,
-            side,
-            side,
-            0,
-            0,
-            DECODE_SIZE,
-            DECODE_SIZE,
-          );
-          const image = context.getImageData(0, 0, DECODE_SIZE, DECODE_SIZE);
-          // Both polarities: a QR shown on a dark-mode screen comes back
-          // inverted, and refusing to try costs a scan that would have worked.
-          const found = jsQR(image.data, image.width, image.height, {
-            inversionAttempts: "attemptBoth",
-          });
-          if (found?.data) {
-            stopped = true;
-            onScanned(found.data.trim());
-            return;
-          }
-        }
+      const image = grab();
+      if (!image) {
+        next(80);
+        return;
       }
-      frame = requestAnimationFrame(read);
+      if (worker) {
+        // One frame in flight at a time: the reply is what asks for the next,
+        // so a slow decode drops frames instead of queueing them up.
+        worker.postMessage(
+          {
+            data: image.data.buffer,
+            width: image.width,
+            height: image.height,
+            // A QR shown on a dark-mode screen comes back inverted, and
+            // refusing to try costs a scan that would have worked.
+            inverted: attempt % 2 === 0,
+          },
+          [image.data.buffer],
+        );
+        return;
+      }
+      const decoded = jsQR(image.data, image.width, image.height, {
+        inversionAttempts: "attemptBoth",
+      });
+      if (decoded?.data) {
+        found(decoded.data.trim());
+        return;
+      }
+      next(60);
+    }
+
+    if (worker) {
+      worker.onmessage = (event: MessageEvent<string | null>) => {
+        if (stopped) return;
+        if (event.data) found(event.data);
+        else next();
+      };
+      worker.onerror = (event) => {
+        report(`worker failed: ${event.message}`);
+        worker?.terminate();
+        worker = null;
+        next();
+      };
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -99,6 +168,7 @@ export function QrScanner({
       );
       return () => {
         stopped = true;
+        worker?.terminate();
       };
     }
 
@@ -116,6 +186,14 @@ export function QrScanner({
         const settings = track?.getSettings();
         report(`opened ${track?.label || "sin nombre"} at ${settings?.width}x${settings?.height}`);
 
+        // Cameras that can be told to keep focusing are told to: a webcam
+        // parked at infinity never resolves a code held in front of it.
+        await track
+          ?.applyConstraints({
+            advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
+          })
+          .catch(() => undefined);
+
         if (videoRef.current) {
           videoRef.current.srcObject = granted;
           await videoRef.current.play().catch(() => undefined);
@@ -126,7 +204,7 @@ export function QrScanner({
         const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
         if (!stopped) setCameras(devices.filter((d) => d.kind === "videoinput"));
 
-        frame = requestAnimationFrame(read);
+        next(0);
       })
       .catch((error: unknown) => {
         report(describe(error));
@@ -135,7 +213,8 @@ export function QrScanner({
 
     return () => {
       stopped = true;
-      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      worker?.terminate();
       stream?.getTracks().forEach((track) => track.stop());
     };
   }, [onScanned, report, chosen]);

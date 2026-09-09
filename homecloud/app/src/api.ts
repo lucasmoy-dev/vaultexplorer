@@ -11,6 +11,12 @@ export interface Peer {
   id: string;
   name: string;
   connected: boolean;
+  /**
+   * How much of the folder that device already has, 0-100, or null when the
+   * engine cannot say. This is the only way the device that handed a folder
+   * out can see whether the other end has finished.
+   */
+  completion: number | null;
 }
 
 export interface SharedFolder {
@@ -29,6 +35,8 @@ export interface SharedFolder {
   wifiOnly: boolean;
   pausedByNetwork: boolean;
   hasPassword: boolean;
+  /** Seconds left at the speed measured just now, or null if nothing moves. */
+  etaSeconds: number | null;
 }
 
 export interface OfferedFolder {
@@ -160,6 +168,32 @@ export function formatRate(bytesPerSecond: number): string {
   const mb = bytesPerSecond / 1_000_000;
   if (mb >= 1) return `${mb.toFixed(1).replace(".", ",")} MB/s`;
   return `${Math.round(bytesPerSecond / 1000)} kB/s`;
+}
+
+/**
+ * How long is left, in the roundest terms that are still useful: "2 h 15 min",
+ * "8 min", "45 s". A percentage alone never answers the question people
+ * actually have, which is whether to wait for it.
+ */
+export function formatEta(seconds: number): string {
+  if (seconds >= 36 * 3600) return "más de un día";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  if (hours > 0) return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
+  if (seconds >= 60) return `${Math.max(1, Math.round(seconds / 60))} min`;
+  return `${Math.max(1, seconds)} s`;
+}
+
+/** What is left of a sync, as one line: "faltan 2 h 15 min · 15,0 MB/s". */
+export function remaining(folder: {
+  etaSeconds: number | null;
+  bytesPerSecond: number;
+}): string | null {
+  const parts: string[] = [];
+  if (folder.etaSeconds !== null) parts.push(`faltan ${formatEta(folder.etaSeconds)}`);
+  const rate = formatRate(folder.bytesPerSecond);
+  if (rate) parts.push(rate);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 /** The tail of a device ID, so two devices with the same name are still telling apart. */

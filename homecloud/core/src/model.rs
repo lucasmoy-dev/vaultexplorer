@@ -14,6 +14,14 @@ pub struct Peer {
     /// What the peer calls itself, e.g. "Pixel de Lucas".
     pub name: String,
     pub connected: bool,
+    /// How much of this folder that peer already has, 0-100. `None` when the
+    /// engine cannot say — a peer that has never connected, or a folder that
+    /// is paused here and therefore has no numbers at all.
+    ///
+    /// This is the answer to "is the phone finished yet" asked from the
+    /// device that handed the folder out, which otherwise only ever sees its
+    /// own copy and reports itself up to date while the other end is at 4%.
+    pub completion: Option<u8>,
 }
 
 /// What a folder is doing right now, in the terms the one status dot uses.
@@ -71,6 +79,13 @@ pub struct SharedFolder {
     /// Codes for this folder are encrypted, and cannot be used without the
     /// password. Off unless someone set one.
     pub has_password: bool,
+    /// How long the rest of the download would take at the speed measured
+    /// just now, in seconds. `None` when nothing is moving, so there is no
+    /// honest estimate to give.
+    ///
+    /// A percentage on its own does not say whether to wait or walk away;
+    /// this and `bytes_per_second` are what turn it into a decision.
+    pub eta_seconds: Option<u64>,
 }
 
 /// Someone is asking to share something with this device.

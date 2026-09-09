@@ -8,6 +8,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -29,7 +30,66 @@ pub struct Syncthing {
     /// anything it does not understand, and the interface language is one of
     /// those things.
     preferences_path: Mutex<Option<PathBuf>>,
+    /// How far along each folder's download was last time it was asked, so a
+    /// speed and a time left can be worked out from the difference. The engine
+    /// stopped publishing transfer rates in 2.x, so this is now the only
+    /// source of "how fast is this going".
+    progress: Mutex<HashMap<String, Progress>>,
+    /// When each device was last seen connected. Read through a grace period,
+    /// because a link that blinks is not a link that is down.
+    last_seen: Mutex<HashMap<String, Instant>>,
+    /// How much of a folder a peer has, and when that was asked. Kept because
+    /// it is one request per peer per folder and the poll runs every second
+    /// and a half.
+    completion: Mutex<HashMap<(String, String), (Instant, u8)>>,
+    /// Sizes a folder reported while the engine was still willing to say. A
+    /// paused folder reports zeros for everything, and "0 B" is a lie a person
+    /// reads as "my files are gone".
+    sizes: Mutex<Option<HashMap<String, RememberedSize>>>,
+    /// When those sizes last reached the disk, so remembering them does not
+    /// mean writing a file every poll.
+    sizes_saved: Mutex<Option<Instant>>,
+    /// Where the DeviceConnected event stream has been read up to.
+    names_cursor: Mutex<i64>,
 }
+
+/// One reading of a folder's download, and the speed derived from it.
+struct Progress {
+    at: Instant,
+    need: u64,
+    /// Smoothed bytes per second. Raw samples jump around enough that a time
+    /// left computed from one would be unreadable.
+    rate: f64,
+}
+
+/// What a folder held the last time the engine would say.
+#[derive(Clone, Copy)]
+struct RememberedSize {
+    bytes: u64,
+    files: u64,
+    need: u64,
+}
+
+/// A device that was connected this recently still counts as connected.
+///
+/// Syncthing 2 keeps several connections to the same device and swaps between
+/// them, so a heavy transfer reports "not connected" for a moment several
+/// times a minute. Nothing is actually interrupted, but the folder went dark
+/// and said "Sin conexión" every time.
+const CONNECTION_GRACE: Duration = Duration::from_secs(25);
+
+/// How long a peer's completion figure is reused before asking again.
+const COMPLETION_TTL: Duration = Duration::from_secs(4);
+
+/// Weight of the newest speed sample. Lower is steadier and slower to react;
+/// at one sample every 1.5 s this settles in about five seconds.
+const RATE_SMOOTHING: f64 = 0.3;
+
+/// How often remembered sizes are written to disk at most.
+const SIZE_PERSIST_EVERY: Duration = Duration::from_secs(60);
+
+/// How many direct addresses a pairing code carries at most.
+const MAX_HINTS: usize = 2;
 
 /// A conflict scan gives up past this many entries. A folder large enough to
 /// hit the cap is one where an exact count is not worth the disk churn on
@@ -44,6 +104,12 @@ impl Syncthing {
             http: reqwest::Client::new(),
             auto_accept_root: Mutex::new(None),
             preferences_path: Mutex::new(None),
+            progress: Mutex::new(HashMap::new()),
+            last_seen: Mutex::new(HashMap::new()),
+            completion: Mutex::new(HashMap::new()),
+            sizes: Mutex::new(None),
+            sizes_saved: Mutex::new(None),
+            names_cursor: Mutex::new(0),
         }
     }
 
@@ -277,10 +343,49 @@ impl Syncthing {
         Ok(dropped)
     }
 
+    /// Renames this device, and makes the other devices hear about it.
+    ///
+    /// The name is not part of how devices find or trust each other — that is
+    /// the device ID, which never changes — so renaming must not disturb
+    /// anything. It does not: the engine keeps its connections and its folders
+    /// exactly as they were.
+    ///
+    /// The catch is that the name only travels in the handshake, so peers keep
+    /// showing the old one until they next reconnect, which could be days. A
+    /// single re-handshake per peer fixes that in a few seconds; transfers pick
+    /// up where they left off, because Syncthing resumes by block. It is done
+    /// only when the name really changed, so nothing happens when the settings
+    /// screen is saved with the same name in it.
     pub async fn set_this_device_name(&self, name: &str) -> Result<()> {
-        let id = self.this_device().await?.id;
-        self.patch(&format!("/rest/config/devices/{id}"), json!({ "name": name })).await?;
+        let me = self.this_device().await?;
+        if me.name == name {
+            return Ok(());
+        }
+        self.patch(&format!("/rest/config/devices/{}", me.id), json!({ "name": name }))
+            .await?;
+        self.reannounce_to_peers(&me.id).await;
         Ok(())
+    }
+
+    /// Drops and re-dials each peer so it hears this device's name again.
+    /// Best effort throughout: a peer that will not come back was already
+    /// unreachable, and the rename itself has been saved either way.
+    async fn reannounce_to_peers(&self, me: &str) {
+        let Ok(devices) = self.get("/rest/config/devices").await else { return };
+        let Ok(devices) = serde_json::from_value::<Vec<DeviceConfig>>(devices) else { return };
+        let peers: Vec<String> = devices
+            .into_iter()
+            .map(|d| d.device_id)
+            .filter(|id| id != me)
+            .collect();
+
+        for id in &peers {
+            let _ = self.post(&format!("/rest/system/pause?device={id}"), json!({})).await;
+        }
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        for id in &peers {
+            let _ = self.post(&format!("/rest/system/resume?device={id}"), json!({})).await;
+        }
     }
 
     /// Applies the settings that make HomeCloud behave the way it promises,
@@ -336,15 +441,16 @@ impl Syncthing {
     // ---- folders -------------------------------------------------------
 
     pub async fn folders(&self) -> Result<Vec<SharedFolder>> {
+        // Cheap, and this is the one call every screen makes on a loop: it is
+        // where a peer that renamed itself gets noticed.
+        let _ = self.adopt_announced_names().await;
+
         let configured: Vec<FolderConfig> = serde_json::from_value(self.get("/rest/config/folders").await?)?;
         let devices: Vec<DeviceConfig> = serde_json::from_value(self.get("/rest/config/devices").await?)?;
         let names: HashMap<&str, &str> =
             devices.iter().map(|d| (d.device_id.as_str(), d.name.as_str())).collect();
         let connected = self.connected_devices().await?;
         let me = self.this_device().await?.id;
-        // One reading for every folder: the engine reports transfer rates for
-        // the device as a whole, not per folder.
-        let (down, up) = self.transfer_rates().await;
         // Read once for the whole listing: these live in HomeCloud's own
         // preferences, which the engine knows nothing about.
         let wifi_only = self.folder_ids_in("wifiOnly");
@@ -354,7 +460,7 @@ impl Syncthing {
         for folder in configured {
             let status = self.get(&format!("/rest/db/status?folder={}", folder.id)).await?;
 
-            let peers: Vec<Peer> = folder
+            let mut peers: Vec<Peer> = folder
                 .devices
                 .iter()
                 .filter(|d| d.device_id != me)
@@ -366,8 +472,16 @@ impl Syncthing {
                         .map(|n| n.to_string())
                         .unwrap_or_else(|| short_id(&d.device_id)),
                     connected: connected.contains(&d.device_id),
+                    completion: None,
                 })
                 .collect();
+            // What the other end still has to fetch. Asked for from here
+            // because the folder's own status only ever describes this copy:
+            // the device that handed a folder out reads "Al día" while the
+            // phone it gave it to is still at four per cent.
+            for peer in peers.iter_mut() {
+                peer.completion = self.peer_completion(&folder.id, &peer.id).await;
+            }
 
             // Asked for only when something is actually wrong: it is another
             // round trip, and this runs for every folder every second and a half.
@@ -378,17 +492,32 @@ impl Syncthing {
             };
             let state = folder_state(&folder, &status, &peers, trouble);
             let syncing = matches!(state, FolderState::Syncing { .. });
+
+            // A paused folder answers zero to everything it is asked, so what
+            // it held a moment ago is what gets shown instead.
+            let engine = RememberedSize {
+                bytes: status["globalBytes"].as_u64().unwrap_or(0),
+                files: status["globalFiles"].as_u64().unwrap_or(0),
+                need: status["needBytes"].as_u64().unwrap_or(0),
+            };
+            let size = self.size_of(&folder.id, engine, folder.paused);
+
+            let rate = if syncing { self.folder_rate(&folder.id, size.need) } else {
+                self.forget_rate(&folder.id);
+                0
+            };
             out.push(SharedFolder {
                 state,
                 conflicts: count_conflicts(Path::new(&folder.path)),
-                bytes: status["globalBytes"].as_u64().unwrap_or(0),
-                files: status["globalFiles"].as_u64().unwrap_or(0),
+                bytes: size.bytes,
+                files: size.files,
                 // Only while something is actually moving: a rate left on
                 // screen next to a finished folder reads as a rate for it.
-                bytes_per_second: if syncing { down.max(up) } else { 0 },
+                bytes_per_second: rate,
+                eta_seconds: eta(size.need, rate),
                 read_only: folder.folder_type == "receiveonly",
                 free_bytes: crate::disk::free_bytes(Path::new(&folder.path)),
-                pending_bytes: status["needBytes"].as_u64().unwrap_or(0),
+                pending_bytes: size.need,
                 wifi_only: wifi_only.contains(&folder.id),
                 paused_by_network: paused_by_network.contains(&folder.id),
                 has_password: self.folder_has_password(&folder.id),
@@ -399,6 +528,156 @@ impl Syncthing {
             });
         }
         Ok(out)
+    }
+
+    /// How much of `folder_id` the device `peer` already has, 0-100.
+    ///
+    /// Cached for a few seconds: this is one request per peer per folder, on a
+    /// loop that runs every second and a half.
+    async fn peer_completion(&self, folder_id: &str, peer: &str) -> Option<u8> {
+        let key = (folder_id.to_string(), peer.to_string());
+        if let Ok(cache) = self.completion.lock() {
+            if let Some((at, value)) = cache.get(&key) {
+                if at.elapsed() < COMPLETION_TTL {
+                    return Some(*value);
+                }
+            }
+        }
+        let answer = self
+            .get(&format!("/rest/db/completion?folder={folder_id}&device={peer}"))
+            .await
+            .ok()?;
+        let percent = answer["completion"].as_f64()?.clamp(0.0, 100.0).round() as u8;
+        if let Ok(mut cache) = self.completion.lock() {
+            cache.insert(key, (Instant::now(), percent));
+        }
+        Some(percent)
+    }
+
+    /// Bytes per second for one folder, from how much less it needs than it
+    /// did a moment ago.
+    ///
+    /// Syncthing 2 dropped the per-device transfer rates the app used to read,
+    /// which is why no speed was ever shown. `needBytes` falls block by block
+    /// rather than file by file, so the difference between two polls is a real
+    /// measurement even inside one large file.
+    fn folder_rate(&self, folder_id: &str, need: u64) -> u64 {
+        let now = Instant::now();
+        let Ok(mut seen) = self.progress.lock() else { return 0 };
+        let entry = seen
+            .entry(folder_id.to_string())
+            .or_insert(Progress { at: now, need, rate: 0.0 });
+        let elapsed = now.duration_since(entry.at).as_secs_f64();
+        // Two readings taken together measure nothing but the clock.
+        if elapsed < 0.4 {
+            return entry.rate.max(0.0) as u64;
+        }
+        // Needing *more* than before means new files turned up, not a negative
+        // speed.
+        let moved = entry.need.saturating_sub(need) as f64;
+        let sample = moved / elapsed;
+        entry.rate = if entry.rate <= 0.0 {
+            sample
+        } else {
+            entry.rate * (1.0 - RATE_SMOOTHING) + sample * RATE_SMOOTHING
+        };
+        entry.at = now;
+        entry.need = need;
+        entry.rate.max(0.0) as u64
+    }
+
+    /// Drops a folder's speed history once it stops syncing, so resuming later
+    /// does not measure against a reading from an hour ago.
+    fn forget_rate(&self, folder_id: &str) {
+        if let Ok(mut seen) = self.progress.lock() {
+            seen.remove(folder_id);
+        }
+    }
+
+    /// The sizes to show for a folder: what the engine just said, or what it
+    /// said last time if it has stopped answering because the folder is paused.
+    fn size_of(&self, folder_id: &str, engine: RememberedSize, paused: bool) -> RememberedSize {
+        let blank = engine.bytes == 0 && engine.files == 0;
+        if paused && blank {
+            if let Some(remembered) = self.remembered_size(folder_id) {
+                return remembered;
+            }
+        }
+        if !blank {
+            self.remember_size(folder_id, engine);
+        }
+        engine
+    }
+
+    fn remembered_size(&self, folder_id: &str) -> Option<RememberedSize> {
+        self.load_sizes();
+        let sizes = self.sizes.lock().ok()?;
+        sizes.as_ref()?.get(folder_id).copied()
+    }
+
+    /// Keeps the last real reading, on disk as well as in memory: a folder
+    /// paused for the night is one the app will be restarted in front of.
+    fn remember_size(&self, folder_id: &str, size: RememberedSize) {
+        self.load_sizes();
+        let changed = {
+            let Ok(mut sizes) = self.sizes.lock() else { return };
+            let map = sizes.get_or_insert_with(HashMap::new);
+            let before = map.get(folder_id).copied();
+            map.insert(folder_id.to_string(), size);
+            !matches!(before, Some(old) if old.bytes == size.bytes && old.files == size.files && old.need == size.need)
+        };
+        if !changed {
+            return;
+        }
+        // Writing the file on every poll would be a disk write every second
+        // and a half for a number nobody reads until a restart.
+        {
+            let Ok(mut saved) = self.sizes_saved.lock() else { return };
+            if let Some(at) = *saved {
+                if at.elapsed() < SIZE_PERSIST_EVERY {
+                    return;
+                }
+            }
+            *saved = Some(Instant::now());
+        }
+        self.persist_sizes();
+    }
+
+    fn load_sizes(&self) {
+        let Ok(mut sizes) = self.sizes.lock() else { return };
+        if sizes.is_some() {
+            return;
+        }
+        let mut loaded = HashMap::new();
+        if let Some(stored) = self.read_preferences()["folderSizes"].as_object() {
+            for (id, value) in stored {
+                loaded.insert(
+                    id.clone(),
+                    RememberedSize {
+                        bytes: value["bytes"].as_u64().unwrap_or(0),
+                        files: value["files"].as_u64().unwrap_or(0),
+                        need: value["need"].as_u64().unwrap_or(0),
+                    },
+                );
+            }
+        }
+        *sizes = Some(loaded);
+    }
+
+    fn persist_sizes(&self) {
+        let Ok(sizes) = self.sizes.lock() else { return };
+        let Some(map) = sizes.as_ref() else { return };
+        let stored: serde_json::Map<String, Value> = map
+            .iter()
+            .map(|(id, size)| {
+                (
+                    id.clone(),
+                    json!({ "bytes": size.bytes, "files": size.files, "need": size.need }),
+                )
+            })
+            .collect();
+        drop(sizes);
+        self.write_preference("folderSizes", Value::Object(stored));
     }
 
     /// How much a folder holds, as every device agrees it should. Zero when the
@@ -423,21 +702,6 @@ impl Syncthing {
             .await
             .ok()?;
         errors["errors"][0]["error"].as_str().map(str::to_string)
-    }
-
-    /// Bytes per second in and out, as the engine has measured them.
-    ///
-    /// Best effort: a rate that cannot be read is reported as zero rather than
-    /// failing the whole folder listing, which happens every second and a half.
-    async fn transfer_rates(&self) -> (u64, u64) {
-        let Ok(status) = self.get("/rest/system/connections").await else {
-            return (0, 0);
-        };
-        let total = &status["total"];
-        (
-            total["inBytesPerSecond"].as_f64().unwrap_or(0.0).max(0.0) as u64,
-            total["outBytesPerSecond"].as_f64().unwrap_or(0.0).max(0.0) as u64,
-        )
     }
 
     // ---- metered connections -------------------------------------------
@@ -607,9 +871,16 @@ impl Syncthing {
         Ok(())
     }
 
+    /// The devices this one can currently reach.
+    ///
+    /// A device counts as reachable for [`CONNECTION_GRACE`] after it was last
+    /// seen, which is not fudging: Syncthing 2 holds several connections to the
+    /// same device and swaps between them, so a folder halfway through a large
+    /// transfer reported "not connected" for one poll several times a minute.
+    /// Nothing stopped moving; only the screen said otherwise.
     async fn connected_devices(&self) -> Result<Vec<String>> {
         let value = self.get("/rest/system/connections").await?;
-        Ok(value["connections"]
+        let now: Vec<String> = value["connections"]
             .as_object()
             .map(|m| {
                 m.iter()
@@ -617,7 +888,67 @@ impl Syncthing {
                     .map(|(k, _)| k.clone())
                     .collect()
             })
-            .unwrap_or_default())
+            .unwrap_or_default();
+
+        let Ok(mut seen) = self.last_seen.lock() else { return Ok(now) };
+        let at = Instant::now();
+        for device in &now {
+            seen.insert(device.clone(), at);
+        }
+        seen.retain(|_, when| when.elapsed() < CONNECTION_GRACE);
+        Ok(seen.keys().cloned().collect())
+    }
+
+    /// Adopts the name a peer announced when it last connected.
+    ///
+    /// A device's name travels in the handshake, and the engine writes it down
+    /// only the first time, when it has nothing else. So renaming a phone
+    /// changed nothing on the laptop: it went on showing the name from the day
+    /// they were paired. Reading it back from the connection events is what
+    /// makes a rename show up on every device instead of only its own.
+    ///
+    /// Best effort, and never fatal: this rides along with the folder poll.
+    async fn adopt_announced_names(&self) -> Result<()> {
+        let since = self.names_cursor.lock().map(|c| *c).unwrap_or(0);
+        let events = self
+            .get(&format!(
+                "/rest/events?since={since}&timeout=0&events=DeviceConnected"
+            ))
+            .await?;
+        let Some(events) = events.as_array() else { return Ok(()) };
+
+        let mut latest = since;
+        let mut announced: HashMap<String, String> = HashMap::new();
+        for event in events {
+            latest = latest.max(event["id"].as_i64().unwrap_or(0));
+            let (Some(id), Some(name)) = (
+                event["data"]["id"].as_str(),
+                event["data"]["deviceName"].as_str(),
+            ) else {
+                continue;
+            };
+            if is_a_real_name(name) {
+                announced.insert(id.to_string(), name.to_string());
+            }
+        }
+        if let Ok(mut cursor) = self.names_cursor.lock() {
+            *cursor = latest;
+        }
+
+        for (id, name) in announced {
+            let known = self
+                .get(&format!("/rest/config/devices/{id}"))
+                .await
+                .ok()
+                .and_then(|d| d["name"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            if known != name {
+                let _ = self
+                    .patch(&format!("/rest/config/devices/{id}"), json!({ "name": name }))
+                    .await;
+            }
+        }
+        Ok(())
     }
 
     /// Starts sharing a local directory and returns the code that lets another
@@ -687,7 +1018,7 @@ impl Syncthing {
                 }
             }
         }
-        hints
+        best_hints(hints)
     }
 
     /// The code for an already-shared folder, so it can be handed to a second
@@ -1084,6 +1415,18 @@ struct DeviceConfig {
     name: String,
 }
 
+/// How long the rest of a download takes at the speed it is going.
+///
+/// `None` rather than a very large number when nothing is moving: "faltan
+/// 2 h" that never counts down is worse than saying nothing, and a stalled
+/// folder is exactly when a made-up estimate does the most damage.
+fn eta(need: u64, bytes_per_second: u64) -> Option<u64> {
+    if need == 0 || bytes_per_second == 0 {
+        return None;
+    }
+    Some(need / bytes_per_second)
+}
+
 fn folder_state(
     folder: &FolderConfig,
     status: &Value,
@@ -1121,6 +1464,26 @@ fn folder_state(
         return FolderState::Disconnected;
     }
     FolderState::UpToDate
+}
+
+/// The few addresses worth putting in a pairing code.
+///
+/// Every address makes the QR denser, and a dense QR read off one screen by
+/// another phone's camera is the difference between pairing in two seconds and
+/// giving up and typing the code by hand. A machine running containers offers
+/// half a dozen addresses no other device can reach; those go last and, past
+/// the cap, not at all. Discovery finds anything left out — the hints only
+/// make the first connection quicker.
+fn best_hints(mut hints: Vec<String>) -> Vec<String> {
+    hints.sort_by_key(|address| if is_a_home_address(address) { 0 } else { 1 });
+    hints.truncate(MAX_HINTS);
+    hints
+}
+
+/// A home network's own numbering, as opposed to the ranges Docker and the
+/// like hand themselves.
+fn is_a_home_address(address: &str) -> bool {
+    address.contains("://192.168.") || address.contains("://10.")
 }
 
 /// Folder IDs are shared between devices and never shown, so they only have to
@@ -1336,6 +1699,62 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_time_left_needs_something_actually_moving() {
+        assert_eq!(eta(1_000, 100), Some(10));
+        // A stalled folder gets no estimate rather than an infinite one.
+        assert_eq!(eta(1_000, 0), None);
+        assert_eq!(eta(0, 100), None);
+    }
+
+    #[test]
+    fn a_pairing_code_carries_the_addresses_a_phone_can_reach() {
+        let hints = best_hints(vec![
+            "tcp://172.20.0.1:22000".into(),
+            "tcp://192.168.1.151:22000".into(),
+            "tcp://172.23.0.1:22000".into(),
+            "tcp://10.0.0.4:22000".into(),
+        ]);
+        assert_eq!(
+            hints,
+            vec!["tcp://192.168.1.151:22000", "tcp://10.0.0.4:22000"],
+            "container addresses must not push a real one out of the code"
+        );
+    }
+
+    #[test]
+    fn a_folder_speed_is_how_much_less_it_needs_than_before() {
+        let client = Syncthing::new("http://127.0.0.1:1", "k");
+        // The first reading has nothing to compare against.
+        assert_eq!(client.folder_rate("f", 1_000_000), 0);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let rate = client.folder_rate("f", 500_000);
+        assert!(
+            (700_000..=1_300_000).contains(&rate),
+            "half a megabyte in half a second is about a megabyte a second, got {rate}"
+        );
+        // A folder that grows mid-sync is not going backwards.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(client.folder_rate("f", 900_000) > 0);
+    }
+
+    #[test]
+    fn a_paused_folder_keeps_the_size_it_had() {
+        let client = Syncthing::new("http://127.0.0.1:1", "k");
+        let real = RememberedSize { bytes: 8_000_000, files: 12, need: 3_000_000 };
+        let blank = RememberedSize { bytes: 0, files: 0, need: 0 };
+
+        assert_eq!(client.size_of("f", real, false).bytes, 8_000_000);
+        // Paused, the engine answers zero to everything. Showing that reads as
+        // "your files are gone".
+        let shown = client.size_of("f", blank, true);
+        assert_eq!(shown.bytes, 8_000_000);
+        assert_eq!(shown.files, 12);
+        assert_eq!(shown.need, 3_000_000);
+        // A folder that is genuinely empty and not paused stays empty.
+        assert_eq!(client.size_of("g", blank, false).bytes, 0);
+    }
 
     #[test]
     fn folder_ids_are_slugged_and_unique() {

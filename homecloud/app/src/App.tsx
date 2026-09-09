@@ -4,8 +4,8 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   api,
   formatBytes,
-  formatRate,
   peerSummary,
+  remaining,
   shortfall,
   shortId,
   type CodePreview,
@@ -202,9 +202,9 @@ export default function App() {
                 </span>
                 <span className="folder-state">
                   {stateLabel(folder.state)}
-                  {folder.bytesPerSecond > 0 && (
-                    <span className="folder-rate">{formatRate(folder.bytesPerSecond)}</span>
-                  )}
+                  {/* "Sincronizando 9%" says nothing about whether to wait for
+                      it. How long is left, and how fast, is what does. */}
+                  {remaining(folder) && <span className="folder-rate">{remaining(folder)}</span>}
                 </span>
               </button>
               {folder.conflicts > 0 && (
@@ -571,7 +571,27 @@ function FolderSheet({
   // are looked at once when a folder is set up and never again. Out of the way
   // by default so the actions you actually use are the ones on screen.
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // What the user just asked for, until the next poll confirms it. A checkbox
+  // that springs back for a second and a half reads as one that did not work,
+  // and gets clicked again.
+  const [wanted, setWanted] = useState<{ readOnly?: boolean; wifiOnly?: boolean }>({});
   const paused = folder.state.kind === "paused";
+  const readOnly = wanted.readOnly ?? folder.readOnly;
+  const wifiOnly = wanted.wifiOnly ?? folder.wifiOnly;
+
+  // Once the engine agrees, the guess has nothing left to say.
+  useEffect(() => {
+    setWanted((current) => {
+      const settled = { ...current };
+      if (settled.readOnly === folder.readOnly || settled.readOnly === undefined) {
+        delete settled.readOnly;
+      }
+      if (settled.wifiOnly === folder.wifiOnly || settled.wifiOnly === undefined) {
+        delete settled.wifiOnly;
+      }
+      return settled;
+    });
+  }, [folder.readOnly, folder.wifiOnly]);
 
   async function showCode() {
     try {
@@ -582,11 +602,12 @@ function FolderSheet({
   }
 
   /** Every action here changes something in the engine and then re-reads it. */
-  async function act(change: () => Promise<void>) {
+  async function act(change: () => Promise<void>, onFailed?: () => void) {
     try {
       await change();
       onChanged();
     } catch (e) {
+      onFailed?.();
       onError(String(e));
     }
   }
@@ -597,14 +618,19 @@ function FolderSheet({
     <div className="sheet-body">
       <p className="sheet-line">
         <StatusDot state={folder.state} /> {stateLabel(folder.state)}
-        {folder.bytesPerSecond > 0 && (
-          <span className="muted"> · {formatRate(folder.bytesPerSecond)}</span>
-        )}
       </p>
+      {remaining(folder) && <p className="sheet-line muted">{remaining(folder)}</p>}
       <p className="sheet-line muted">
         {folder.files} ficheros · {formatBytes(folder.bytes)}
         {folder.freeBytes !== null && ` · ${formatBytes(folder.freeBytes)} libres en el disco`}
       </p>
+      {/* A folder stopped halfway still has a real size and a real amount
+          left; the engine simply refuses to say so while it is paused. */}
+      {paused && folder.pendingBytes > 0 && (
+        <p className="sheet-line muted">
+          Le faltan {formatBytes(folder.pendingBytes)} por bajar.
+        </p>
+      )}
 
       <div className="sheet-actions">
         <button
@@ -650,8 +676,16 @@ function FolderSheet({
           <label className="toggle">
             <input
               type="checkbox"
-              checked={folder.readOnly}
-              onChange={(e) => act(() => api.setFolderReadOnly(folder.id, e.target.checked))}
+              checked={readOnly}
+              onChange={(e) => {
+                const value = e.target.checked;
+                setWanted((current) => ({ ...current, readOnly: value }));
+                void act(
+                  () => api.setFolderReadOnly(folder.id, value),
+                  // A guess that turned out wrong must not outlive the attempt.
+                  () => setWanted((current) => ({ ...current, readOnly: undefined })),
+                );
+              }}
             />
             <span>
               Solo lectura
@@ -662,8 +696,15 @@ function FolderSheet({
           <label className="toggle">
             <input
               type="checkbox"
-              checked={folder.wifiOnly}
-              onChange={(e) => act(() => api.setFolderWifiOnly(folder.id, e.target.checked))}
+              checked={wifiOnly}
+              onChange={(e) => {
+                const value = e.target.checked;
+                setWanted((current) => ({ ...current, wifiOnly: value }));
+                void act(
+                  () => api.setFolderWifiOnly(folder.id, value),
+                  () => setWanted((current) => ({ ...current, wifiOnly: undefined })),
+                );
+              }}
             />
             <span>
               Solo con wifi
@@ -688,6 +729,14 @@ function FolderSheet({
                   <span className={`dot ${peer.connected ? "dot-ok" : "dot-idle"}`} aria-hidden />
                   {peer.name}
                   <span className="muted mono">{shortId(peer.id)}</span>
+                  {/* Whether the other end has finished. Without it this
+                      device reads "Al día" while the phone it gave the folder
+                      to is still at four per cent. */}
+                  {peer.completion !== null && (
+                    <span className="muted">
+                      {peer.completion >= 100 ? "al día" : `${peer.completion}%`}
+                    </span>
+                  )}
                   <span className="muted">{peer.connected ? "conectado" : "sin conexión"}</span>
                 </li>
               ))}
