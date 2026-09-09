@@ -71,6 +71,23 @@ object Repo {
         )
     }
 
+    /** What can still be recovered out of a folder, newest first. */
+    fun deletedFiles(folderId: String): List<DeletedFile> =
+        (Native.request("deletedFiles", JSONObject().put("folderId", folderId)) as JSONArray)
+            .map { DeletedFile.from(it) }
+
+    /** Puts one back where it was, which sends it to the other devices again. */
+    fun restoreDeleted(folderId: String, id: String): String =
+        Native.request(
+            "restoreDeleted",
+            JSONObject().put("folderId", folderId).put("id", id),
+        ) as String
+
+    /** Makes sure deletions are kept somewhere recoverable. Idempotent. */
+    fun ensureDeletionPolicy() {
+        Native.request("ensureDeletionPolicy")
+    }
+
     fun stopSharing(folderId: String) {
         Native.request("stopSharing", JSONObject().put("folderId", folderId))
     }

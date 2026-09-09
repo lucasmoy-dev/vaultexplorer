@@ -116,6 +116,13 @@ data class Settings(
     val localNetworkOnly: Boolean,
     val uploadLimitKbps: Int,
     val downloadLimitKbps: Int,
+    /**
+     * Where a file goes when another device deletes or replaces it: "bin" is
+     * the desktop's recycle bin, "copies" the hidden folder beside the files —
+     * which is what a phone gets, since Android has no bin an app may write to
+     * on its own — and "nothing" destroys it.
+     */
+    val deletionPolicy: String,
     val keepVersions: Int,
     val engineVersion: String,
     val language: String,
@@ -126,6 +133,7 @@ data class Settings(
         put("localNetworkOnly", localNetworkOnly)
         put("uploadLimitKbps", uploadLimitKbps)
         put("downloadLimitKbps", downloadLimitKbps)
+        put("deletionPolicy", deletionPolicy)
         put("keepVersions", keepVersions)
         put("engineVersion", engineVersion)
         put("language", language)
@@ -138,6 +146,7 @@ data class Settings(
             localNetworkOnly = json.getBoolean("localNetworkOnly"),
             uploadLimitKbps = json.getInt("uploadLimitKbps"),
             downloadLimitKbps = json.getInt("downloadLimitKbps"),
+            deletionPolicy = json.optString("deletionPolicy", "copies"),
             keepVersions = json.getInt("keepVersions"),
             engineVersion = json.optString("engineVersion"),
             language = json.optString("language", "es"),
@@ -190,11 +199,22 @@ data class Destination(
     }
 }
 
-/** A transfer rate a person can read, e.g. "2,4 MB/s". */
+/**
+ * A transfer rate a person can read, e.g. "2,4 MB/s".
+ *
+ * The separator is fixed rather than the phone's: `String.format` follows the
+ * device's language, so on a phone set to English the speed read "2.4 MB/s"
+ * next to a size that says "5,0 GB" — the app contradicting itself in the
+ * same line.
+ */
 fun formatRate(bytesPerSecond: Long): String {
     if (bytesPerSecond <= 0) return ""
     val mb = bytesPerSecond / 1_000_000.0
-    return if (mb >= 1) String.format("%.1f MB/s", mb) else "${bytesPerSecond / 1000} kB/s"
+    return if (mb >= 1) {
+        String.format(java.util.Locale.ROOT, "%.1f", mb).replace('.', ',') + " MB/s"
+    } else {
+        "${bytesPerSecond / 1000} kB/s"
+    }
 }
 
 /**
@@ -223,6 +243,96 @@ fun remaining(folder: SharedFolder): String? {
     return parts.joinToString(" · ").ifEmpty { null }
 }
 
+/**
+ * What the notification says while the app is closed.
+ *
+ * The notification is the only thing most people see of a sync that takes
+ * hours, and it used to read "Sincronizando tus carpetas" whether it was
+ * moving a gigabyte, waiting for wifi or finished an hour ago. Same words in
+ * every state means the words say nothing.
+ */
+data class Progress(val title: String, val detail: String?, val percent: Int?)
+
+fun notificationProgress(folders: List<SharedFolder>): Progress {
+    if (folders.isEmpty()) {
+        return Progress("HomeCloud en marcha", "Todavía no compartes ninguna carpeta", null)
+    }
+
+    // Something a person has to fix comes before anything else.
+    folders.firstOrNull { it.state is FolderState.Problem }?.let {
+        return Progress("«${it.label}» necesita que mires", (it.state as FolderState.Problem).detail, null)
+    }
+
+    val syncing = folders.filter { it.state is FolderState.Syncing }
+    if (syncing.isNotEmpty()) {
+        val total = syncing.sumOf { it.bytes }
+        val pending = syncing.sumOf { it.pendingBytes }
+        val percent = if (total > 0) (100 - pending * 100 / total).coerceIn(0, 100).toInt() else 0
+        val rate = syncing.sumOf { it.bytesPerSecond }
+        val eta = if (rate > 0 && pending > 0) pending / rate else null
+        val title = if (syncing.size == 1) {
+            "Sincronizando «${syncing.first().label}» $percent%"
+        } else {
+            "Sincronizando ${syncing.size} carpetas · $percent%"
+        }
+        val detail = listOfNotNull(
+            eta?.let { "faltan ${formatEta(it)}" },
+            formatRate(rate).ifEmpty { null },
+        ).joinToString(" · ").ifEmpty { formatBytes(pending) + " por bajar" }
+        return Progress(title, detail, percent)
+    }
+
+    if (folders.any { it.pausedByNetwork }) {
+        return Progress("En pausa hasta que haya wifi", "Se reanuda solo al conectarte", null)
+    }
+    if (folders.all { it.state == FolderState.Paused }) {
+        return Progress("En pausa", "Nada se está sincronizando ahora mismo", null)
+    }
+    if (folders.all { it.state == FolderState.Disconnected }) {
+        return Progress("Sin conexión con tus dispositivos", "Se pondrá al día en cuanto aparezcan", null)
+    }
+    return Progress(
+        "Todo al día",
+        "${folders.size} ${if (folders.size == 1) "carpeta" else "carpetas"} · " +
+            formatBytes(folders.sumOf { it.bytes }),
+        null,
+    )
+}
+
+/** One file that was deleted and can still be brought back. */
+data class DeletedFile(
+    val id: String,
+    val name: String,
+    val originalPath: String,
+    /** Seconds since the epoch. */
+    val deletedAt: Long,
+    val bytes: Long,
+    val inSystemBin: Boolean,
+) {
+    companion object {
+        fun from(json: JSONObject) = DeletedFile(
+            id = json.getString("id"),
+            name = json.getString("name"),
+            originalPath = json.getString("originalPath"),
+            deletedAt = json.optLong("deletedAt"),
+            bytes = json.optLong("bytes"),
+            inSystemBin = json.optBoolean("inSystemBin"),
+        )
+    }
+}
+
+/** "hace 3 días", "hace 2 h": when something was deleted, in words. */
+fun timeAgo(seconds: Long, now: Long = System.currentTimeMillis() / 1000): String {
+    val elapsed = maxOf(0L, now - seconds)
+    return when {
+        elapsed < 90 -> "hace un momento"
+        elapsed < 3600 -> "hace ${(elapsed + 30) / 60} min"
+        elapsed < 86400 -> "hace ${(elapsed + 1800) / 3600} h"
+        elapsed < 172800 -> "ayer"
+        else -> "hace ${(elapsed + 43200) / 86400} días"
+    }
+}
+
 /** A folder being served as a public link, and when that stops on its own. */
 data class LinkStatus(val url: String, val expiresAt: Long) {
     companion object {
@@ -249,7 +359,11 @@ fun formatBytes(bytes: Long): String {
         value /= 1000
         unit++
     }
-    val text = if (value < 10) String.format("%.1f", value) else String.format("%.0f", value)
+    val text = if (value < 10) {
+        String.format(java.util.Locale.ROOT, "%.1f", value)
+    } else {
+        String.format(java.util.Locale.ROOT, "%.0f", value)
+    }
     return "${text.replace('.', ',')} ${units[unit]}"
 }
 

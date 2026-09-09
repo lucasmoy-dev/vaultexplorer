@@ -15,8 +15,10 @@ use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    FolderState, Invitation, OfferedFolder, Peer, Settings, SharedFolder, ThisDevice,
+    DeletionPolicy, FolderState, Invitation, OfferedFolder, Peer, Settings, SharedFolder,
+    ThisDevice,
 };
+use crate::trash::{self, DeletedFile};
 use crate::lock::FolderKey;
 use crate::pairing::PairingCode;
 
@@ -51,6 +53,10 @@ pub struct Syncthing {
     sizes_saved: Mutex<Option<Instant>>,
     /// Where the DeviceConnected event stream has been read up to.
     names_cursor: Mutex<i64>,
+    /// The command that puts a file in this platform's recycle bin. Set by the
+    /// desktop, which is the only place there is one; a phone leaves it unset
+    /// and gets the hidden-copies policy instead.
+    trash_command: Mutex<Option<String>>,
 }
 
 /// One reading of a folder's download, and the speed derived from it.
@@ -88,6 +94,10 @@ const RATE_SMOOTHING: f64 = 0.3;
 /// How often remembered sizes are written to disk at most.
 const SIZE_PERSIST_EVERY: Duration = Duration::from_secs(60);
 
+/// Copies kept in the hidden folder when nobody has said otherwise. Enough to
+/// undo a mistake, few enough not to fill a phone.
+const DEFAULT_KEPT_COPIES: u32 = 5;
+
 /// How many direct addresses a pairing code carries at most.
 const MAX_HINTS: usize = 2;
 
@@ -110,6 +120,7 @@ impl Syncthing {
             sizes: Mutex::new(None),
             sizes_saved: Mutex::new(None),
             names_cursor: Mutex::new(0),
+            trash_command: Mutex::new(None),
         }
     }
 
@@ -878,6 +889,69 @@ impl Syncthing {
     /// same device and swaps between them, so a folder halfway through a large
     /// transfer reported "not connected" for one poll several times a minute.
     /// Nothing stopped moving; only the screen said otherwise.
+    /// Where this platform's recycle bin is, as a command the engine can run.
+    ///
+    /// Only the platform knows: on the desktop it is this very binary invoked
+    /// with a flag, and on a phone there is nothing to point at.
+    pub fn set_trash_command(&self, command: String) {
+        if let Ok(mut slot) = self.trash_command.lock() {
+            *slot = Some(command);
+        }
+    }
+
+    fn trash_command(&self) -> Option<String> {
+        self.trash_command.lock().ok().and_then(|c| c.clone())
+    }
+
+    /// Puts the recycle-bin policy in place the first time this version runs.
+    ///
+    /// Installs made before it existed keep copies in a hidden folder nobody
+    /// ever found, so they are moved over once — and only once, so that
+    /// choosing something else later is not undone at the next launch.
+    pub async fn ensure_deletion_policy(&self) -> Result<()> {
+        if self.read_preferences()["deletionPolicySet"].as_bool() == Some(true) {
+            return Ok(());
+        }
+        self.apply_deletion_policy(DeletionPolicy::Bin, DEFAULT_KEPT_COPIES)
+            .await?;
+        self.write_preference("deletionPolicySet", json!(true));
+        Ok(())
+    }
+
+    /// Everything deleted out of a folder that can still be brought back.
+    ///
+    /// Reads both places a copy can be: the desktop's recycle bin, and the
+    /// hidden folder the engine fills where there is no bin. The interface
+    /// shows one list either way — where the file physically sits is not a
+    /// question anyone should have to answer.
+    pub async fn deleted_files(&self, folder_id: &str) -> Result<Vec<DeletedFile>> {
+        let folder = self.folder_config(folder_id).await?;
+        Ok(trash::deleted_in(Path::new(&folder.path)))
+    }
+
+    /// Puts one back, and asks the engine to look at the folder straight away
+    /// so the other devices get it back too rather than in a minute's time.
+    pub async fn restore_deleted(&self, folder_id: &str, id: &str) -> Result<String> {
+        let folder = self.folder_config(folder_id).await?;
+        // Checked before anything moves: an id is a path, and one from
+        // somewhere else would otherwise put a file wherever it pleased.
+        if !trash::destination_of(id)?.starts_with(&folder.path) {
+            return Err(Error::Engine("esa copia no es de esta carpeta".into()));
+        }
+        let restored = trash::restore(id)?;
+        let _ = self.rescan(folder_id).await;
+        Ok(restored.to_string_lossy().into_owned())
+    }
+
+    async fn folder_config(&self, folder_id: &str) -> Result<FolderConfig> {
+        let folders: Vec<FolderConfig> =
+            serde_json::from_value(self.get("/rest/config/folders").await?)?;
+        folders
+            .into_iter()
+            .find(|f| f.id == folder_id)
+            .ok_or_else(|| Error::Engine("esa carpeta ya no está".into()))
+    }
+
     async fn connected_devices(&self) -> Result<Vec<String>> {
         let value = self.get("/rest/system/connections").await?;
         let now: Vec<String> = value["connections"]
@@ -1087,6 +1161,7 @@ impl Syncthing {
                 && !options["relaysEnabled"].as_bool().unwrap_or(true),
             upload_limit_kbps: options["maxSendKbps"].as_u64().unwrap_or(0) as u32,
             download_limit_kbps: options["maxRecvKbps"].as_u64().unwrap_or(0) as u32,
+            deletion_policy: policy_from_versioning(&defaults["versioning"]),
             keep_versions: keep_from_versioning(&defaults["versioning"]),
             engine_version: version,
             language: self
@@ -1123,14 +1198,15 @@ impl Syncthing {
             self.write_preference("language", json!(settings.language));
         }
 
-        self.set_keep_versions(settings.keep_versions).await
+        self.apply_deletion_policy(settings.deletion_policy, settings.keep_versions)
+            .await
     }
 
-    /// Applies the version-keeping preference to folders that already exist as
-    /// well as to the template new ones are cut from, so the setting means the
+    /// Tells the engine where deleted files go, on the folders that exist as
+    /// well as on the template new ones are cut from, so the setting means the
     /// same thing everywhere.
-    async fn set_keep_versions(&self, keep: u32) -> Result<()> {
-        let versioning = versioning_for(keep);
+    pub async fn apply_deletion_policy(&self, policy: DeletionPolicy, keep: u32) -> Result<()> {
+        let versioning = versioning_for(policy, keep, self.trash_command().as_deref());
         self.patch("/rest/config/defaults/folder", json!({ "versioning": versioning }))
             .await?;
 
@@ -1516,23 +1592,54 @@ fn new_folder_id(label: &str) -> String {
 
 /// Syncthing's "simple" versioning keeps N superseded copies in `.stversions`.
 /// An empty type means no versioning at all.
-fn versioning_for(keep: u32) -> Value {
-    if keep == 0 {
-        json!({ "type": "", "params": {}, "cleanupIntervalS": 3600, "fsPath": "", "fsType": "basic" })
-    } else {
-        json!({
-            "type": "simple",
-            "params": { "keep": keep.to_string() },
-            "cleanupIntervalS": 3600,
-            "fsPath": "",
-            "fsType": "basic"
-        })
+/// How the engine is told to treat a file it is about to delete or replace.
+///
+/// `external` hands each one to a command instead of destroying it, which is
+/// how a deletion arriving from another device ends up in this desktop's own
+/// recycle bin. Without such a command — a phone — the engine keeps the copy
+/// itself, in the hidden folder beside the files.
+fn versioning_for(policy: DeletionPolicy, keep: u32, trash_command: Option<&str>) -> Value {
+    let blank = json!({ "type": "", "params": {}, "cleanupIntervalS": 3600, "fsPath": "", "fsType": "basic" });
+    match policy {
+        DeletionPolicy::Nothing => blank,
+        DeletionPolicy::Bin => match trash_command {
+            Some(command) => json!({
+                "type": "external",
+                "params": { "command": command },
+                "cleanupIntervalS": 3600,
+                "fsPath": "",
+                "fsType": "basic"
+            }),
+            // Asked for a recycle bin on something that has none. The nearest
+            // honest thing is keeping the copies, not throwing them away.
+            None => versioning_for(DeletionPolicy::Copies, keep.max(1), None),
+        },
+        DeletionPolicy::Copies => {
+            if keep == 0 {
+                return blank;
+            }
+            json!({
+                "type": "simple",
+                "params": { "keep": keep.to_string() },
+                "cleanupIntervalS": 3600,
+                "fsPath": "",
+                "fsType": "basic"
+            })
+        }
+    }
+}
+
+fn policy_from_versioning(versioning: &Value) -> DeletionPolicy {
+    match versioning["type"].as_str().unwrap_or("") {
+        "external" => DeletionPolicy::Bin,
+        "simple" | "trashcan" | "staggered" => DeletionPolicy::Copies,
+        _ => DeletionPolicy::Nothing,
     }
 }
 
 fn keep_from_versioning(versioning: &Value) -> u32 {
     if versioning["type"].as_str().unwrap_or("") != "simple" {
-        return 0;
+        return DEFAULT_KEPT_COPIES;
     }
     // Syncthing stores every versioning parameter as a string.
     versioning["params"]["keep"].as_str().and_then(|k| k.parse().ok()).unwrap_or(0)
@@ -1796,11 +1903,35 @@ mod tests {
 
     #[test]
     fn versioning_round_trips_through_syncthings_string_params() {
-        assert_eq!(keep_from_versioning(&versioning_for(0)), 0);
-        assert_eq!(keep_from_versioning(&versioning_for(5)), 5);
+        let copies = |keep| versioning_for(DeletionPolicy::Copies, keep, None);
+        assert_eq!(keep_from_versioning(&copies(5)), 5);
         // The parameter really must be a string; a number is silently ignored
         // by the engine.
-        assert_eq!(versioning_for(5)["params"]["keep"], json!("5"));
+        assert_eq!(copies(5)["params"]["keep"], json!("5"));
+    }
+
+    #[test]
+    fn deletions_go_to_the_recycle_bin_when_there_is_one() {
+        let bin = versioning_for(DeletionPolicy::Bin, 5, Some("/usr/bin/homecloud --trash"));
+        assert_eq!(bin["type"], json!("external"));
+        assert_eq!(bin["params"]["command"], json!("/usr/bin/homecloud --trash"));
+        assert_eq!(policy_from_versioning(&bin), DeletionPolicy::Bin);
+    }
+
+    #[test]
+    fn a_phone_asked_for_a_recycle_bin_keeps_copies_instead_of_nothing() {
+        // Android has no bin an app may write to, and "no bin" must never
+        // quietly become "deletions are final".
+        let fallback = versioning_for(DeletionPolicy::Bin, 0, None);
+        assert_eq!(fallback["type"], json!("simple"));
+        assert_eq!(policy_from_versioning(&fallback), DeletionPolicy::Copies);
+    }
+
+    #[test]
+    fn keeping_nothing_is_only_ever_what_was_asked_for() {
+        let nothing = versioning_for(DeletionPolicy::Nothing, 5, Some("cmd"));
+        assert_eq!(nothing["type"], json!(""));
+        assert_eq!(policy_from_versioning(&nothing), DeletionPolicy::Nothing);
     }
 
     #[test]

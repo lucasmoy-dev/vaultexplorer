@@ -6,9 +6,11 @@ import {
   formatBytes,
   peerSummary,
   remaining,
+  timeAgo,
   shortfall,
   shortId,
   type CodePreview,
+  type DeletedFile,
   type Destination,
   type Invitation,
   type LinkStatus,
@@ -743,6 +745,8 @@ function FolderSheet({
             </ul>
           )}
 
+          <DeletedFiles folder={folder} onError={onError} />
+
           <p className="path-line mono">{folder.path}</p>
 
           {confirmingStop ? (
@@ -775,6 +779,99 @@ function FolderSheet({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * What was deleted, and how to get it back.
+ *
+ * Syncing a deletion is the one change that syncing again cannot undo, so
+ * nothing is ever destroyed: a file another device deletes is handed to this
+ * computer's recycle bin, exactly where the file manager would have put it.
+ * This list is the same bin, filtered to this folder — and restoring puts the
+ * file back in place, which the engine then sends to every other device.
+ */
+function DeletedFiles({
+  folder,
+  onError,
+}: {
+  folder: SharedFolder;
+  onError: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [files, setFiles] = useState<DeletedFile[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const look = useCallback(async () => {
+    try {
+      setFiles(await api.deletedFiles(folder.id));
+    } catch (e) {
+      onError(String(e));
+    }
+  }, [folder.id, onError]);
+
+  useEffect(() => {
+    if (open) void look();
+  }, [open, look]);
+
+  async function restore(file: DeletedFile) {
+    setBusy(file.id);
+    try {
+      await api.restoreDeleted(folder.id, file.id);
+      showToast(`«${file.name}» vuelve a estar en la carpeta`);
+      await look();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button className="btn btn-quiet" onClick={() => setOpen(true)}>
+        <TrashIcon />
+        Buscar ficheros borrados
+      </button>
+    );
+  }
+
+  return (
+    <div className="folder-password">
+      <p className="section">
+        Ficheros borrados
+        <Help>
+          Cuando otro dispositivo borra algo, aquí no se destruye: va a la papelera de este
+          ordenador, la misma que abre el gestor de archivos. Recuperar uno lo devuelve a su sitio,
+          y desde ahí vuelve solo al resto de dispositivos.
+        </Help>
+      </p>
+      {files === null ? (
+        <p className="hint">Mirando en la papelera…</p>
+      ) : files.length === 0 ? (
+        <p className="hint">No hay nada borrado de esta carpeta.</p>
+      ) : (
+        <ul className="peers">
+          {files.map((file) => (
+            <li key={file.id}>
+              {file.name}
+              <span className="muted">{formatBytes(file.bytes)}</span>
+              <span className="muted">{timeAgo(file.deletedAt)}</span>
+              <button
+                className="btn btn-small"
+                disabled={busy === file.id}
+                onClick={() => void restore(file)}
+              >
+                {busy === file.id ? "Recuperando…" : "Recuperar"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button className="btn btn-quiet" onClick={() => setOpen(false)}>
+        Ocultar
+      </button>
     </div>
   );
 }

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Pause
@@ -938,6 +939,9 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                         }
                     }
 
+                    Spacer(Modifier.height(10.dp))
+                    DeletedFiles(folder = folder, onError = onError)
+
                     Spacer(Modifier.height(8.dp))
                     Text(
                         folder.path,
@@ -960,6 +964,105 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
     )
+}
+
+/**
+ * What was deleted, and how to get it back.
+ *
+ * Syncing a deletion is the one change that syncing again cannot undo, so
+ * nothing is destroyed: on a computer the file lands in the system's recycle
+ * bin, and on a phone — which has no bin an app may write to on its own — the
+ * engine keeps a copy beside the files. This list reads whichever it is, and
+ * recovering one puts it back in the folder, which sends it to the other
+ * devices again.
+ */
+@Composable
+private fun DeletedFiles(folder: SharedFolder, onError: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var open by remember(folder.id) { mutableStateOf(false) }
+    var files by remember(folder.id) { mutableStateOf<List<DeletedFile>?>(null) }
+    var busy by remember { mutableStateOf<String?>(null) }
+
+    suspend fun look() {
+        val found = withContext(Dispatchers.IO) { runCatching { Repo.deletedFiles(folder.id) } }
+        found.fold(
+            onSuccess = { files = it },
+            onFailure = { onError(it.message ?: "No se pudo mirar en la papelera") },
+        )
+    }
+
+    LaunchedEffect(open) { if (open) look() }
+
+    if (!open) {
+        TextButton(onClick = { open = true }) {
+            Icon(Icons.Filled.Restore, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Buscar ficheros borrados")
+        }
+        return
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Ficheros borrados", style = MaterialTheme.typography.labelMedium)
+        Help(
+            "Lo que otro dispositivo borre no se destruye aquí: se guarda una copia y aparece en " +
+                "esta lista. Recuperar uno lo devuelve a la carpeta, y desde ahí vuelve solo al " +
+                "resto de dispositivos.",
+        )
+    }
+
+    val found = files
+    when {
+        found == null -> Text(
+            "Mirando…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        found.isEmpty() -> Text(
+            "No hay nada borrado de esta carpeta.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        else -> found.forEach { file ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(file.name, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "${formatBytes(file.bytes)} · ${timeAgo(file.deletedAt)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(
+                    enabled = busy != file.id,
+                    onClick = {
+                        busy = file.id
+                        scope.launch {
+                            val outcome = withContext(Dispatchers.IO) {
+                                runCatching { Repo.restoreDeleted(folder.id, file.id) }
+                            }
+                            busy = null
+                            outcome.fold(
+                                onSuccess = {
+                                    android.widget.Toast
+                                        .makeText(
+                                            context,
+                                            "«${file.name}» vuelve a estar en la carpeta",
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        )
+                                        .show()
+                                    look()
+                                },
+                                onFailure = { onError(it.message ?: "No se pudo recuperar") },
+                            )
+                        }
+                    },
+                ) { Text(if (busy == file.id) "Recuperando…" else "Recuperar") }
+            }
+        }
+    }
+    TextButton(onClick = { open = false }) { Text("Ocultar") }
 }
 
 /**
@@ -1296,6 +1399,30 @@ private fun SettingsDialog(onDismiss: () -> Unit, onError: (String) -> Unit) {
                             )
                         }
                     }
+                    Spacer(Modifier.height(14.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = current.deletionPolicy != "nothing",
+                            onCheckedChange = { keep ->
+                                settings = current.copy(
+                                    // A phone has no system recycle bin to
+                                    // point at, so keeping means the copies
+                                    // the engine holds beside the files.
+                                    deletionPolicy = if (keep) "copies" else "nothing",
+                                )
+                            },
+                        )
+                        Column {
+                            Text("Guardar lo que se borre")
+                            Text(
+                                "Si otro dispositivo borra un fichero, aquí se guarda una copia y " +
+                                    "puedes recuperarla desde la carpeta.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
                     Spacer(Modifier.height(14.dp))
                     UpdateRow(onError = onError)
 

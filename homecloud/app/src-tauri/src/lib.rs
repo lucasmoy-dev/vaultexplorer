@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use homecore::destination::{self, Pick};
 use homecore::link::{share_binary, tunnel_binary, LinkStatus, Links, DEFAULT_LIFETIME};
 use homecore::model::{Invitation, Settings, SharedFolder, ThisDevice};
+use homecore::trash::DeletedFile;
 use homecore::supervisor::{engine_binary, Engine};
 use homecore::PairingCode;
 use serde::Serialize;
@@ -56,6 +57,42 @@ impl AppState {
     }
 }
 
+/// This binary, invoked the way the engine should invoke it for each file it
+/// is about to delete. `None` when the executable cannot be located, which
+/// leaves the engine keeping its own copies instead.
+fn trash_command() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    Some(format!("{} --trash %FOLDER_PATH%/%FILE_PATH%", exe.display()))
+}
+
+/// The whole of what happens when the engine runs us with `--trash`.
+///
+/// Handled before anything else starts: this is a one-shot invocation, several
+/// per second while a large deletion syncs, and it must not open a window,
+/// touch the engine, or be forwarded to the copy of the app already running.
+///
+/// Returns true when that is what this process was for, and it is done.
+fn trashed_a_file() -> bool {
+    let mut args = std::env::args().skip(1);
+    let Some(flag) = args.next() else { return false };
+    if flag != "--trash" {
+        return false;
+    }
+    let Some(path) = args.next() else {
+        eprintln!("homecloud --trash: no file was named");
+        std::process::exit(2);
+    };
+    match homecore::trash::move_to_trash(Path::new(&path)) {
+        Ok(_) => std::process::exit(0),
+        Err(e) => {
+            // A non-zero exit tells the engine the file is still there, which
+            // is exactly what it must believe if this failed.
+            eprintln!("homecloud --trash: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Starts the engine and records either it or the reason it would not start.
 async fn launch_engine(state: &AppState) {
     *state.startup_problem.write().await = None;
@@ -75,6 +112,13 @@ async fn launch_engine(state: &AppState) {
             let _ = engine.client.ensure_device_name(&default_device_name()).await;
             engine.client.set_auto_accept_root(state.default_root.clone());
             engine.client.set_preferences_path(state.engine_home.join("homecloud.json"));
+            // Deletions arriving from another device are handed to this same
+            // binary, which puts them in the desktop's recycle bin instead of
+            // destroying them. The engine substitutes the two placeholders.
+            if let Some(command) = trash_command() {
+                engine.client.set_trash_command(command);
+            }
+            let _ = engine.client.ensure_deletion_policy().await;
             *state.engine.write().await = Some(engine);
         }
         Err(e) => *state.startup_problem.write().await = Some(plain(e)),
@@ -348,6 +392,21 @@ async fn decline_invitation(state: State<'_, AppState>, invitation: Invitation) 
     engine.client.decline(&invitation).await.map_err(plain)
 }
 
+/// What can still be recovered out of a folder, newest first.
+#[tauri::command]
+async fn deleted_files(state: State<'_, AppState>, folder_id: String) -> UiResult<Vec<DeletedFile>> {
+    with_engine!(state, |client| client.deleted_files(&folder_id))
+}
+
+#[tauri::command]
+async fn restore_deleted(
+    state: State<'_, AppState>,
+    folder_id: String,
+    id: String,
+) -> UiResult<String> {
+    with_engine!(state, |client| client.restore_deleted(&folder_id, &id))
+}
+
 #[tauri::command]
 async fn set_folder_paused(state: State<'_, AppState>, folder_id: String, paused: bool) -> UiResult<()> {
     with_engine!(state, |client| client.set_folder_paused(&folder_id, paused))
@@ -593,6 +652,13 @@ fn reveal(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
+    // Before the toolkit, the plugins and the single-instance forwarding: this
+    // invocation may not be a launch at all, but the engine asking for one
+    // file to be put in the recycle bin.
+    if trashed_a_file() {
+        return;
+    }
+
     tauri::Builder::default()
         // Must be registered first. Two copies of the app would each start an
         // engine against the same database; the second one loses, dies, and
@@ -705,6 +771,8 @@ pub fn run() {
             accept_invitation,
             decline_invitation,
             set_folder_paused,
+            deleted_files,
+            restore_deleted,
             stop_sharing,
             settings,
             save_settings,

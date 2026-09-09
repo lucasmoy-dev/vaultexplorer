@@ -183,22 +183,35 @@ export function SettingsSheet({ onSaved }: { onSaved: () => void }) {
       </label>
 
       <label className="field">
-        <span>Guardar versiones anteriores</span>
+        <span>Cuando otro dispositivo borra o cambia un fichero</span>
         <select
-          value={settings.keepVersions}
-          onChange={(e) => edit({ keepVersions: Number(e.target.value) })}
+          value={settings.deletionPolicy}
+          onChange={(e) => edit({ deletionPolicy: e.target.value as Settings["deletionPolicy"] })}
         >
-          <option value={0}>No guardar</option>
-          <option value={5}>Las 5 últimas</option>
-          <option value={10}>Las 10 últimas</option>
-          <option value={25}>Las 25 últimas</option>
+          <option value="bin">Va a la papelera de este ordenador</option>
+          <option value="copies">Se guarda una copia oculta en la carpeta</option>
+          <option value="nothing">No se guarda nada</option>
         </select>
       </label>
       <p className="hint">
-        Cuando un fichero cambia o se borra en otro dispositivo, se guarda una copia de la versión
-        anterior en <code>.stversions</code>. Es lo que separa «se sincronizó un borrado» de «perdí
-        el fichero».
+        Sincronizar un borrado es lo único que no se deshace sincronizando otra vez, así que por
+        defecto nada se destruye: el fichero acaba en la papelera de siempre, y desde la carpeta lo
+        puedes recuperar en «Buscar ficheros borrados». La copia anterior de un fichero que se
+        modifica va al mismo sitio.
       </p>
+      {settings.deletionPolicy === "copies" && (
+        <label className="field">
+          <span>Cuántas copias guardar</span>
+          <select
+            value={settings.keepVersions}
+            onChange={(e) => edit({ keepVersions: Number(e.target.value) })}
+          >
+            <option value={5}>Las 5 últimas</option>
+            <option value={10}>Las 10 últimas</option>
+            <option value={25}>Las 25 últimas</option>
+          </select>
+        </label>
+      )}
 
       <div className="pair">
         <label className="field">

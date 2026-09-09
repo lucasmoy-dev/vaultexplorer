@@ -217,6 +217,23 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
                 Value::String(code.encode().map_err(plain)?)
             }
 
+            // What can still be recovered out of a folder. On a phone these
+            // are the copies the engine keeps beside the files: Android has
+            // no recycle bin an app may write to in the background.
+            "deletedFiles" => to_value(client.deleted_files(&arg!(args, "folderId")).await)?,
+
+            "restoreDeleted" => Value::String(
+                client
+                    .restore_deleted(&arg!(args, "folderId"), &arg!(args, "id"))
+                    .await
+                    .map_err(plain)?,
+            ),
+
+            "ensureDeletionPolicy" => {
+                client.ensure_deletion_policy().await.map_err(plain)?;
+                Value::Null
+            }
+
             "codeFor" => Value::String(
                 client.code_text_for(&arg!(args, "folderId")).await.map_err(plain)?,
             ),

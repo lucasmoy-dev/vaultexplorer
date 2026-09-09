@@ -16,6 +16,7 @@ pub mod lock;
 pub mod model;
 pub mod pairing;
 pub mod supervisor;
+pub mod trash;
 
 pub use client::Syncthing;
 pub use destination::{Pick, resolve as resolve_destination};

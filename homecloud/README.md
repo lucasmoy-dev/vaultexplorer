@@ -87,6 +87,13 @@ emulator running the real engine:
 - A third device joining a folder two devices already shared.
 - Sync continuing after the phone's UI is killed, via the foreground service.
 
+Nothing is deleted, only moved. A deletion arriving from another device hands
+the file to this desktop's own recycle bin — the same one the file manager
+shows — and a phone, which has no bin an app may write to, keeps it beside the
+files instead. Either way it is listed under "Buscar ficheros borrados" in the
+folder, and recovering one puts it back and sends it to the other devices
+again.
+
 ## Known gaps
 
 - **Scanning has only been proved frame by frame, not through a lens.** The

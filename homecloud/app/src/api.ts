@@ -61,12 +61,28 @@ export interface Readiness {
   problem: string | null;
 }
 
+/** One file that was deleted and can still be brought back. */
+export interface DeletedFile {
+  id: string;
+  name: string;
+  originalPath: string;
+  /** Seconds since the epoch. */
+  deletedAt: number;
+  bytes: number;
+  /** In the desktop's own recycle bin, rather than the hidden folder. */
+  inSystemBin: boolean;
+}
+
+/** Where a file goes when another device deletes or replaces it. */
+export type DeletionPolicy = "bin" | "copies" | "nothing";
+
 export interface Settings {
   deviceName: string;
   deviceId: string;
   localNetworkOnly: boolean;
   uploadLimitKbps: number;
   downloadLimitKbps: number;
+  deletionPolicy: DeletionPolicy;
   keepVersions: number;
   engineVersion: string;
   language: "es" | "en";
@@ -134,6 +150,9 @@ export const api = {
   setFolderPaused: (folderId: string, paused: boolean) =>
     invoke<void>("set_folder_paused", { folderId, paused }),
   stopSharing: (folderId: string) => invoke<void>("stop_sharing", { folderId }),
+  deletedFiles: (folderId: string) => invoke<DeletedFile[]>("deleted_files", { folderId }),
+  restoreDeleted: (folderId: string, id: string) =>
+    invoke<string>("restore_deleted", { folderId, id }),
   settings: () => invoke<Settings>("settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
 };
@@ -194,6 +213,16 @@ export function remaining(folder: {
   const rate = formatRate(folder.bytesPerSecond);
   if (rate) parts.push(rate);
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** "hace 3 días", "hace 2 h": when something was deleted, in words. */
+export function timeAgo(seconds: number): string {
+  const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - seconds));
+  if (elapsed < 90) return "hace un momento";
+  if (elapsed < 3600) return `hace ${Math.round(elapsed / 60)} min`;
+  if (elapsed < 86400) return `hace ${Math.round(elapsed / 3600)} h`;
+  const days = Math.round(elapsed / 86400);
+  return days === 1 ? "ayer" : `hace ${days} días`;
 }
 
 /** The tail of a device ID, so two devices with the same name are still telling apart. */

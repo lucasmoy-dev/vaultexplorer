@@ -115,6 +115,23 @@ pub struct ThisDevice {
     pub name: String,
 }
 
+/// What happens to a file when another device deletes or replaces it.
+///
+/// Syncing a deletion is the one change that cannot be undone by syncing
+/// again, so the question is never "keep a copy or not" but "where".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeletionPolicy {
+    /// Into the desktop's own recycle bin, where the file manager can also
+    /// see it and put it back. The default wherever there is one.
+    Bin,
+    /// Into a hidden folder beside the files. What a phone gets, because
+    /// Android has no recycle bin an app may write to on its own.
+    Copies,
+    /// Gone. Nothing is kept, and a deletion synced by mistake is final.
+    Nothing,
+}
+
 /// Everything the settings screen can change. Read and written as a whole:
 /// there are few enough knobs that a partial update would only add ways to get
 /// the two out of step.
@@ -133,8 +150,10 @@ pub struct Settings {
     /// Kilobytes per second, 0 meaning no limit.
     pub upload_limit_kbps: u32,
     pub download_limit_kbps: u32,
-    /// How many superseded copies of a changed file to keep. 0 turns it off.
-    /// This is the difference between "synced a deletion" and "lost the file".
+    /// Where a deleted or replaced file goes.
+    pub deletion_policy: DeletionPolicy,
+    /// How many superseded copies of a changed file to keep, when they are
+    /// kept in the hidden folder. Ignored by the other two policies.
     pub keep_versions: u32,
     /// Version of the bundled engine, for bug reports.
     pub engine_version: String,

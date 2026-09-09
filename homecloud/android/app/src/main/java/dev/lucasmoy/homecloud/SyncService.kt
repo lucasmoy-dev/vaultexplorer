@@ -47,6 +47,10 @@ class SyncService : Service() {
      */
     private var lastMetered: Boolean? = null
 
+    /** Cleared on the way out, so the notification loop stops with the service. */
+    @Volatile
+    private var watching = true
+
     private val networkWatcher = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = onNetworkChanged(force = true)
         override fun onLost(network: Network) = onNetworkChanged(force = true)
@@ -57,14 +61,15 @@ class SyncService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Arrancando…"))
+        startForeground(NOTIFICATION_ID, buildNotification(Progress("HomeCloud", "Arrancando…", null)))
         Thread {
             engine.start()
                 .onSuccess {
                     tellCoreWhereThingsGo()
                     nameThisPhone()
                     watchTheNetwork()
-                    notify("Sincronizando tus carpetas")
+                    keepDeletionsRecoverable()
+                    watchProgress()
                 }
                 .onFailure { notify(it.message ?: "El motor de sincronización no arrancó") }
         }.start()
@@ -83,6 +88,7 @@ class SyncService : Service() {
     }
 
     override fun onDestroy() {
+        watching = false
         runCatching {
             getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkWatcher)
         }
@@ -170,6 +176,47 @@ class SyncService : Service() {
         }
     }
 
+    /**
+     * Keeps the notification saying what is actually happening.
+     *
+     * This is the only thing most people ever see of a sync that runs for
+     * hours with the app closed, and it used to read "Sincronizando tus
+     * carpetas" whether it was moving a gigabyte, waiting for wifi, or had
+     * finished an hour ago. It is re-read every couple of seconds while
+     * something is moving and every ten when nothing is, and only redrawn when
+     * the words change: a notification that rewrites itself constantly is one
+     * Android starts throttling.
+     */
+    private fun watchProgress() {
+        Thread {
+            var last: String? = null
+            while (watching) {
+                val progress = runCatching { notificationProgress(Repo.folders()) }.getOrNull()
+                if (progress == null) {
+                    Thread.sleep(SLOW_TICK_MS)
+                    continue
+                }
+                val key = "${progress.title}|${progress.detail}|${progress.percent}"
+                if (key != last) {
+                    last = key
+                    show(progress)
+                }
+                Thread.sleep(if (progress.percent != null) BUSY_TICK_MS else SLOW_TICK_MS)
+            }
+        }.start()
+    }
+
+    /**
+     * Makes sure a deletion arriving from another device can be undone.
+     *
+     * On a phone that means the engine keeps its own copy beside the files:
+     * Android has no recycle bin an app may write to in the background, so
+     * "Ficheros borrados" reads from there instead.
+     */
+    private fun keepDeletionsRecoverable() {
+        runCatching { Repo.ensureDeletionPolicy() }
+    }
+
     private fun createChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -180,7 +227,7 @@ class SyncService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(progress: Progress): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -195,23 +242,33 @@ class SyncService : Service() {
             Intent(this, SyncService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("HomeCloud")
-            .setContentText(text)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(progress.title)
+            .setContentText(progress.detail)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentIntent(open)
             .setOngoing(true)
             .setSilent(true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Detener HomeCloud", stop)
-            .build()
+        // A bar only while there is something to fill it. One stuck at a
+        // number, or spinning next to "Todo al día", is worse than none.
+        progress.percent?.let { builder.setProgress(100, it, false) }
+        return builder.build()
     }
 
-    private fun notify(text: String) {
+    private fun show(progress: Progress) {
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(text))
+            .notify(NOTIFICATION_ID, buildNotification(progress))
     }
+
+    private fun notify(text: String) = show(Progress("HomeCloud", text, null))
 
     companion object {
+        /** How often the notification is re-read while something is moving. */
+        private const val BUSY_TICK_MS = 2_000L
+        /** And while nothing is, where the battery matters more than the wait. */
+        private const val SLOW_TICK_MS = 10_000L
+
         private const val CHANNEL_ID = "sync"
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "dev.lucasmoy.homecloud.STOP"
