@@ -5598,6 +5598,17 @@ input[type="range"]::-webkit-slider-thumb {
   text-overflow: ellipsis;
   direction: ltr;
 }
+/* Jump straight to $HOME or to / instead of walking there one level at a
+   time -- the two places a destination folder almost always hangs off. */
+.folder-picker-shortcuts {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.folder-picker-shortcuts .btn-plain {
+  padding: 4px 10px;
+  font-size: 12px;
+}
 .folder-picker-list {
   max-height: 46vh;
   overflow-y: auto;

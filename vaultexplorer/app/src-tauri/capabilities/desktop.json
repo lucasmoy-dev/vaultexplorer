@@ -4,6 +4,7 @@
   "description": "Desktop-only permissions (native drag-out; not available on Android/iOS)",
   "windows": [
     "main",
+    "main-*",
     "picker-*",
     "player-*",
     "media-*"

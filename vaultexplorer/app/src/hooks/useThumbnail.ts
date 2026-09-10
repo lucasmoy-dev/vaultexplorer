@@ -39,7 +39,15 @@ function cacheSet(key: string, uri: string) {
 // blocking threadpool, firing hundreds of `invoke`s at once still floods
 // the IPC channel and the pool. A small semaphore keeps only a handful in
 // flight; the rest queue and drain as slots free.
-const MAX_INFLIGHT = 10;
+//
+// Tied to the core count rather than a flat 10, because the cost of a slot
+// isn't the IPC -- it's the decode behind it. An image with no usable
+// embedded preview has to be rasterized in full to be shrunk (a 24MP photo
+// is ~100MB of pixels), so ten at once meant a multi-hundred-megabyte
+// spike and a machine swapping instead of drawing thumbnails. Fewer, at
+// the width the CPU can actually work on, finishes the same folder without
+// the stall.
+const MAX_INFLIGHT = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
 let inflight = 0;
 const waiters: Array<() => void> = [];
 function acquire(): Promise<void> {

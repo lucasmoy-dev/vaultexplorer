@@ -44,10 +44,162 @@ fn cache_key(path: &str, mtime: i64, max_size: u32) -> String {
     format!("{:x}.jpg", hasher.finish())
 }
 
-/// Decode `bytes`, shrink to fit within `max_size` x `max_size`
-/// (preserving aspect ratio), and re-encode as a JPEG.
-fn make_thumbnail(bytes: &[u8], max_size: u32) -> Result<Vec<u8>, String> {
-    let img = image::load_from_memory(bytes).str_err()?;
+/// What a JPEG's marker segments say about it without decoding a single
+/// pixel: its real dimensions (from the frame header) and the small
+/// preview JPEG a camera stored in its EXIF block, if there is one.
+struct JpegPeek {
+    width: u32,
+    height: u32,
+    exif_thumb: Option<Vec<u8>>,
+}
+
+fn be_u16(b: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([*b.get(at)?, *b.get(at + 1)?]))
+}
+
+/// Walk a JPEG's segment headers (they sit in front of the entropy-coded
+/// data, so this reads a few hundred bytes, not the image) collecting the
+/// frame size and the EXIF APP1 block.
+fn peek_jpeg(bytes: &[u8]) -> Option<JpegPeek> {
+    if bytes.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut out = JpegPeek { width: 0, height: 0, exif_thumb: None };
+    let mut i = 2usize;
+    loop {
+        // Segments are 0xFF-prefixed; padding 0xFFs before a marker are legal.
+        while *bytes.get(i)? == 0xFF && *bytes.get(i + 1)? == 0xFF {
+            i += 1;
+        }
+        if *bytes.get(i)? != 0xFF {
+            return None;
+        }
+        let marker = *bytes.get(i + 1)?;
+        // Standalone markers carry no length word.
+        if marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+            i += 2;
+            continue;
+        }
+        let len = be_u16(bytes, i + 2)? as usize;
+        if len < 2 {
+            return None;
+        }
+        let payload = bytes.get(i + 4..i + 2 + len)?;
+        match marker {
+            // Start of frame (baseline/progressive/etc., but not the
+            // huffman/arithmetic table markers that share the range).
+            0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
+                out.height = be_u16(payload, 1)? as u32;
+                out.width = be_u16(payload, 3)? as u32;
+            }
+            0xE1 if payload.starts_with(b"Exif\0\0") => {
+                out.exif_thumb = exif_thumb_from_tiff(&payload[6..]);
+            }
+            // Start of scan: compressed data from here on, nothing left to read.
+            0xDA => break,
+            _ => {}
+        }
+        i += 2 + len;
+    }
+    if out.width == 0 || out.height == 0 {
+        return None;
+    }
+    Some(out)
+}
+
+/// The thumbnail JPEG referenced by IFD1 of an EXIF TIFF block, if it has
+/// one. `tiff` starts at the TIFF header (all offsets in here are relative
+/// to that, which is why it's passed as its own slice).
+fn exif_thumb_from_tiff(tiff: &[u8]) -> Option<Vec<u8>> {
+    let big_endian = match tiff.get(..2)? {
+        b"MM" => true,
+        b"II" => false,
+        _ => return None,
+    };
+    let u16_at = |at: usize| -> Option<u16> {
+        let b = [*tiff.get(at)?, *tiff.get(at + 1)?];
+        Some(if big_endian { u16::from_be_bytes(b) } else { u16::from_le_bytes(b) })
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        let b = [*tiff.get(at)?, *tiff.get(at + 1)?, *tiff.get(at + 2)?, *tiff.get(at + 3)?];
+        Some(if big_endian { u32::from_be_bytes(b) } else { u32::from_le_bytes(b) })
+    };
+    if u16_at(2)? != 42 {
+        return None;
+    }
+    // IFD0 describes the full image; the thumbnail lives in IFD1, which
+    // IFD0's trailing "next IFD" pointer leads to.
+    let ifd0 = u32_at(4)? as usize;
+    let ifd0_count = u16_at(ifd0)? as usize;
+    let ifd1 = u32_at(ifd0 + 2 + ifd0_count * 12)? as usize;
+    if ifd1 == 0 {
+        return None;
+    }
+    let ifd1_count = u16_at(ifd1)? as usize;
+    let mut offset = None;
+    let mut length = None;
+    for n in 0..ifd1_count {
+        let entry = ifd1 + 2 + n * 12;
+        let tag = u16_at(entry)?;
+        if tag != 0x0201 && tag != 0x0202 {
+            continue;
+        }
+        // Both tags are a single SHORT or LONG, so the value is stored
+        // inline in the entry's value field rather than pointed at.
+        let value = match u16_at(entry + 2)? {
+            3 => u16_at(entry + 8)? as u32,
+            4 => u32_at(entry + 8)?,
+            _ => continue,
+        };
+        if tag == 0x0201 {
+            offset = Some(value as usize);
+        } else {
+            length = Some(value as usize);
+        }
+    }
+    let (offset, length) = (offset?, length?);
+    let thumb = tiff.get(offset..offset.checked_add(length)?)?;
+    // Compression 6 (JPEG) is what every camera writes; anything else
+    // (uncompressed TIFF strips) isn't worth handling -- fall back to the
+    // full decode.
+    if !thumb.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    Some(thumb.to_vec())
+}
+
+/// Cameras and phones embed a small JPEG preview in every photo's EXIF
+/// block. When it's big enough for what was asked for, that's the whole
+/// thumbnail already: decoding it costs microseconds, where decoding the
+/// photo it came from means rasterizing 12-50 megapixels (~4 bytes each)
+/// just to throw all but a 160px square of it away. That full decode --
+/// times however many photos a folder holds, times every visit for a
+/// vault, which can't cache to disk -- is what made opening a photo folder
+/// crawl.
+///
+/// Returns `None` (i.e. decode the real image) unless the embedded preview
+/// is both large enough not to be upscaled and the same shape as the photo
+/// -- some cameras letterbox their preview, and a thumbnail with black
+/// bars is worse than a slow one.
+fn thumbnail_from_exif(bytes: &[u8], max_size: u32) -> Option<Vec<u8>> {
+    let peek = peek_jpeg(bytes)?;
+    let thumb_bytes = peek.exif_thumb?;
+    let thumb = image::load_from_memory(&thumb_bytes).ok()?;
+    let (tw, th) = (thumb.width(), thumb.height());
+    if tw == 0 || th == 0 || tw.max(th) < max_size {
+        return None;
+    }
+    let full_aspect = peek.width as f32 / peek.height as f32;
+    let thumb_aspect = tw as f32 / th as f32;
+    if (full_aspect - thumb_aspect).abs() > full_aspect * 0.03 {
+        return None;
+    }
+    encode_thumbnail(&thumb, max_size).ok()
+}
+
+/// Shrink to fit within `max_size` x `max_size` (preserving aspect ratio)
+/// and re-encode as a JPEG.
+fn encode_thumbnail(img: &image::DynamicImage, max_size: u32) -> Result<Vec<u8>, String> {
     let thumb = img.thumbnail(max_size, max_size);
     let rgb = thumb.to_rgb8();
     let mut out = Vec::new();
@@ -55,6 +207,16 @@ fn make_thumbnail(bytes: &[u8], max_size: u32) -> Result<Vec<u8>, String> {
         .write_image(rgb.as_raw(), rgb.width(), rgb.height(), ExtendedColorType::Rgb8)
         .str_err()?;
     Ok(out)
+}
+
+/// Decode `bytes`, shrink to fit within `max_size` x `max_size`
+/// (preserving aspect ratio), and re-encode as a JPEG.
+fn make_thumbnail(bytes: &[u8], max_size: u32) -> Result<Vec<u8>, String> {
+    if let Some(jpeg) = thumbnail_from_exif(bytes, max_size) {
+        return Ok(jpeg);
+    }
+    let img = image::load_from_memory(bytes).str_err()?;
+    encode_thumbnail(&img, max_size)
 }
 
 fn to_data_uri(jpeg_bytes: &[u8]) -> String {
@@ -311,4 +473,110 @@ pub async fn fs_pdf_page_count(path: String) -> Result<u32, String> {
     tauri::async_runtime::spawn_blocking(move || pdf_page_count(&path))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real (tiny) JPEG, to stand in for the preview a camera embeds.
+    fn small_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        }));
+        encode_thumbnail(&img, w.max(h)).unwrap()
+    }
+
+    /// The smallest JPEG shell `peek_jpeg` will read: SOI, an optional
+    /// EXIF APP1 carrying `thumb` in IFD1, a frame header declaring
+    /// `full`, then SOS (where the parser stops).
+    fn jpeg_with_exif_thumb(full: (u16, u16), thumb: Option<&[u8]>) -> Vec<u8> {
+        let mut out = vec![0xFF, 0xD8];
+        if let Some(thumb) = thumb {
+            let mut tiff: Vec<u8> = Vec::new();
+            tiff.extend(b"II");
+            tiff.extend(42u16.to_le_bytes());
+            tiff.extend(8u32.to_le_bytes()); // IFD0 starts right after the header
+            // IFD0: one throwaway entry, then a pointer to IFD1.
+            tiff.extend(1u16.to_le_bytes());
+            tiff.extend(0x0100u16.to_le_bytes()); // ImageWidth
+            tiff.extend(3u16.to_le_bytes()); // SHORT
+            tiff.extend(1u32.to_le_bytes());
+            tiff.extend((full.0 as u32).to_le_bytes());
+            let ifd1 = 26u32; // 8 (header) + 2 (count) + 12 (entry) + 4 (next)
+            tiff.extend(ifd1.to_le_bytes());
+            // IFD1: compression + where the thumbnail bytes live.
+            let thumb_at = ifd1 + 2 + 3 * 12 + 4;
+            tiff.extend(3u16.to_le_bytes());
+            for (tag, ty, value) in [
+                (0x0103u16, 3u16, 6u32), // Compression = JPEG
+                (0x0201, 4, thumb_at),
+                (0x0202, 4, thumb.len() as u32),
+            ] {
+                tiff.extend(tag.to_le_bytes());
+                tiff.extend(ty.to_le_bytes());
+                tiff.extend(1u32.to_le_bytes());
+                if ty == 3 {
+                    tiff.extend((value as u16).to_le_bytes());
+                    tiff.extend([0, 0]);
+                } else {
+                    tiff.extend(value.to_le_bytes());
+                }
+            }
+            tiff.extend(0u32.to_le_bytes()); // no IFD2
+            assert_eq!(tiff.len(), thumb_at as usize);
+            tiff.extend(thumb);
+
+            let mut payload = b"Exif\0\0".to_vec();
+            payload.extend(&tiff);
+            out.extend([0xFF, 0xE1]);
+            out.extend(((payload.len() + 2) as u16).to_be_bytes());
+            out.extend(payload);
+        }
+        // SOF0 (baseline), one component.
+        out.extend([0xFF, 0xC0]);
+        out.extend(11u16.to_be_bytes());
+        out.push(8);
+        out.extend(full.1.to_be_bytes());
+        out.extend(full.0.to_be_bytes());
+        out.extend([1, 1, 0x11, 0]);
+        out.extend([0xFF, 0xDA]);
+        out.extend(8u16.to_be_bytes());
+        out.extend([1, 1, 0, 0, 63, 0]);
+        out
+    }
+
+    #[test]
+    fn reads_the_embedded_preview_instead_of_the_photo() {
+        let thumb = small_jpeg(160, 120);
+        let photo = jpeg_with_exif_thumb((4000, 3000), Some(&thumb));
+
+        let peek = peek_jpeg(&photo).expect("markers parse");
+        assert_eq!((peek.width, peek.height), (4000, 3000));
+        assert_eq!(peek.exif_thumb.as_deref(), Some(thumb.as_slice()));
+
+        // Small enough to be served by the 160x120 preview...
+        let out = thumbnail_from_exif(&photo, 64).expect("preview used");
+        let decoded = image::load_from_memory(&out).unwrap();
+        assert_eq!(decoded.width().max(decoded.height()), 64);
+        // ...but a preview that would have to be upscaled is refused, so
+        // the caller decodes the real photo.
+        assert!(thumbnail_from_exif(&photo, 400).is_none());
+    }
+
+    #[test]
+    fn refuses_a_preview_that_is_the_wrong_shape() {
+        let thumb = small_jpeg(160, 120); // 4:3
+        let square = jpeg_with_exif_thumb((3000, 3000), Some(&thumb));
+        assert!(thumbnail_from_exif(&square, 64).is_none());
+    }
+
+    #[test]
+    fn falls_through_when_there_is_no_exif_at_all() {
+        let plain = jpeg_with_exif_thumb((4000, 3000), None);
+        assert!(peek_jpeg(&plain).unwrap().exif_thumb.is_none());
+        assert!(thumbnail_from_exif(&plain, 64).is_none());
+        // Not a JPEG at all: the fast path must not claim it.
+        assert!(thumbnail_from_exif(b"\x89PNG\r\n\x1a\n and then some", 64).is_none());
+    }
 }

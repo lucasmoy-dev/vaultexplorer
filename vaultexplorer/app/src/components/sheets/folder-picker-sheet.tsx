@@ -35,7 +35,14 @@ export function FolderPickerSheet({
       .fsList(dir, false)
       .then((list) => {
         if (!cancelled) {
-          setEntries(list.filter((e) => e.is_dir));
+          // `fs_list` hands back raw readdir order (inode order), which is
+          // what the main window's own sort settings normally hide -- here
+          // it meant the folder list came out in no order at all.
+          setEntries(
+            list
+              .filter((e) => e.is_dir)
+              .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }))
+          );
           setError("");
         }
       })
@@ -47,7 +54,12 @@ export function FolderPickerSheet({
     };
   }, [dir]);
 
-  const atRoot = dir === "/" || dir === startPath;
+  // Only the real filesystem root ends the walk upwards. `startPath` used
+  // to stop it too, which made every folder above where the picker opened
+  // (i.e. everything outside $HOME) unreachable -- a destination you can't
+  // navigate to is a destination you can't move a file into.
+  const atRoot = dir === "/";
+  const home = startPath;
 
   return (
     <div className="sheet-overlay" onMouseDown={onClose}>
@@ -55,6 +67,14 @@ export function FolderPickerSheet({
         <h3>{title}</h3>
         <div className="folder-picker-path" title={dir}>
           {dir}
+        </div>
+        <div className="folder-picker-shortcuts">
+          <button className="btn-plain" onClick={() => setDir(home)}>
+            Home
+          </button>
+          <button className="btn-plain" onClick={() => setDir("/")}>
+            Filesystem
+          </button>
         </div>
         <div className="folder-picker-list">
           {!atRoot && (

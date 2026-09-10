@@ -55,12 +55,16 @@ export function TitleBar({ children }: { children?: ReactNode }) {
     api.isMobilePlatform().then(setMobile).catch(() => {});
   }, []);
 
+  // "deep" (not a bare attribute) is what makes the whole bar draggable:
+  // Tauri's drag-region script only starts a window drag when the element
+  // *under the pointer* carries the attribute, so a bar packed with
+  // children left just the few bare pixels between them as a drag handle.
+  // Its own walk up the tree still refuses to drag from a button, input or
+  // link, so every control inside keeps working normally.
   return (
-    <div className="titlebar" data-tauri-drag-region={mobile ? undefined : true}>
+    <div className="titlebar" data-tauri-drag-region={mobile ? undefined : "deep"}>
       {!mobile && <TrafficLights />}
-      <div className="titlebar-content" data-tauri-drag-region={mobile ? undefined : true}>
-        {children}
-      </div>
+      <div className="titlebar-content">{children}</div>
     </div>
   );
 }

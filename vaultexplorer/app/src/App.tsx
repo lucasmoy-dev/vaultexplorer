@@ -5538,7 +5538,7 @@ function Explorer({ home }: { home: string }) {
         }}
       >
         {!mobile && (
-          <div className="sidebar-top" data-tauri-drag-region>
+          <div className="sidebar-top" data-tauri-drag-region="deep">
             <TrafficLights />
           </div>
         )}
@@ -5892,11 +5892,21 @@ function Explorer({ home }: { home: string }) {
           </>
         )}
 
-        <div className="sidebar-spacer" />
+        {/* The sidebar's own drag region doesn't cover this: the spacer is
+            a child, so it -- i.e. most of the empty sidebar -- was the one
+            obvious place to grab the window by and the only one that did
+            nothing. */}
+        <div className="sidebar-spacer" data-tauri-drag-region={mobile ? undefined : true} />
       </aside>
 
       <div className="main">
-        <div className="titlebar toolbar" data-tauri-drag-region={mobile ? undefined : true}>
+        {/* "deep", not a bare drag region: Tauri only drags when the
+            element under the pointer carries the attribute, and this row is
+            wall-to-wall children -- so the window could only be dragged by
+            the few bare pixels between buttons. Its walk up the tree still
+            refuses to drag from a button/input, so the controls in here are
+            unaffected. */}
+        <div className="titlebar toolbar" data-tauri-drag-region={mobile ? undefined : "deep"}>
           {mobile && selectionMode ? (
             <>
               <button

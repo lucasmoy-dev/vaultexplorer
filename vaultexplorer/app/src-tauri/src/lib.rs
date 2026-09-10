@@ -1447,6 +1447,11 @@ fn open_extra_explorer_window(app: &tauri::AppHandle) {
             return;
         }
     }
+    // Anything but "main-*" here needs adding to capabilities/*.json too:
+    // a window whose label matches no capability gets no plugin
+    // permissions at all, which showed up as this window being unable to
+    // open a file ("plugin:opener|open_path not allowed by ACL") or even
+    // be dragged by its titlebar, while the first window was fine.
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2);
     let label = format!("main-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
     // Mirrors the main window's tauri.conf.json declaration (minus

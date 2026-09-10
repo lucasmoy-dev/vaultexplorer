@@ -152,9 +152,12 @@ export function PlayerWindow({ kind, items, startIndex }: PlayerWindowProps): Re
       onMouseMove={wake}
       onTouchStart={wake}
     >
-      <div className="player-titlebar" data-tauri-drag-region>
+      {/* "deep" so the spacer and anything else in the bar drags the
+          window too -- a bare drag region only fires for direct clicks on
+          the element that carries it (buttons still block dragging). */}
+      <div className="player-titlebar" data-tauri-drag-region="deep">
         <TrafficLights onMaximize={toggleFullscreen} />
-        <div className="player-title" title={current?.title ?? ""} data-tauri-drag-region>
+        <div className="player-title" title={current?.title ?? ""}>
           {current?.title ?? ""}
         </div>
         <div className="player-titlebar-spacer" />
