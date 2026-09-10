@@ -19,6 +19,9 @@ export interface Peer {
   completion: number | null;
 }
 
+/** What one device does with a folder it shares. */
+export type FolderMode = "twoWay" | "receiveOnly" | "archive";
+
 export interface SharedFolder {
   id: string;
   label: string;
@@ -29,7 +32,9 @@ export interface SharedFolder {
   files: number;
   conflicts: number;
   bytesPerSecond: number;
-  readOnly: boolean;
+  mode: FolderMode;
+  /** What this copy holds that the others no longer have. */
+  extraBytes: number;
   freeBytes: number | null;
   pendingBytes: number;
   wifiOnly: boolean;
@@ -132,8 +137,8 @@ export const api = {
   linkFor: (folderId: string) => invoke<LinkStatus | null>("link_for", { folderId }),
   resolveDestination: (chosen: string, label: string, pick?: Pick) =>
     invoke<Destination>("resolve_destination", { chosen, label, pick: pick ?? null }),
-  setFolderReadOnly: (folderId: string, readOnly: boolean) =>
-    invoke<void>("set_folder_read_only", { folderId, readOnly }),
+  setFolderMode: (folderId: string, mode: FolderMode) =>
+    invoke<void>("set_folder_mode", { folderId, mode }),
   rescan: (folderId: string) => invoke<void>("rescan", { folderId }),
   setFolderWifiOnly: (folderId: string, wifiOnly: boolean) =>
     invoke<void>("set_folder_wifi_only", { folderId, wifiOnly }),

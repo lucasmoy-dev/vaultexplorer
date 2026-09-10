@@ -217,6 +217,15 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
                 Value::String(code.encode().map_err(plain)?)
             }
 
+            "setFolderMode" => {
+                let mode = serde_json::from_value(args["mode"].clone()).map_err(plain)?;
+                client
+                    .set_folder_mode(&arg!(args, "folderId"), mode)
+                    .await
+                    .map_err(plain)?;
+                Value::Null
+            }
+
             // What can still be recovered out of a folder. On a phone these
             // are the copies the engine keeps beside the files: Android has
             // no recycle bin an app may write to in the background.
@@ -335,14 +344,6 @@ fn dispatch(method: &str, args: Value) -> Result<Value, String> {
                 Value::Null
             }
 
-            "setFolderReadOnly" => {
-                let read_only = args["readOnly"].as_bool().ok_or("missing readOnly")?;
-                client
-                    .set_folder_read_only(&arg!(args, "folderId"), read_only)
-                    .await
-                    .map_err(plain)?;
-                Value::Null
-            }
 
             // The phone tells the core where it may put a folder it accepts on
             // its own, and where to keep what the engine cannot.

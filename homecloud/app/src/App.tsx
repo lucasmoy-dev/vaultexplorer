@@ -11,6 +11,7 @@ import {
   shortId,
   type CodePreview,
   type DeletedFile,
+  type FolderMode,
   type Destination,
   type Invitation,
   type LinkStatus,
@@ -576,24 +577,22 @@ function FolderSheet({
   // What the user just asked for, until the next poll confirms it. A checkbox
   // that springs back for a second and a half reads as one that did not work,
   // and gets clicked again.
-  const [wanted, setWanted] = useState<{ readOnly?: boolean; wifiOnly?: boolean }>({});
+  const [wanted, setWanted] = useState<{ mode?: FolderMode; wifiOnly?: boolean }>({});
   const paused = folder.state.kind === "paused";
-  const readOnly = wanted.readOnly ?? folder.readOnly;
+  const mode = wanted.mode ?? folder.mode;
   const wifiOnly = wanted.wifiOnly ?? folder.wifiOnly;
 
   // Once the engine agrees, the guess has nothing left to say.
   useEffect(() => {
     setWanted((current) => {
       const settled = { ...current };
-      if (settled.readOnly === folder.readOnly || settled.readOnly === undefined) {
-        delete settled.readOnly;
-      }
+      if (settled.mode === folder.mode || settled.mode === undefined) delete settled.mode;
       if (settled.wifiOnly === folder.wifiOnly || settled.wifiOnly === undefined) {
         delete settled.wifiOnly;
       }
       return settled;
     });
-  }, [folder.readOnly, folder.wifiOnly]);
+  }, [folder.mode, folder.wifiOnly]);
 
   async function showCode() {
     try {
@@ -675,25 +674,34 @@ function FolderSheet({
 
       {advancedOpen && (
         <div className="advanced">
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={readOnly}
-              onChange={(e) => {
-                const value = e.target.checked;
-                setWanted((current) => ({ ...current, readOnly: value }));
-                void act(
-                  () => api.setFolderReadOnly(folder.id, value),
-                  // A guess that turned out wrong must not outlive the attempt.
-                  () => setWanted((current) => ({ ...current, readOnly: undefined })),
-                );
-              }}
-            />
-            <span>
-              Solo lectura
-              <em>Recibe los cambios de los demás, pero nunca envía los suyos.</em>
-            </span>
-          </label>
+          <p className="section">Qué hace esta copia</p>
+          {MODES.map((option) => (
+            <label className="toggle" key={option.mode}>
+              <input
+                type="radio"
+                name={`mode-${folder.id}`}
+                checked={mode === option.mode}
+                onChange={() => {
+                  setWanted((current) => ({ ...current, mode: option.mode }));
+                  void act(
+                    () => api.setFolderMode(folder.id, option.mode),
+                    // A guess that turned out wrong must not outlive the attempt.
+                    () => setWanted((current) => ({ ...current, mode: undefined })),
+                  );
+                }}
+              />
+              <span>
+                {option.title}
+                <em>{option.explanation}</em>
+              </span>
+            </label>
+          ))}
+          {mode === "archive" && folder.extraBytes > 0 && (
+            <p className="hint">
+              Ahora mismo guarda {formatBytes(folder.extraBytes)} que ya no están en los otros
+              dispositivos.
+            </p>
+          )}
 
           <label className="toggle">
             <input
@@ -782,6 +790,32 @@ function FolderSheet({
     </div>
   );
 }
+
+/**
+ * The three things a copy of a folder can be.
+ *
+ * The last one is what turns a computer into somewhere a full phone can
+ * delete against: it takes everything, sends nothing back, and never carries
+ * out a deletion, so the videos removed from the phone stay here.
+ */
+const MODES: { mode: FolderMode; title: string; explanation: string }[] = [
+  {
+    mode: "twoWay",
+    title: "La misma carpeta en los dos sitios",
+    explanation: "Lo que cambies o borres aquí pasa a los demás, y al revés.",
+  },
+  {
+    mode: "receiveOnly",
+    title: "Solo recibe",
+    explanation: "Recibe los cambios de los demás, pero nunca envía los suyos.",
+  },
+  {
+    mode: "archive",
+    title: "Copia de seguridad: lo guarda todo",
+    explanation:
+      "Recibe todo y no borra nunca. Si en el móvil borras vídeos para hacer sitio, aquí siguen.",
+  },
+];
 
 /**
  * What was deleted, and how to get it back.

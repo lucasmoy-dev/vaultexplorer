@@ -54,7 +54,10 @@ data class SharedFolder(
     val files: Long,
     val conflicts: Long,
     val bytesPerSecond: Long,
-    val readOnly: Boolean,
+    /** "twoWay", "receiveOnly" or "archive". */
+    val mode: String,
+    /** What this copy holds that the others no longer have. */
+    val extraBytes: Long,
     val freeBytes: Long?,
     val pendingBytes: Long,
     val wifiOnly: Boolean,
@@ -74,7 +77,8 @@ data class SharedFolder(
             files = json.getLong("files"),
             conflicts = json.getLong("conflicts"),
             bytesPerSecond = json.optLong("bytesPerSecond"),
-            readOnly = json.optBoolean("readOnly"),
+            mode = json.optString("mode", "twoWay"),
+            extraBytes = json.optLong("extraBytes"),
             freeBytes = if (json.isNull("freeBytes")) null else json.optLong("freeBytes"),
             pendingBytes = json.optLong("pendingBytes"),
             wifiOnly = json.optBoolean("wifiOnly"),

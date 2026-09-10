@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use homecore::destination::{self, Pick};
 use homecore::link::{share_binary, tunnel_binary, LinkStatus, Links, DEFAULT_LIFETIME};
-use homecore::model::{Invitation, Settings, SharedFolder, ThisDevice};
+use homecore::model::{FolderMode, Invitation, Settings, SharedFolder, ThisDevice};
 use homecore::trash::DeletedFile;
 use homecore::supervisor::{engine_binary, Engine};
 use homecore::PairingCode;
@@ -337,8 +337,8 @@ async fn reconnect_all(state: State<'_, AppState>) -> UiResult<()> {
 
 /// Makes a folder one that receives but never sends, or two-way again.
 #[tauri::command]
-async fn set_folder_read_only(state: State<'_, AppState>, folder_id: String, read_only: bool) -> UiResult<()> {
-    with_engine!(state, |client| client.set_folder_read_only(&folder_id, read_only))
+async fn set_folder_mode(state: State<'_, AppState>, folder_id: String, mode: FolderMode) -> UiResult<()> {
+    with_engine!(state, |client| client.set_folder_mode(&folder_id, mode))
 }
 
 /// Drops devices that share nothing here any more — the identities left behind
@@ -754,7 +754,6 @@ pub fn run() {
             preview_code,
             redeem_code,
             resolve_destination,
-            set_folder_read_only,
             set_folder_wifi_only,
             set_folder_password,
             link_start,
@@ -771,6 +770,7 @@ pub fn run() {
             accept_invitation,
             decline_invitation,
             set_folder_paused,
+            set_folder_mode,
             deleted_files,
             restore_deleted,
             stop_sharing,

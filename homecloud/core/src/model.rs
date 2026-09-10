@@ -62,8 +62,13 @@ pub struct SharedFolder {
     /// the percentage, because "syncing 43%" says nothing about whether it is
     /// about to finish or has stalled.
     pub bytes_per_second: u64,
-    /// Takes changes from the other devices but never sends its own.
-    pub read_only: bool,
+    /// What this copy of the folder does: both ways, only receive, or keep
+    /// everything for ever.
+    pub mode: FolderMode,
+    /// What this copy holds that the other devices no longer have — the
+    /// videos deleted off a full phone, still here. Zero unless this is the
+    /// copy keeping them.
+    pub extra_bytes: u64,
     /// Room left where this folder lives. `None` when the disk cannot be asked.
     pub free_bytes: Option<u64>,
     /// Still to come down. Compared against `free_bytes` this is what says
@@ -86,6 +91,23 @@ pub struct SharedFolder {
     /// A percentage on its own does not say whether to wait or walk away;
     /// this and `bytes_per_second` are what turn it into a decision.
     pub eta_seconds: Option<u64>,
+}
+
+/// What one device does with a folder it shares.
+///
+/// The third mode is the one that turns a second device into somewhere it is
+/// safe to delete from: a phone that is running out of room can lose its
+/// videos without the copy losing them too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FolderMode {
+    /// The same folder on both sides. What most folders are.
+    TwoWay,
+    /// Takes changes from the other devices but never sends its own.
+    ReceiveOnly,
+    /// Takes everything and gives nothing back, and never applies a deletion:
+    /// what is here stays here even after it is gone everywhere else.
+    Archive,
 }
 
 /// Someone is asking to share something with this device.

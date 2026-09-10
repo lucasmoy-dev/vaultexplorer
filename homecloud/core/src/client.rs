@@ -15,8 +15,8 @@ use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    DeletionPolicy, FolderState, Invitation, OfferedFolder, Peer, Settings, SharedFolder,
-    ThisDevice,
+    DeletionPolicy, FolderMode, FolderState, Invitation, OfferedFolder, Peer, Settings,
+    SharedFolder, ThisDevice,
 };
 use crate::trash::{self, DeletedFile};
 use crate::lock::FolderKey;
@@ -526,7 +526,14 @@ impl Syncthing {
                 // screen next to a finished folder reads as a rate for it.
                 bytes_per_second: rate,
                 eta_seconds: eta(size.need, rate),
-                read_only: folder.folder_type == "receiveonly",
+                mode: mode_of(&folder),
+                // What this copy has that the others no longer do. On the
+                // device keeping the deleted videos this is the whole point;
+                // anywhere else it is zero.
+                extra_bytes: status["localBytes"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_sub(status["globalBytes"].as_u64().unwrap_or(0)),
                 free_bytes: crate::disk::free_bytes(Path::new(&folder.path)),
                 pending_bytes: size.need,
                 wifi_only: wifi_only.contains(&folder.id),
@@ -558,7 +565,17 @@ impl Syncthing {
             .get(&format!("/rest/db/completion?folder={folder_id}&device={peer}"))
             .await
             .ok()?;
-        let percent = answer["completion"].as_f64()?.clamp(0.0, 100.0).round() as u8;
+        // A device that has every byte but has not applied a deletion is not
+        // behind: it is the copy deliberately keeping what the others threw
+        // away, and reporting it at 95% for ever reads as a sync that never
+        // finishes.
+        let has_everything = answer["needBytes"].as_u64().unwrap_or(0) == 0
+            && answer["needItems"].as_u64().unwrap_or(0) == 0;
+        let percent = if has_everything {
+            100
+        } else {
+            answer["completion"].as_f64()?.clamp(0.0, 100.0).round() as u8
+        };
         if let Ok(mut cache) = self.completion.lock() {
             cache.insert(key, (Instant::now(), percent));
         }
@@ -872,11 +889,22 @@ impl Syncthing {
 
     /// Turns a folder into one that receives changes but never sends its own,
     /// or back again. Everything is two-way unless someone says otherwise.
-    pub async fn set_folder_read_only(&self, folder_id: &str, read_only: bool) -> Result<()> {
-        let folder_type = if read_only { "receiveonly" } else { "sendreceive" };
+    /// Sets what this device does with a folder.
+    ///
+    /// Archive is the interesting one: `receiveonly` so this copy never sends
+    /// anything back, and `ignoreDelete` so a deletion arriving from the other
+    /// side is not carried out. Together they make somewhere a phone can free
+    /// space against — the video leaves the phone and stays here — and the two
+    /// have to be set together, because either one alone gives something else.
+    pub async fn set_folder_mode(&self, folder_id: &str, mode: FolderMode) -> Result<()> {
+        let (folder_type, ignore_delete) = match mode {
+            FolderMode::TwoWay => ("sendreceive", false),
+            FolderMode::ReceiveOnly => ("receiveonly", false),
+            FolderMode::Archive => ("receiveonly", true),
+        };
         self.patch(
             &format!("/rest/config/folders/{folder_id}"),
-            json!({ "type": folder_type }),
+            json!({ "type": folder_type, "ignoreDelete": ignore_delete }),
         )
         .await?;
         Ok(())
@@ -1476,6 +1504,11 @@ struct FolderConfig {
     /// `receiveonly` for a folder this device never sends changes from.
     #[serde(rename = "type", default)]
     folder_type: String,
+    /// Syncthing's switch for "never apply a deletion that arrives from
+    /// somewhere else". Together with `receiveonly` it is what makes a copy
+    /// safe to delete from on the other side.
+    #[serde(default)]
+    ignore_delete: bool,
     #[serde(default)]
     paused: bool,
     #[serde(default)]
@@ -1647,6 +1680,18 @@ fn versioning_for(policy: DeletionPolicy, keep: u32, trash_command: Option<&str>
 fn points_somewhere_else(versioning: &Value, command: Option<&str>) -> bool {
     let Some(command) = command else { return false };
     versioning["type"] == "external" && versioning["params"]["command"] != command
+}
+
+fn mode_of(folder: &FolderConfig) -> FolderMode {
+    match (folder.folder_type.as_str(), folder.ignore_delete) {
+        ("receiveonly", true) => FolderMode::Archive,
+        ("receiveonly", false) => FolderMode::ReceiveOnly,
+        // A folder that sends its changes and ignores deletions is not a mode
+        // this app offers; it would delete on one side and not the other with
+        // nothing on screen saying so. Read as the plain two-way folder it
+        // mostly is, and set back to that the next time the mode is chosen.
+        _ => FolderMode::TwoWay,
+    }
 }
 
 fn policy_from_versioning(versioning: &Value) -> DeletionPolicy {
@@ -1945,6 +1990,31 @@ mod tests {
         let fallback = versioning_for(DeletionPolicy::Bin, 0, None);
         assert_eq!(fallback["type"], json!("simple"));
         assert_eq!(policy_from_versioning(&fallback), DeletionPolicy::Copies);
+    }
+
+    #[test]
+    fn a_copy_that_keeps_everything_is_read_back_as_one() {
+        let archive = FolderConfig {
+            id: "fotos".into(),
+            label: "Fotos".into(),
+            path: "/srv/fotos".into(),
+            folder_type: "receiveonly".into(),
+            ignore_delete: true,
+            paused: false,
+            devices: vec![],
+        };
+        assert_eq!(mode_of(&archive), FolderMode::Archive);
+
+        let receive_only = FolderConfig { ignore_delete: false, ..archive };
+        assert_eq!(mode_of(&receive_only), FolderMode::ReceiveOnly);
+
+        let two_way = FolderConfig { folder_type: "sendreceive".into(), ..receive_only };
+        assert_eq!(mode_of(&two_way), FolderMode::TwoWay);
+
+        // Sending changes while ignoring deletions is not a mode this app
+        // offers, and must not be mistaken for the one that is.
+        let neither = FolderConfig { ignore_delete: true, ..two_way };
+        assert_eq!(mode_of(&neither), FolderMode::TwoWay);
     }
 
     #[test]

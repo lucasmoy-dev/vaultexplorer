@@ -731,11 +731,11 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
     // What the user just asked for, until the next poll confirms it. These
     // used to close the whole sheet and then take a second and a half to show
     // the new value, so the box looked untouched and got ticked twice.
-    var wantedReadOnly by remember(folder.id) { mutableStateOf<Boolean?>(null) }
+    var wantedMode by remember(folder.id) { mutableStateOf<String?>(null) }
     var wantedWifiOnly by remember(folder.id) { mutableStateOf<Boolean?>(null) }
     // Once the engine agrees, the guess has nothing left to say.
-    LaunchedEffect(folder.readOnly, folder.wifiOnly) {
-        if (wantedReadOnly == folder.readOnly) wantedReadOnly = null
+    LaunchedEffect(folder.mode, folder.wifiOnly) {
+        if (wantedMode == folder.mode) wantedMode = null
         if (wantedWifiOnly == folder.wifiOnly) wantedWifiOnly = null
     }
 
@@ -846,27 +846,41 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                 }
 
                 if (advancedOpen) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = wantedReadOnly ?: folder.readOnly,
-                            onCheckedChange = { wanted ->
-                                wantedReadOnly = wanted
-                                // A guess that turned out wrong must not
-                                // outlive the attempt.
-                                scope.engineCall({ wantedReadOnly = null; onError(it) }) {
-                                    Repo.setFolderReadOnly(folder.id, wanted)
-                                }
-                            },
-                        )
-                        Column {
-                            Text("Solo lectura", style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                "Recibe los cambios de los demás, pero nunca envía los suyos.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Text("Qué hace esta copia", style = MaterialTheme.typography.labelMedium)
+                    val mode = wantedMode ?: folder.mode
+                    FOLDER_MODES.forEach { (value, words) ->
+                        val (title, explanation) = words
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = mode == value,
+                                onClick = {
+                                    wantedMode = value
+                                    // A guess that turned out wrong must not
+                                    // outlive the attempt.
+                                    scope.engineCall({ wantedMode = null; onError(it) }) {
+                                        Repo.setFolderMode(folder.id, value)
+                                    }
+                                },
                             )
+                            Column {
+                                Text(title, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    explanation,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
+                    if (mode == "archive" && folder.extraBytes > 0) {
+                        Text(
+                            "Ahora mismo guarda ${formatBytes(folder.extraBytes)} que ya no están " +
+                                "en los otros dispositivos.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
                             checked = wantedWifiOnly ?: folder.wifiOnly,
@@ -965,6 +979,22 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
         confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
     )
 }
+
+/**
+ * The three things a copy of a folder can be.
+ *
+ * The last one is what turns another device into somewhere a full phone can
+ * delete against: it takes everything, sends nothing back, and never carries
+ * out a deletion, so the videos removed here stay there.
+ */
+private val FOLDER_MODES = listOf(
+    "twoWay" to ("La misma carpeta en los dos sitios" to
+        "Lo que cambies o borres aquí pasa a los demás, y al revés."),
+    "receiveOnly" to ("Solo recibe" to
+        "Recibe los cambios de los demás, pero nunca envía los suyos."),
+    "archive" to ("Copia de seguridad: lo guarda todo" to
+        "Recibe todo y no borra nunca. Si en el otro dispositivo se borran vídeos para hacer sitio, aquí siguen."),
+)
 
 /**
  * What was deleted, and how to get it back.

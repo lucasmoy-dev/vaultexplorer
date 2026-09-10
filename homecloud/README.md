@@ -87,6 +87,13 @@ emulator running the real engine:
 - A third device joining a folder two devices already shared.
 - Sync continuing after the phone's UI is killed, via the foreground service.
 
+A folder can also be told to keep everything. A copy set to "Copia de
+seguridad" receives every change, sends none back, and never carries out a
+deletion — so a phone that is running out of room can delete its videos and
+they stay on the computer. That is the only safe way to free space against a
+sync, and it is one choice in the folder's advanced options rather than
+something to reason about.
+
 Nothing is deleted, only moved. A deletion arriving from another device hands
 the file to this desktop's own recycle bin — the same one the file manager
 shows — and a phone, which has no bin an app may write to, keeps it beside the

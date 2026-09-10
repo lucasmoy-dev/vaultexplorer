@@ -106,10 +106,11 @@ object Repo {
         return (0 until dropped.length()).map { dropped.getString(it) }
     }
 
-    fun setFolderReadOnly(folderId: String, readOnly: Boolean) {
+    /** "twoWay", "receiveOnly" or "archive". */
+    fun setFolderMode(folderId: String, mode: String) {
         Native.request(
-            "setFolderReadOnly",
-            JSONObject().put("folderId", folderId).put("readOnly", readOnly),
+            "setFolderMode",
+            JSONObject().put("folderId", folderId).put("mode", mode),
         )
     }
 
