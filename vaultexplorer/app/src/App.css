@@ -162,12 +162,8 @@
   --tok-key: #79c0ff;
   --tok-com: #8b949e;
 }
-:root[data-theme="light"] .unlock-screen {
-  background: linear-gradient(160deg, #f3f4f7 0%, #e6e8ee 100%);
-}
-:root[data-theme="dark"] .unlock-screen {
-  background: linear-gradient(160deg, #242427 0%, #1a1a1c 100%);
-}
+
+
 :root[data-theme="light"] .checkbox-row input[type="checkbox"] {
   border-color: rgba(0, 0, 0, 0.28);
 }
@@ -454,77 +450,16 @@ select {
 /* ============================================================
    Unlock screen
    ============================================================ */
-.unlock-screen {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(160deg, #f3f4f7 0%, #e6e8ee 100%);
-}
-@media (prefers-color-scheme: dark) {
-  .unlock-screen {
-    background: linear-gradient(160deg, #242427 0%, #1a1a1c 100%);
-  }
-}
 
-.unlock-card {
-  width: 340px;
-  padding: 30px 30px 28px;
-  background: var(--win-bg);
-  border-radius: 14px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  text-align: center;
-}
-.unlock-badge {
-  width: 62px;
-  height: 62px;
-  border-radius: 16px;
-  margin: 0 auto 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  background: linear-gradient(160deg, var(--accent-grad-top), var(--accent-grad-bot));
-  box-shadow: 0 6px 16px rgba(10, 108, 255, 0.4);
-}
-.unlock-card h1 {
-  font-size: 22px;
-  font-weight: 700;
-  margin: 0 0 2px;
-}
-.unlock-sub {
-  font-size: 12.5px;
-  color: var(--text-2);
-  margin: 0 0 20px;
-}
-.unlock-card label {
-  display: flex;
-  flex-direction: column;
-  text-align: left;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-2);
-  gap: 5px;
-  margin-bottom: 12px;
-}
-.unlock-card input {
-  font-family: var(--font);
-  font-size: 13px;
-  padding: 8px 10px;
-  border-radius: 7px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  background: var(--win-bg);
-  color: var(--text);
-  outline: none;
-  user-select: text;
-}
-.unlock-card input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(10, 108, 255, 0.25);
-}
+
+
+
+
+
+
+
+
+
 .hint {
   font-size: 11.5px;
   color: var(--text-2);
@@ -727,15 +662,7 @@ select {
   flex-shrink: 0;
   position: relative;
 }
-.sync-badge {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  display: flex;
-  border-radius: 50%;
-  background: var(--win-bg);
-  box-shadow: 0 0 0 1.5px var(--win-bg);
-}
+
 /* Syncing/synced convention shared by the sidebar favorite dot and the
    grid/list tile badge: spin while a sync is actually in flight, flash
    green for a moment right after it finishes, otherwise just the plain
@@ -2591,50 +2518,17 @@ li.md-task[draggable="true"] {
 .info-row > span:last-child {
   user-select: text;
 }
-.qr-code {
-  display: flex;
-  justify-content: center;
-  background: #fff;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-}
-.qr-code svg {
-  width: 180px;
-  height: 180px;
-}
+
+
 .sheet-card h3 {
   margin: 0 0 12px;
   font-size: 15px;
   font-weight: 700;
 }
-.reorganize-sheet {
-  width: 480px;
-}
-.reorganize-log {
-  height: 260px;
-  overflow-y: auto;
-  padding: 10px;
-  border-radius: 8px;
-  background: var(--field-bg);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
-  margin-bottom: 12px;
-}
-.reorganize-log-line {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.reorganize-spinner {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid var(--toolbar-border, rgba(127, 127, 127, 0.3));
-  border-top-color: var(--accent);
-  animation: reorganize-spin 0.8s linear infinite;
-  margin-right: auto;
-}
+
+
+
+
 @keyframes reorganize-spin {
   to {
     transform: rotate(360deg);
@@ -2771,71 +2665,19 @@ li.md-task[draggable="true"] {
 .checkbox-row input[type="checkbox"]:focus-visible {
   box-shadow: 0 0 0 3px rgba(10, 108, 255, 0.3);
 }
-.free-space-sheet {
-  width: 480px;
-}
-.free-space-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-2);
-  margin-bottom: 10px;
-}
-.free-space-list {
-  max-height: 280px;
-  overflow-y: auto;
-  border-radius: 8px;
-  background: var(--field-bg);
-  padding: 2px 10px;
-  margin-bottom: 10px;
-}
+
+
+
 /* Overrides `.checkbox-row`'s own `width: max-content` (right for a
    short standalone label, wrong here where the size on the right needs
    to be pushed all the way to the row's far edge). */
-.free-space-row {
-  width: 100%;
-  margin-bottom: 0;
-  padding: 6px 0;
-  border-bottom: 0.5px solid var(--toolbar-border);
-}
-.free-space-row:last-child {
-  border-bottom: none;
-}
-.free-space-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.free-space-name {
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.free-space-path {
-  font-size: 10.5px;
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.free-space-size {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: var(--text-2);
-  font-variant-numeric: tabular-nums;
-}
-.free-space-summary {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  font-size: 12.5px;
-  margin-bottom: 10px;
-}
+
+
+
+
+
+
+
 .readme-area {
   width: 100%;
   min-height: 70px;
@@ -3904,63 +3746,17 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ---- AnimeFLV episode picker (double-click result -> pick episode ->
    opens that episode's real page externally) ---- */
-.animeflv-episode-card {
-  width: 560px;
-  display: flex;
-  flex-direction: column;
-}
-.animeflv-episode-hint {
-  margin: 0 0 12px;
-  color: var(--text-2);
-  font-size: 12.5px;
-}
-.animeflv-episode-list {
-  height: 360px;
-  overflow-y: auto;
-  border: 0.5px solid var(--toolbar-border);
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 14px;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 12px;
-}
-.animeflv-episode-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 6px;
-  border-radius: 8px;
-  cursor: default;
-}
-.animeflv-episode-tile:hover {
-  background: var(--hover-bg, rgba(127, 127, 127, 0.16));
-}
-.animeflv-episode-thumb-wrap {
-  width: 100%;
-  aspect-ratio: 3 / 2;
-}
-.animeflv-episode-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: 6px;
-  background: var(--field-bg);
-}
-.animeflv-episode-thumb-blank {
-  background: var(--field-bg);
-}
-.animeflv-episode-number {
-  font-size: 12px;
-  color: var(--text-2);
-}
-.is-mobile .animeflv-episode-card {
-  width: min(94vw, 460px);
-}
-.is-mobile .animeflv-episode-list {
-  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
-}
+
+
+
+
+
+
+
+
+
+
+
 
 /* ---- inline video/audio player in the preview pane ---- */
 .preview-media {
@@ -4107,14 +3903,8 @@ input[type="range"]::-webkit-slider-thumb {
    badge's 5px inset put it nearly centered over the icon (the "cloud icon
    goes too far left" report). Hug the corner instead, and shrink it so it
    marks the icon rather than covering it. */
-.sidebar-item.icon-only .sync-badge {
-  right: -2px;
-  bottom: -2px;
-}
-.sidebar-item.icon-only .sync-badge svg {
-  width: 10px;
-  height: 10px;
-}
+
+
 
 /* Horizontal duration selector in the sensitive-file unlock sheet: one row of
    chips acting as radio buttons, so the session length is a visible choice at
@@ -4150,55 +3940,16 @@ input[type="range"]::-webkit-slider-thumb {
 /* ============================================================
    Notes view (Google Keep-style card grid for markdown files)
    ============================================================ */
-.notes-view {
-  padding: 14px;
-  height: 100%;
-  overflow-y: auto;
-  box-sizing: border-box;
-}
+
 /* Pure-CSS masonry: a multi-column flow with each card barred from
    splitting across columns -- the same trick every "CSS masonry without
    JS" writeup uses, good enough here since cards are short and don't
    need true top-to-bottom reading order. */
-.notes-grid {
-  column-width: 180px;
-  column-gap: 12px;
-}
-.note-card {
-  break-inside: avoid;
-  margin-bottom: 12px;
-  border-radius: 10px;
-  padding: 12px 14px;
-  /* A card stays a fixed light "paper" color (like the fixed dark text
-     below) regardless of the app's own light/dark theme -- same choice
-     Keep itself makes, and it's what makes the colored-tag backgrounds
-     (set inline, see NoteCard) read correctly against always-dark text. */
-  background: #fffef7;
-  min-height: 64px;
-  box-sizing: border-box;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-  cursor: pointer;
-  color: #202124;
-  position: relative;
-  transition: box-shadow 0.1s ease;
-}
-.note-card.drop-target {
-  box-shadow: 0 0 0 2px var(--accent);
-}
-.note-card-title {
-  font-weight: 700;
-  font-size: 13.5px;
-  margin-bottom: 6px;
-  overflow-wrap: break-word;
-}
-.note-card-body {
-  font-size: 12.5px;
-  line-height: 1.4;
-  overflow-wrap: break-word;
-  max-height: 160px;
-  overflow: hidden;
-  opacity: 0.85;
-}
+
+
+
+
+
 /* Rendered markdown (see renderMarkdownToHtml) inside a card needs to
    read as a *preview*, not full-size document flow -- real <h1>-<h6> tags
    at their normal size would dwarf a 180px-wide card. */
@@ -4206,82 +3957,22 @@ input[type="range"]::-webkit-slider-thumb {
   font-size: 13px;
   margin: 0 0 4px;
 }
-.note-card-body p {
-  margin: 0 0 6px;
-}
+
 .note-card-body :is(ul, ol) {
   margin: 0 0 6px;
   padding-left: 18px;
 }
-.note-card-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 8px;
-  opacity: 0;
-  transition: opacity 0.1s ease;
-}
-.note-card:hover .note-card-actions {
-  opacity: 1;
-}
-.note-card-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border-radius: 50%;
-  color: #5f6368;
-  background: transparent;
-}
-.note-card-action:hover {
-  background: rgba(0, 0, 0, 0.08);
-}
-.note-card-action.active {
-  color: #202124;
-  opacity: 1;
-}
-.note-card-color-picker {
-  position: relative;
-  margin-left: auto;
-}
-.note-card-color-dot {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 1.5px solid;
-}
-.note-color-palette {
-  position: absolute;
-  bottom: 26px;
-  right: 0;
-  display: flex;
-  gap: 5px;
-  padding: 6px;
-  border-radius: 8px;
-  background: var(--win-bg);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
-  z-index: 1;
-}
-.note-color-swatch {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  padding: 0;
-}
-.note-color-swatch.none {
-  background: #fffef7;
-}
-.notes-section-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-2);
-  margin: 4px 0 8px;
-}
+
+
+
+
+
+
+
+
+
+
+
 
 /* ============================================================
    Library (see LibraryShelf.tsx) -- an experimental wooden-bookshelf
@@ -4297,11 +3988,7 @@ input[type="range"]::-webkit-slider-thumb {
    that exact pitch by JS, not a background-image trick, so each one can
    carry a real drop shadow.
    ============================================================ */
-.library-view {
-  height: 100%;
-  overflow-y: auto;
-  box-sizing: border-box;
-}
+
 /* A tileable wood-grain texture (fractal noise stretched into long
    horizontal fibers, then tinted brown) -- reused on both the back wall
    and every board face so the whole case reads as the same material,
@@ -4309,19 +3996,7 @@ input[type="range"]::-webkit-slider-thumb {
 :root {
   --wood-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.012 0.4' numOctaves='2' seed='11' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.30 0 0 0 0 0.17 0 0 0 0 0.07 0 0 0 0.4 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-.library-shelf {
-  position: relative;
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: 34px 18px;
-  padding: 14px 30px 8px;
-  min-height: 100%;
-  box-sizing: border-box;
-  background-image: var(--wood-grain), linear-gradient(180deg, #d9924a, #a8632c);
-  background-repeat: repeat, no-repeat;
-  background-size: 180px 90px, auto;
-}
+
 
 /* ---- real shelf boards (see ShelfBoards in LibraryShelf.tsx): a dark
    contact-shade where items rest, a hard bright specular lip right below
@@ -4333,332 +4008,73 @@ input[type="range"]::-webkit-slider-thumb {
    shelf's own left/right edges (visible cubby side panels, foreshortened
    and in shadow) are the other missing depth cue: without them the case
    read as a single flat wall with no sides. */
-.shelf-boards {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-}
-.shelf-board {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 46px;
-}
-.shelf-board-shade {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 10px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0));
-}
-.shelf-board-lip {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 9px;
-  height: 7px;
-  background: linear-gradient(180deg, #ffe2b0, #e0a24e);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
-}
+
+
+
+
 /* The front face is the board seen edge-on, so it should read as a plank
    a couple of centimetres thick, not a slab -- 24px looked like the
    latter. Thinner face + the unchanged lip above it gives the shelf a
    lighter, more furniture-like edge. */
-.shelf-board-face {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 16px;
-  height: 10px;
-  background-image: var(--wood-grain),
-    linear-gradient(180deg, #c47a34 0%, #96591f 30%, #6e3c17 65%, #3c2109 100%);
-  background-repeat: repeat, no-repeat;
-  background-size: 180px 90px, auto;
-  background-blend-mode: soft-light, normal;
-  box-shadow: 0 7px 10px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-}
-.shelf-side-wall {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 26px;
-  z-index: 2;
-}
+
+
 /* The sides are the bookcase's own uprights -- planks seen edge-on, with
    the same grain and palette as the boards. They were plain black
    gradients, which read as vignetting rather than as furniture. */
-.shelf-side-wall-left {
-  left: 0;
-  background-image: var(--wood-grain),
-    linear-gradient(to right, #6e3c17 0%, #96591f 45%, #3c2109 100%);
-  background-repeat: repeat, no-repeat;
-  background-size: 180px 90px, auto;
-  background-blend-mode: soft-light, normal;
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.14), 6px 0 12px rgba(0, 0, 0, 0.45);
-}
-.shelf-side-wall-right {
-  right: 0;
-  background-image: var(--wood-grain),
-    linear-gradient(to left, #6e3c17 0%, #96591f 45%, #3c2109 100%);
-  background-repeat: repeat, no-repeat;
-  background-size: 180px 90px, auto;
-  background-blend-mode: soft-light, normal;
-  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.14), -6px 0 12px rgba(0, 0, 0, 0.45);
-}
+
+
 
 /* ---- shared: every item stands on a fixed-height shelf slot (see
    ROW_HEIGHT in LibraryShelf.tsx) and casts its own contact shadow onto
    the surface right under it -- the single biggest thing that turns a
    flat cutout into something that reads as sitting there. */
-.shelf-item {
-  position: relative;
-  z-index: 1;
-  height: 150px;
-  /* Items sat a touch high above the board's lip -- 5px down is where
-     they read as actually resting on the wood rather than hovering just
-     over it (measured against .shelf-board-lip's own top edge). */
-  transform: translateY(5px);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  flex-shrink: 0;
-  cursor: pointer;
-}
-.shelf-item-shadow {
-  position: absolute;
-  bottom: -6px;
-  left: 50%;
-  width: 92%;
-  height: 11px;
-  transform: translateX(-50%);
-  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.28) 45%, rgba(0, 0, 0, 0) 78%);
-  pointer-events: none;
-}
+
+
 
 /* ---- books/ebooks/PDFs: a bound stack, not a single sheet -- two
    offset "pages" behind the cover give it real thickness, and a diagonal
    gloss sheen on the cover itself (paper/cloth catching light at an
    angle) is what a flat color block was missing. */
-.shelf-book {
-  position: relative;
-  width: 108px;
-  height: 150px;
-  filter: drop-shadow(3px 6px 5px rgba(0, 0, 0, 0.45));
-}
-.shelf-item:hover .shelf-book {
-  filter: drop-shadow(3px 6px 5px rgba(0, 0, 0, 0.45)) brightness(1.08);
-}
-.shelf-book-page {
-  position: absolute;
-  inset: 2px 0 2px 0;
-  border-radius: 1px 3px 3px 1px;
-}
-.shelf-book-page-2 {
-  background: #d8d0b8;
-  transform: translate(3px, -3px);
-}
-.shelf-book-page-1 {
-  background: #eee6d2;
-  transform: translate(1.5px, -1.5px);
-}
-.shelf-book-cover {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  border-radius: 1px 3px 3px 1px;
-  object-fit: cover;
-  /* A cover-bound edge: a touch darker along the left few px (the spine
-     side) than the rest of the face, plus a slim highlight down the very
-     left edge -- enough to read as "a book standing at a slight angle"
-     without needing real perspective/3D transforms. */
-  box-shadow: inset 3px 0 5px rgba(0, 0, 0, 0.3), inset 1px 0 0 rgba(255, 255, 255, 0.25),
-    0 0 0 1px rgba(0, 0, 0, 0.15);
-}
-.shelf-book-cover::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(115deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0) 22%, rgba(255, 255, 255, 0) 78%, rgba(255, 255, 255, 0.1) 100%);
-  pointer-events: none;
-}
-.shelf-book-cover-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 10px;
-  box-sizing: border-box;
-}
-.shelf-book-title {
-  color: rgba(255, 255, 255, 0.94);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.3;
-  text-align: center;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  -webkit-box-orient: vertical;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-}
+
+
+
+
+
+
+
+
+
 
 /* ---- photographs (jpg): a framed picture, propped up straight against
    the wall -- not tilted, a real frame does not lean on its own. */
-.shelf-frame {
-  width: 108px;
-  height: 138px;
-  box-sizing: border-box;
-  padding: 8px;
-  border-radius: 3px;
-  background: linear-gradient(135deg, #c9a066, #7a5a34);
-  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.25);
-}
-.shelf-frame-mat {
-  width: 100%;
-  height: 100%;
-  padding: 4px;
-  box-sizing: border-box;
-  background: #f2efe6;
-}
-.shelf-frame-photo {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-}
-.shelf-frame-photo-placeholder {
-  background: #c7c2b4;
-}
+
+
+
+
 
 /* ---- non-photographic images (png/gif/webp/svg -- a screenshot,
    graphic, flyer): a plain printed sheet standing straight, no frame. */
-.shelf-flyer {
-  width: 108px;
-  height: 148px;
-  box-sizing: border-box;
-  padding: 5px;
-  border-radius: 2px;
-  background: #f4f2ec;
-  box-shadow: 0 5px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
-}
-.shelf-flyer-image {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-  border-radius: 1px;
-}
-.shelf-flyer-placeholder {
-  background: #d8d4c6;
-}
+
+
+
 
 /* ---- video: a VHS tape lying face-out, its own thumbnail as the label
    artwork, a dark "tape window" strip along the bottom. */
-.shelf-vhs {
-  position: relative;
-  width: 128px;
-  height: 82px;
-  box-sizing: border-box;
-  padding: 6px;
-  border-radius: 3px;
-  background: linear-gradient(160deg, #2a2a2a, #131313);
-  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-}
-.shelf-vhs-label {
-  width: 100%;
-  height: 56%;
-  border-radius: 1px;
-  overflow: hidden;
-  background: #e8e5da;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
-  box-sizing: border-box;
-}
-.shelf-vhs-thumb {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-}
-.shelf-vhs-title {
-  color: rgba(255, 255, 255, 0.95);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.25;
-  text-align: center;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-}
-.shelf-vhs-window {
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  bottom: 6px;
-  height: 14px;
-  border-radius: 1px;
-  background: #050505;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-}
-.shelf-vhs-window::before,
-.shelf-vhs-window::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  transform: translateY(-50%);
-  background: radial-gradient(circle at 35% 35%, #4a4a4a, #1a1a1a 70%);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.6);
-}
-.shelf-vhs-window::before {
-  left: 10px;
-}
-.shelf-vhs-window::after {
-  right: 10px;
-}
+
+
+
+
+
+
+
+
 
 /* ---- audio: a record sleeve with the disc itself peeking out past the
    bottom-right corner. */
-.shelf-vinyl {
-  position: relative;
-  width: 112px;
-  height: 112px;
-}
-.shelf-vinyl-sleeve {
-  width: 100%;
-  height: 100%;
-  box-sizing: border-box;
-  padding: 8px;
-  border-radius: 2px;
-  display: flex;
-  align-items: flex-end;
-  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.2);
-}
-.shelf-vinyl-title {
-  color: rgba(255, 255, 255, 0.94);
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1.25;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-}
-.shelf-vinyl-disc {
-  position: absolute;
-  right: -8px;
-  bottom: -6px;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: radial-gradient(circle, #3a3a3a 0%, #161616 55%, #000 100%);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-}
+
+
+
+
 
 /* ---- folders: standing on their side like a hanging folder between
    books (portrait, not lying flat), the tab poking out on the upper-right
@@ -4666,247 +4082,65 @@ input[type="range"]::-webkit-slider-thumb {
    is written on the front like a label (kept upright/horizontal even
    though the folder itself is "rotated" into a standing orientation),
    not captioned underneath. */
-.shelf-folder {
-  position: relative;
-  width: 108px;
-  height: 150px;
-  filter: drop-shadow(3px 6px 5px rgba(0, 0, 0, 0.45));
-}
-.shelf-folder-tab {
-  position: absolute;
-  top: 10px;
-  right: 0;
-  width: 20px;
-  height: 34px;
-  border-radius: 0 6px 6px 0;
-}
-.shelf-folder-front {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 14px;
-  bottom: 0;
-  border-radius: 2px 5px 5px 2px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), inset -14px 0 18px rgba(0, 0, 0, 0.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 8px;
-  box-sizing: border-box;
-}
-.shelf-folder-label {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: rgba(0, 0, 0, 0.62);
-  text-align: center;
-  line-height: 1.3;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 7;
-  -webkit-box-orient: vertical;
-  word-break: break-word;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
-}
+
+
+
+
 
 /* ---- everything else: a plain standing document card -- a folded
    top-right corner, an extension badge, the filename printed on the
    face -- instead of a generic file-type icon. */
-.shelf-doc {
-  position: relative;
-  width: 108px;
-  height: 150px;
-  box-sizing: border-box;
-  padding: 14px 10px 10px;
-  background: linear-gradient(160deg, #fbfaf4, #e7e3d6);
-  clip-path: polygon(0 0, 80% 0, 100% 14%, 100% 100%, 0 100%);
-  filter: drop-shadow(2px 5px 4px rgba(0, 0, 0, 0.4));
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.shelf-doc::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 20%;
-  height: 15%;
-  background: linear-gradient(135deg, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.22));
-  clip-path: polygon(0 0, 100% 0, 100% 100%);
-}
-.shelf-doc-name {
-  font-size: 11px;
-  font-weight: 600;
-  color: #3a3730;
-  text-align: center;
-  line-height: 1.3;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 7;
-  -webkit-box-orient: vertical;
-  word-break: break-word;
-}
-.shelf-doc-ext {
-  flex-shrink: 0;
-  padding: 2px 7px;
-  border-radius: 3px;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: rgba(255, 255, 255, 0.94);
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
-}
-.notes-others {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
-}
-.notes-other-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  width: 76px;
-  padding: 8px 4px;
-  border-radius: 8px;
-  background: none;
-  font-size: 11px;
-  color: var(--text);
-  text-align: center;
-  overflow-wrap: break-word;
-}
-.notes-other-tile:hover {
-  background: var(--row-hover, rgba(127, 127, 127, 0.12));
-}
-.notes-other-tile.selected {
-  background: var(--selection-bg, var(--accent));
-  color: #fff;
-}
-.notes-empty {
-  color: var(--text-2);
-  font-size: 13px;
-  text-align: center;
-  margin-top: 40px;
-}
+
+
+
+
+
+
+
+
+
 
 /* ============================================================
    Internet view (desktop-only experiment -- see InternetView.tsx)
    ============================================================ */
-.internet-view {
-  height: 100%;
-  overflow-y: auto;
-  box-sizing: border-box;
-}
-.internet-search-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
-}
-.internet-search-field {
-  flex: 1;
-  width: auto;
-}
+
+
+
 /* Focusable so arrow-key nav/select-all work without an extra click once
    a tile's already been clicked -- outline suppressed since the file
    grid it's mimicking has no focus ring either (selection itself is the
    visual feedback). */
-.internet-results-wrap {
-  outline: none;
-}
+
 /* `.entries.icon.internet-results`, not `.internet-results` alone: the
    base grid's own `.entries.icon` rule is (0,2,0) and wins over a single
    class no matter the source order, so every earlier attempt to widen
    these columns silently did nothing and the grid kept rendering at the
    92px file-icon track size -- the actual cause of the "still too
    crammed" complaints. */
-.entries.icon.internet-results {
-  padding: 18px 16px 28px;
-  /* Tracks flex to fill the row (1fr) instead of being capped at a fixed
-     max: these tiles are thumbnail-led, so leftover width is better spent
-     on bigger thumbnails than on a growing gutter. */
-  /* 300px floor, not 240: reported as "everything is tiny" at the narrow
-     window widths this app is actually used at, where a 240px floor still
-     fit four columns of postage stamps. Fewer, bigger tiles. */
-  grid-template-columns: repeat(auto-fill, minmax(calc(300px * var(--icon-scale, 1)), 1fr));
-  gap: 26px 18px;
-}
+
 /* The base file grid sizes .entry-icon as a fixed 64x64 glyph slot, which
    a 16:9 video thumbnail can only overflow -- it spilled over the title
    below it and into the next row, which is what made this grid look
    broken. Here the slot is the thumbnail: full column width, natural
    height, and the anchor the duration badge positions against. */
-.internet-results .entry.icon .entry-icon {
-  width: 100%;
-  height: auto;
-  position: relative;
-  display: block;
-  filter: none;
-}
-.internet-thumb {
-  display: block;
-  width: 100%;
-  height: auto;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
-  border-radius: 8px;
-  background: var(--field-bg);
-}
+
+
 /* Left-aligned, full-width text under the thumbnail rather than the file
    grid's centered, 92px-capped filename -- video titles are sentences,
    not filenames, and centering them ragged under a wide thumbnail is
    what read as "ugly". */
-.internet-results .entry.icon {
-  align-items: stretch;
-  gap: 8px;
-  padding: 8px;
-}
+
 /* A plain block, not the file grid's clamped -webkit-box: the clamp has
    to live on the title alone (see .internet-title), or it swallows the
    published-date line that sits inside this same span. */
-.internet-results .entry.icon .entry-name {
-  display: block;
-  max-width: none;
-  max-height: none;
-  overflow: visible;
-  text-align: left;
-  font-size: 13px;
-  line-height: 1.35;
-  padding: 0 1px;
-  background: none;
-}
-.internet-title {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.internet-results .entry.icon.selected {
-  background: var(--selection-bg);
-}
+
+
+
 /* The tile itself carries the selection now, so the title doesn't need
    its own highlight pill on top of it. */
-.internet-results .entry.icon.selected .entry-name {
-  background: none;
-  color: #fff;
-}
-.internet-results .entry.icon:hover {
-  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
-}
-.internet-filters {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
-  flex-wrap: wrap;
-}
+
+
+
 /* Same look as .settings-select (the app's one established select style)
    but sized for an inline filter row instead of a full-width settings
    field -- `width: auto` alone still let this size itself off its
@@ -4915,286 +4149,72 @@ input[type="range"]::-webkit-slider-thumb {
    what's currently showing, so a real width cap it clear of instead.
    Newest-first's checkbox+label instead reuses .checkbox-row directly --
    no equivalent override needed there. */
-.internet-filters .settings-select {
-  width: auto;
-  max-width: 128px;
-  margin-bottom: 0;
-  padding: 5px 7px;
-  font-size: 12.5px;
-}
+
 /* .sheet-card input's look (the app's one established text-field style),
    without needing a .sheet-card wrapper around this bar. */
-.internet-filters input[type="text"],
-.internet-filters input:not([type]) {
-  font-family: var(--font);
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: 7px;
-  border: 1px solid rgba(0, 0, 0, 0.18);
-  background: var(--win-bg);
-  color: var(--text);
-  outline: none;
-}
-.internet-filters input[type="text"]:focus,
-.internet-filters input:not([type]):focus {
-  border-color: var(--accent);
-}
-.internet-badge {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  background: rgba(0, 0, 0, 0.75);
-  color: #fff;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
-}
-.internet-published {
-  display: block;
-  font-size: 11px;
-  color: var(--text-2);
-  font-weight: 400;
-  margin-top: 3px;
-}
+
+
+
+
 
 /* ============================================================
    Saved-search digest (auto-shown for a folder of only .ytsearch/
    .imgsearch files -- see SavedSearchDigest.tsx)
    ============================================================ */
-.digest-view {
-  height: 100%;
-  overflow-y: auto;
-  box-sizing: border-box;
-}
-.digest-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 14px;
-  border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
-}
-.digest-section {
-  padding: 10px 14px 4px;
-}
-.digest-section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 4px;
-  cursor: default;
-}
+
+
+
+
 
 /* ============================================================
    Contacts view (folder of .vcf as a real contacts list)
    ============================================================ */
-.contacts-view {
-  padding: 8px 14px;
-  height: 100%;
-  overflow-y: auto;
-  box-sizing: border-box;
-}
-.contacts-list {
-  display: flex;
-  flex-direction: column;
-}
-.contact-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 4px;
-  border-bottom: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
-  cursor: pointer;
-}
-.contact-row.selected {
-  background: var(--selection-bg, var(--accent));
-  color: #fff;
-}
-.contact-row.selected .contact-phone {
-  color: rgba(255, 255, 255, 0.8);
-}
-.contact-avatar {
-  flex-shrink: 0;
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 15px;
-  overflow: hidden;
-}
-.contact-avatar-photo {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.contact-info {
-  flex: 1;
-  min-width: 0;
-}
-.contact-name {
-  font-size: 14.5px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.contact-phone {
-  font-size: 12px;
-  color: var(--text-2);
-}
-.contact-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.contact-action-btn {
-  height: 34px;
-  border-radius: 17px;
-  background: var(--field-bg);
-  font-size: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  border: none;
-  padding: 0;
-}
-.contact-action-btn:hover {
-  filter: brightness(1.08);
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* Plain dark glyphs here read as "doesn't invite a tap" (reported
    directly) -- call/WhatsApp are the two most common contact actions,
    so they get their own recognizable colors instead of the neutral
    icon-button look everything else in this app uses. WhatsApp's real
    green, a clear "answer the phone" green for Call. */
-.contact-action-call {
-  width: 34px;
-  color: #fff;
-  background: #34c759;
-}
-.contact-action-whatsapp {
-  width: 34px;
-  color: #fff;
-  background: #25d366;
-}
+
+
 
 /* The real field-by-field editor a contact row opens into (ContactEditForm)
    -- same text-field look as `.sheet-card input` (this app's one
    established style), just laid out as a plain scrolling form instead of
    a centered dialog. */
-.contact-edit-form {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin-top: 10px;
-  max-width: 460px;
-}
-.contact-edit-top-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.contact-edit-avatar {
-  width: 52px;
-  height: 52px;
-  font-size: 20px;
-}
-.contact-edit-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.contact-edit-field input,
-.contact-edit-list-row input,
-.contact-edit-note {
-  width: 100%;
-  font-family: var(--font);
-  font-size: 13px;
-  padding: 8px 10px;
-  border-radius: 7px;
-  border: 1px solid rgba(0, 0, 0, 0.18);
-  background: var(--win-bg);
-  color: var(--text);
-  outline: none;
-  box-sizing: border-box;
-}
-.contact-edit-field input:focus,
-.contact-edit-list-row input:focus,
-.contact-edit-note:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(10, 108, 255, 0.25);
-}
-.contact-edit-note {
-  min-height: 70px;
-  resize: vertical;
-}
-.contact-edit-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.contact-edit-list-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.contact-edit-list-row input {
-  flex: 1;
-}
-.contact-edit-remove-btn {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  border: none;
-  background: var(--field-bg);
-  color: var(--text-2);
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-.contact-edit-remove-btn:hover {
-  filter: brightness(1.1);
-}
-.contact-edit-add-btn {
-  align-self: flex-start;
-  border: none;
-  background: transparent;
-  color: var(--accent);
-  font-size: 12.5px;
-  font-weight: 500;
-  padding: 2px 0;
-}
-.contact-entry.selected {
-  background: var(--selection-bg, var(--accent));
-  color: #fff;
-}
-.contact-entry.selected .contact-phone {
-  color: rgba(255, 255, 255, 0.8);
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* Same row shape as a contact, but a folder isn't a person -- no avatar
    circle/phone/call-WhatsApp actions, just an icon + name, and it's a
    drop target for the current contact selection instead of a dial target. */
-.contact-folder-row {
-  user-select: none;
-}
-.contact-folder-avatar {
-  border-radius: 6px;
-  background: none;
-}
-.contact-folder-row.drop-target {
-  box-shadow: inset 0 0 0 2px var(--accent);
-  background: var(--row-hover, rgba(127, 127, 127, 0.12));
-}
+
+
+
 
 /* ============================================================
    iOS-flavored mobile polish
@@ -5303,73 +4323,21 @@ input[type="range"]::-webkit-slider-thumb {
 /* Inline rename inside a contacts-view folder row -- matches the row's own
    name line rather than the file grid's centred tile editor, since these
    rows are left-aligned list items. */
-.contact-folder-name-edit {
-  width: 100%;
-  max-width: 320px;
-  font: inherit;
-  font-size: 13.5px;
-  color: var(--text);
-  background: var(--win-bg);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 1px 5px;
-  outline: none;
-  user-select: text;
-}
+
 
 /* In-app YouTube player (mobile) -- see InternetView's inAppPlayer. Covers
    the results rather than replacing the view, so closing it lands back on
    the same search instead of a reloaded one. */
-.inapp-player {
-  position: fixed;
-  inset: 0;
-  z-index: 2400;
-  background: #000;
-  display: flex;
-  flex-direction: column;
-}
-.inapp-player-bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 46px;
-  padding: 0 10px calc(0px + env(safe-area-inset-top, 0px));
-  background: rgba(20, 20, 22, 0.95);
-}
-.inapp-player-close {
-  width: 34px;
-  height: 34px;
-  flex: none;
-  border: none;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  font-size: 15px;
-  cursor: pointer;
-}
-.inapp-player-title {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.85);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.inapp-player-frame {
-  flex: 1;
-  width: 100%;
-  border: none;
-  background: #000;
-}
+
+
+
+
+
 
 /* "New folder here" under the Internet root tiles -- the section keeps
    real files (saved searches, .url links), so it needs an ordinary way to
    organise them. */
-.internet-root-actions {
-  padding: 4px 16px 10px;
-}
+
 
 /* Find in file (Ctrl/Cmd+F inside the text editor) -- a slim bar above the
    editing surface rather than a dialog, so the text it searches stays
@@ -5453,60 +4421,19 @@ input[type="range"]::-webkit-slider-thumb {
    a .vcf is a person, so it gets their photo where the file icon goes and
    the two actions a contact list always has. Same markup in every view,
    which is the point: contacts were never a separate view. */
-.entry-icon.entry-avatar {
-  border-radius: 50%;
-  overflow: hidden;
-  background: var(--accent, #0a6cff);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-}
-.entry-avatar-photo {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.entry-avatar-initial {
-  font-size: 0.9em;
-  line-height: 1;
-}
+
+
+
 .entry-subline {
   display: block;
   font-size: 11px;
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
-.entry-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-.entry.icon .entry-actions {
-  /* In the icon grid there is no row to sit at the end of; the actions go
-     under the name instead of pushing the tile out of shape. */
-  margin: 2px 0 0;
-  justify-content: center;
-}
-.entry-action-btn {
-  width: 26px;
-  height: 26px;
-  border: none;
-  border-radius: 50%;
-  background: var(--field-bg);
-  color: var(--text-2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.entry-action-btn:hover {
-  color: var(--text);
-  background: var(--hover-bg, rgba(127, 127, 127, 0.2));
-}
+
+
+
+
 
 /* A contact row carries two extra buttons; without a column for them the
    grid pushed them onto a second line. `has-actions` is set by EntryTile
@@ -5520,68 +4447,23 @@ input[type="range"]::-webkit-slider-thumb {
 /* The two actions carry their own meaning through colour, the way every
    phone's contact list does: green is "message on WhatsApp", blue is
    "call". Grey circles said "some buttons". */
-.entry-action-btn.whatsapp {
-  background: #25d366;
-  color: #fff;
-}
-.entry-action-btn.call {
-  background: #0a84ff;
-  color: #fff;
-}
-.entry-action-btn.whatsapp:hover,
-.entry-action-btn.call:hover {
-  filter: brightness(1.08);
-  color: #fff;
-}
+
+
+
 
 /* QR pairing scanner (Sync > Devices). A viewfinder with an aiming frame,
    not a bare video: people need to know where to point. */
-.qr-scanner {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  margin: 6px 0 10px;
-}
-.qr-scanner-video {
-  width: 100%;
-  max-width: 320px;
-  aspect-ratio: 1;
-  object-fit: cover;
-  border-radius: 12px;
-  background: #000;
-}
-.qr-scanner-frame {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(60%, 190px);
-  aspect-ratio: 1;
-  margin-top: 12%;
-  border: 2px solid rgba(255, 255, 255, 0.85);
-  border-radius: 10px;
-  pointer-events: none;
-}
-.qr-scanner-hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-2);
-  text-align: center;
-}
+
+
+
+
 
 /* Android's own back gesture owns the first few millimetres of each screen
    edge, and the video player's volume slider ran right into it -- sliding
    the volume kept registering as "go back". Keeping the control bar clear
    of the edges gives the gesture its strip and the slider its own room. */
-.is-mobile .video-controls-row {
-  padding-left: 22px;
-  padding-right: 22px;
-}
-.is-mobile .video-volume-slider {
-  max-width: 120px;
-}
+
+
 
 /* In-app folder chooser (see folder-picker-sheet.tsx) -- used wherever the
    OS directory dialog isn't available, which on Android is everywhere. */
@@ -5650,29 +4532,10 @@ input[type="range"]::-webkit-slider-thumb {
    the filter row sat above the results instead of with the field it
    belongs to. Search moves to the bottom (where the thumb is), clear of
    the tab bar, and the filters open directly under it. */
-.is-mobile .internet-view {
-  display: flex;
-  flex-direction: column;
-}
-.is-mobile .internet-search-bar {
-  order: 3;
-  border-bottom: none;
-  border-top: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
-  background: var(--toolbar-bg);
-  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
-}
-.is-mobile .internet-filters {
-  order: 4;
-  border-bottom: none;
-  border-top: 0.5px solid var(--toolbar-border, rgba(127, 127, 127, 0.2));
-  padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
-}
-.is-mobile .internet-results-wrap {
-  order: 2;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
+
+
+
+
 
 /* Actions sat in the bottom-right corner, under the thumb's path to the
    tab bar. It moves above the tabs and to the left, where it is visible

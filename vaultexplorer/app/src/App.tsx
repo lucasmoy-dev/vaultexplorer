@@ -17,7 +17,6 @@ import {
   TAG_COLORS,
   ENCRYPTED_FILE_EXT,
   osOpen,
-  PlayerItem,
 } from "./api";
 import { TitleBar, TrafficLights } from "./TitleBar";
 import { ContextMenu, MenuState, MenuItem } from "./ContextMenu";
@@ -41,8 +40,6 @@ import {
   CopyGlyph,
   CheckGlyph,
   TrashGlyph,
-  GitBranchGlyph,
-  LocalSyncGlyph,
   SettingsGlyph,
   NewFileGlyph,
   NewFolderGlyph,
@@ -58,23 +55,13 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { kindLabel, editorExtOf } from "./entryHelpers";
 import { EntryTile } from "./components/EntryTile";
 import { MyComputerView } from "./components/MyComputerView";
-import { InternetView, SavedInternetSearch, InternetDownloadItem, VideoDownloadKind } from "./components/InternetView";
-import { SavedSearchDigest } from "./components/SavedSearchDigest";
 import { SearchResults } from "./components/SearchResults";
 import { FilePreviewPane, TextEditorPane } from "./components/TextEditorPane";
-import { NotesGrid } from "./components/NotesGrid";
-import { LibraryShelf } from "./components/LibraryShelf";
-import { MusicView } from "./components/MusicView";
-import { ContactsGrid, ContactEditForm } from "./components/ContactsGrid";
-import { serializeVCard, emptyVCard } from "./vcard";
 import { ColumnView } from "./components/ColumnView";
 import { PickerView } from "./components/PickerView";
-import { PlayerWindow } from "./components/PlayerWindow";
 import { FreeUpSpaceView } from "./components/FreeUpSpaceView";
 import { FolderPickerSheet } from "./components/sheets/folder-picker-sheet";
 import { DeviceView } from "./components/DeviceView";
-import { ReorganizeSheet } from "./components/sheets/reorganize-sheet";
-import { buildSyncSubmenu } from "./menus";
 import { useSelection } from "./hooks/useSelection";
 import { useFavorites } from "./hooks/useFavorites";
 import { DEFAULT_START_KEY, PHONE_STORAGE_PATH } from "./constants";
@@ -86,17 +73,8 @@ import {
   ZipPasswordSheet,
   EncryptFileSheet,
   NewVaultSheet,
-  UnfreezeSheet,
   VaultSettingsSheet,
 } from "./components/sheets/vault-sheets";
-import {
-  GitStatusSheet,
-  MobileFolderSyncSheet,
-  GitSyncSheet,
-  LocalSyncSheet,
-  SyncthingSheet,
-  parseAddDeviceLink,
-} from "./components/sheets/sync-sheets";
 import {
   ChangeIconSheet,
   ResizeSheet,
@@ -216,19 +194,6 @@ function isPlainTextEntry(entry: Entry): boolean {
   if (dot <= 0) return false;
   const ext = entry.name.slice(dot + 1).toLowerCase();
   return ext === "txt" || ext === "md" || ext === "markdown";
-}
-
-// Same "N results for query" line SearchResults.tsx shows for the
-// generic case, reused as the `header` slot of whichever view-specific
-// grid is rendering the results instead.
-function searchResultsHeader(query: string, count: number) {
-  return (
-    <div className="search-header">
-      <span>
-        {count} {count === 1 ? "result" : "results"} for “{query}”
-      </span>
-    </div>
-  );
 }
 
 // A translucent drag-image for the native OS-level drag (see beginDrag) --
@@ -382,19 +347,13 @@ function Explorer({ home }: { home: string }) {
   useEffect(() => {
     localStorage.setItem("vaultexplorer:app-settings", JSON.stringify(appSettings));
   }, [appSettings]);
-  // P2P device pairing via a shared `vaultexplorer://add-device` link:
-  // `getCurrent` covers being *launched* by one (Linux/Windows spawn a
-  // fresh instance with the URL as a CLI arg, without the single-instance
-  // plugin to forward it to an already-running window instead), and
-  // `onOpenUrl` covers the live case wherever the platform supports it.
+  // A tap on a pinned home-screen folder shortcut arrives as a
+  // `vaultexplorer://open-folder` deep link: `getCurrent` covers being
+  // *launched* by one (Linux/Windows spawn a fresh instance with the URL
+  // as a CLI arg), `onOpenUrl` the live case.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const handle = (url: string) => {
-      const device = parseAddDeviceLink(url);
-      if (device) {
-        setIncomingDevice(device);
-        return;
-      }
       // A tap on a pinned home-screen folder shortcut (see
       // `addFolderShortcut`) arrives the same way -- launch args on
       // Linux/Windows, a live `onOpenUrl` event on Android.
@@ -455,14 +414,6 @@ function Explorer({ home }: { home: string }) {
   function endProgress(channel: Channel<ProgressEvent>) {
     const cancelId = (channel as unknown as { id: number }).id;
     setProgressOps((prev) => prev.filter((p) => p.cancelId !== cancelId));
-  }
-  // An Actions row for work that reports no percentage -- a long external
-  // run (Reorganize & Clean) that used to be invisible once its sheet was
-  // closed. Returns the "it finished" callback.
-  function beginIndeterminate(label: string): () => void {
-    const id = ++progressIdRef.current;
-    setProgressOps((prev) => [...prev, { id, label, done: 0, total: 0, status: "running" }]);
-    return () => setProgressOps((prev) => prev.filter((p) => p.id !== id));
   }
   // Cancel a running operation from the footer X: tell the backend to abort
   // (kills child processes / trips the loop cancel flag) and drop the row.
@@ -618,11 +569,6 @@ function Explorer({ home }: { home: string }) {
   }
   const [entries, setEntries] = useState<Entry[]>([]);
   const [tags, setTags] = useState<Record<string, string>>({});
-  // Git root/status for the current real-fs folder, refreshed alongside
-  // the directory listing itself -- null gitRoot means "not inside a git
-  // repo" (or we're inside a vault, where this is scoped out for v1).
-  const [gitRoot, setGitRoot] = useState<string | null>(null);
-  const [gitStatus, setGitStatus] = useState<Record<string, string>>({});
   const [ffmpegAvailable, setFfmpegAvailable] = useState(false);
   useEffect(() => {
     api.convertFfmpegAvailable().then(setFfmpegAvailable).catch(() => setFfmpegAvailable(false));
@@ -694,23 +640,6 @@ function Explorer({ home }: { home: string }) {
     });
   }
 
-  async function runTranscribe(entry: Entry) {
-    try {
-      if (!(await api.transcribeModelDownloaded())) {
-        await api.transcribeDownloadModel(beginProgress("Downloading transcription model (one-time, ~75MB)"));
-      }
-      const destName = uniqueName(`${entry.name.replace(/\.[^.]+$/, "")}.txt`);
-      await api.transcribeRun(
-        joinPath(curDir, entry.name),
-        joinPath(curDir, destName),
-        beginProgress(`Transcribing "${entry.name}"`)
-      );
-      await refresh();
-      selectOnly(destName);
-    } catch (e) {
-      setError(String(e));
-    }
-  }
   const [convertTarget, setConvertTarget] = useState<{
     // A selection, not one file: the quality prompt is asked once and
     // applied to every file in the batch.
@@ -839,132 +768,7 @@ function Explorer({ home }: { home: string }) {
     { ext: "m4a", label: "M4A", lossy: true },
   ];
 
-  const [frozenPaths, setFrozenPaths] = useState<Set<string>>(new Set());
-  const [unfreezeTarget, setUnfreezeTarget] = useState<string | null>(null);
-  const [reorganizeTarget, setReorganizeTarget] = useState<string | null>(null);
   const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
-  const refreshFrozen = useCallback(() => {
-    api
-      .listFrozenFolders()
-      .then((list) => setFrozenPaths(new Set(list.map((m) => m.original_path))))
-      .catch(() => setFrozenPaths(new Set()));
-  }, []);
-
-  // Which folders currently sync (Git and/or local), for the sidebar/grid
-  // badge and for showing "Unsync" instead of "Sync…" in the menu.
-  const [gitSyncedPaths, setGitSyncedPaths] = useState<Set<string>>(new Set());
-  const [localSyncedPaths, setLocalSyncedPaths] = useState<Set<string>>(new Set());
-  const refreshSyncStatus = useCallback(() => {
-    if (mobile) {
-      api
-        .folderSyncListPairs()
-        .then((list) => setLocalSyncedPaths(new Set(list.flatMap((p) => [p.folder_a, p.folder_b]))))
-        .catch(() => setLocalSyncedPaths(new Set()));
-      return;
-    }
-    api
-      .gitSyncListPairs()
-      .then((list) => setGitSyncedPaths(new Set(list.map((p) => p.local_path))))
-      .catch(() => setGitSyncedPaths(new Set()));
-    api
-      .localSyncListPairs()
-      .then((list) => setLocalSyncedPaths(new Set(list.flatMap((p) => [p.folder_a, p.folder_b]))))
-      .catch(() => setLocalSyncedPaths(new Set()));
-  }, [mobile]);
-  // Live "is a sync actually happening right now" for whichever paths are
-  // sync-managed -- the badge (grid tile, sidebar favorite) swaps to a
-  // spinning version of the same icon while true, the same convention
-  // Dropbox/OneDrive/Google Drive's own desktop clients use, rather than
-  // a permanently-static badge that can't tell "watched" apart from
-  // "actually moving data right now".
-  const [syncingPaths, setSyncingPaths] = useState<Set<string>>(new Set());
-  // Whatever just *finished* syncing gets a brief green "done" checkmark
-  // (same convention as Dropbox/OneDrive/Google Drive Desktop: spinner
-  // while active, a transient green check right after, then back to the
-  // plain idle badge) rather than either state lingering forever.
-  const [justSyncedPaths, setJustSyncedPaths] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    let cancelled = false;
-    let prev = new Set<string>();
-    // The background auto-sync loops are entirely best-effort -- a pair
-    // stuck failing every tick would otherwise fail silently forever with
-    // nothing ever telling the user. Tracked per path so the same failure
-    // doesn't re-show the banner every poll.
-    const shownGitSyncErrors = new Map<string, string>();
-    // Background sync/verify activity also shows as rows in the bottom-right
-    // progress panel, same as any user-started operation -- synthetic ops
-    // (no Channel, no cancel), keyed per path so a row updates in place.
-    const taskIds = new Map<string, number>();
-    function beginTask(key: string, label: string) {
-      if (taskIds.has(key)) {
-        // Refresh the label in place -- the sync row narrates the current
-        // file as the pass moves through them.
-        const id = taskIds.get(key)!;
-        setProgressOps((ops) => ops.map((p) => (p.id === id && p.label !== label ? { ...p, label } : p)));
-        return;
-      }
-      const id = ++progressIdRef.current;
-      taskIds.set(key, id);
-      setProgressOps((ops) => [...ops, { id, label, done: 0, total: 1, status: "running" }]);
-    }
-    function endTask(key: string) {
-      const id = taskIds.get(key);
-      if (id == null) return;
-      taskIds.delete(key);
-      // Show 100% for a beat before dropping the row, beginProgress's rhythm.
-      setProgressOps((ops) => ops.map((p) => (p.id === id ? { ...p, done: 1, total: 1 } : p)));
-      setTimeout(() => setProgressOps((ops) => ops.filter((p) => p.id !== id)), 1000);
-    }
-    function poll() {
-      Promise.all([
-        api.gitSyncSyncingNow().catch(() => []),
-        api.localSyncSyncingNow().catch(() => []),
-        api.syncthingSyncingNow().catch(() => []),
-        mobile ? api.folderSyncSyncingNow().catch(() => [] as string[]) : Promise.resolve([] as string[]),
-      ]).then((results) => {
-        if (cancelled) return;
-        const next = new Set(results.flat());
-        const justFinished = [...prev].filter((p) => !next.has(p));
-        for (const p of next) {
-          beginTask(`sync:${p}`, `Syncing "${baseName(p)}"`);
-        }
-        for (const p of prev) if (!next.has(p)) endTask(`sync:${p}`);
-        prev = next;
-        setSyncingPaths(next);
-        if (justFinished.length) {
-          setJustSyncedPaths((cur) => new Set([...cur, ...justFinished]));
-          setTimeout(() => {
-            if (cancelled) return;
-            setJustSyncedPaths((cur) => {
-              const after = new Set(cur);
-              justFinished.forEach((p) => after.delete(p));
-              return after;
-            });
-          }, 2500);
-        }
-      });
-      for (const path of gitSyncedPaths) {
-        api
-          .gitSyncLastError(path)
-          .then((err) => {
-            if (cancelled) return;
-            if (err && shownGitSyncErrors.get(path) !== err) {
-              shownGitSyncErrors.set(path, err);
-              setError(`Git sync failed for "${baseName(path)}": ${err}`);
-            } else if (!err) {
-              shownGitSyncErrors.delete(path);
-            }
-          })
-          .catch(() => {});
-      }
-    }
-    poll();
-    const interval = setInterval(poll, 2500);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [gitSyncedPaths, mobile]);
   const [sortKey, setSortKey] = useState<"name" | "date" | "size" | "kind" | "created">("name");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const selection = useSelection();
@@ -1102,10 +906,6 @@ function Explorer({ home }: { home: string }) {
     error: string;
   } | null>(null);
   const [encryptTarget, setEncryptTarget] = useState<Entry | null>(null);
-  const [gitSyncTarget, setGitSyncTarget] = useState<string | null>(null);
-  const [localSyncTarget, setLocalSyncTarget] = useState<string | null>(null);
-  const [syncthingTarget, setSyncthingTarget] = useState<string | null>(null);
-  const [incomingDevice, setIncomingDevice] = useState<{ id: string; name: string } | null>(null);
   const [iconTarget, setIconTarget] = useState<string | null>(null);
   const [decryptPrompt, setDecryptPrompt] = useState<{
     entry: Entry;
@@ -1132,7 +932,6 @@ function Explorer({ home }: { home: string }) {
   } | null>(null);
   // Which folder the mobile folder-to-folder sync sheet is open for
   // (folder_sync.rs).
-  const [mobileFolderSyncTarget, setMobileFolderSyncTarget] = useState<string | null>(null);
   const [iconScale, setIconScale] = useState(1);
   const [trashPath, setTrashPath] = useState<string | null>(null);
   useEffect(() => {
@@ -1163,87 +962,11 @@ function Explorer({ home }: { home: string }) {
   }, []);
   function openMyComputer() {
     setShowMyComputer(true);
-    setShowInternet(false);
     setShowDevice(false);
     setFreeUpSpaceOpen(false);
     setSearchResults(null);
     refreshDrives();
   }
-
-  // "Internet" (desktop-only experiment): same non-fs-path sidebar-entry
-  // pattern as "My Computer" above -- swaps the content area for
-  // `InternetView`, which owns its own Videos/Images sub-navigation and
-  // search state entirely by itself (see that component).
-  const [showInternet, setShowInternet] = useState(false);
-  // Set only when a `.ytsearch`/`.imgsearch` file was double-clicked (see
-  // `activate()`) -- tells InternetView to skip its root tiles and rerun
-  // that exact saved search immediately. Cleared on a plain sidebar open
-  // so that always lands on the root tiles instead of replaying whatever
-  // was last opened.
-  const [internetInitial, setInternetInitial] = useState<SavedInternetSearch | null>(null);
-  function openInternet() {
-    setShowInternet(true);
-    setShowMyComputer(false);
-    setFreeUpSpaceOpen(false);
-    setShowDevice(false);
-    setSearchResults(null);
-    setInternetInitial(null);
-  }
-  function openInternetSearchFile(saved: SavedInternetSearch) {
-    setShowInternet(true);
-    setShowMyComputer(false);
-    setFreeUpSpaceOpen(false);
-    setShowDevice(false);
-    setSearchResults(null);
-    setInternetInitial(saved);
-  }
-  // Writes a saved search straight into curDir (wherever the user was
-  // browsing before opening Internet) rather than handing off to the OS's
-  // native save dialog -- the whole point of a saved search being a real
-  // file is staying inside the app's own filesystem view; a native picker
-  // just for this one write would undercut that. Organizing it into a
-  // different folder afterward is the same cut/paste or drag the user
-  // already has for any other file.
-  async function saveInternetSearch(filename: string, content: string): Promise<string> {
-    const name = uniqueName(filename);
-    const path = joinPath(curDir, name);
-    await api.fsWriteText(path, content);
-    await refresh();
-    // Drop the Internet overlay back to the folder underneath -- curDir
-    // never moved while it was open (see the Back/Forward comment further
-    // down) -- so the saved file is immediately visible, selected and
-    // scrolled into view, instead of the user having to back out and go
-    // find it themselves.
-    setShowInternet(false);
-    selectAndReveal(name);
-    return path;
-  }
-  // A folder holding nothing but .ytsearch (or nothing but .imgsearch, or
-  // nothing but .booksearch) files gets an auto-preview digest instead of
-  // the normal file view -- desktop-only, same as the rest of Internet
-  // (search_youtube/search_images/search_books aren't registered on
-  // Android).
-  function savedSearchExtOf(list: Entry[]): "ytsearch" | "imgsearch" | "booksearch" | null {
-    if (list.length === 0 || list.some((e) => e.is_dir)) return null;
-    if (list.every((e) => e.name.toLowerCase().endsWith(".ytsearch"))) return "ytsearch";
-    if (list.every((e) => e.name.toLowerCase().endsWith(".imgsearch"))) return "imgsearch";
-    if (list.every((e) => e.name.toLowerCase().endsWith(".booksearch"))) return "booksearch";
-    return null;
-  }
-
-  // Some Linux window managers don't raise/focus an unfocused, undecorated
-  // window on click (the WM has no titlebar to hand click-to-focus off to),
-  // so a click that lands on this window while another app has focus can
-  // land without ever bringing us to front. Ask for focus explicitly.
-  useEffect(() => {
-    const requestFocus = () => {
-      if (!document.hasFocus()) {
-        getCurrentWebviewWindow().setFocus().catch(() => {});
-      }
-    };
-    window.addEventListener("mousedown", requestFocus, true);
-    return () => window.removeEventListener("mousedown", requestFocus, true);
-  }, []);
 
   const {
     favPaths,
@@ -1258,8 +981,6 @@ function Explorer({ home }: { home: string }) {
     moveFavorite,
   } = useFavorites(home, mobile);
 
-  // Custom icons keyed by full path -- works for any folder, not just
-  // favorites, so it can be set from Get Info too.
   const [customIcons, setCustomIcons] = useState<Record<string, string>>(() => {
     try {
       const raw = localStorage.getItem("vaultexplorer:custom-icons");
@@ -1290,7 +1011,6 @@ function Explorer({ home }: { home: string }) {
   }, [templates]);
 
   const [manageTemplatesOpen, setManageTemplatesOpen] = useState(false);
-  const [gitStatusOpen, setGitStatusOpen] = useState(false);
 
   async function useAsTemplate(entry: Entry) {
     try {
@@ -1356,14 +1076,6 @@ function Explorer({ home }: { home: string }) {
   const dragPaths = useRef<string[]>([]);
   const dragFavIndex = useRef<number | null>(null);
   const [draggingFavIdx, setDraggingFavIdx] = useState<number | null>(null);
-  // Pending drag payload from InternetView (see beginDrag/dragPaths above
-  // for the real-file equivalent) -- an Internet result isn't a real file
-  // yet, so there's nothing to hand a native OS-level drag, just this
-  // in-window ref a folder target's onDrop reads back out.
-  const dragInternetItems = useRef<InternetDownloadItem[] | null>(null);
-  // Set by InternetView while it is mounted (see onRegisterBack): returns
-  // true when it handled the press itself.
-  const internetBackRef = useRef<(() => boolean) | null>(null);
   const [folderPickTarget, setFolderPickTarget] = useState<
     { title: string; onPick: (path: string) => void } | null
   >(null);
@@ -1406,13 +1118,6 @@ function Explorer({ home }: { home: string }) {
 
   const inVault = loc.kind === "vault";
   const curDir = inVault ? loc.rel : loc.path; // dir key in the active space
-  const [digestDismissed, setDigestDismissed] = useState(false);
-  useEffect(() => {
-    setDigestDismissed(false);
-  }, [curDir]);
-  const savedSearchExt = mobile || loc.kind !== "fs" ? null : savedSearchExtOf(entries);
-  const showDigest = !!savedSearchExt && !digestDismissed;
-
   // "Show in folder"-type actions from other apps (Chrome's Downloads
   // panel, OBS's "Show Recordings") when VaultExplorer is the system's
   // org.freedesktop.FileManager1 (see filemanager1.rs) -- navigates here,
@@ -1915,21 +1620,6 @@ function Explorer({ home }: { home: string }) {
     };
   }, [searchResults, loc.kind, listDir]);
 
-  // For view-specific search rendering (Contacts/Library rows instead of
-  // the generic file-tile row): the active view's own grid component
-  // takes `entries: Entry[]` + a single `curDir`, but search hits span
-  // many directories, so each resolved Entry is looked up by object
-  // identity to recover its real full path instead.
-  const searchPathByEntry = useMemo(() => {
-    const m = new Map<Entry, string>();
-    if (!searchResults) return m;
-    for (const p of searchResults) {
-      m.set(searchEntries[p] ?? { name: baseName(p), is_dir: false, size: 0, mtime: 0 }, p);
-    }
-    return m;
-  }, [searchResults, searchEntries]);
-  const searchEntryList = useMemo(() => [...searchPathByEntry.keys()], [searchPathByEntry]);
-
   const refresh = useCallback(async () => {
     if (loc.kind === "vault") {
       try {
@@ -1972,31 +1662,10 @@ function Explorer({ home }: { home: string }) {
     }
     if (loc.kind === "fs") {
       api.fsGetTags(curDir).then(setTags).catch(() => setTags({}));
-      api
-        .gitRepoRoot(curDir)
-        .then((root) => {
-          setGitRoot(root);
-          if (root) {
-            api
-              .gitStatus(root)
-              .then((list) => setGitStatus(Object.fromEntries(list.map((s) => [s.path, s.status]))))
-              .catch(() => setGitStatus({}));
-          } else {
-            setGitStatus({});
-          }
-        })
-        .catch(() => {
-          setGitRoot(null);
-          setGitStatus({});
-        });
     } else {
       setTags({});
-      setGitRoot(null);
-      setGitStatus({});
     }
-    refreshFrozen();
-    refreshSyncStatus();
-  }, [curDir, loc.kind, loc.kind === "vault" ? loc.root : null, listDir, refreshFrozen, refreshSyncStatus]);
+  }, [curDir, loc.kind, loc.kind === "vault" ? loc.root : null, listDir]);
 
   useEffect(() => {
     refresh();
@@ -2005,9 +1674,10 @@ function Explorer({ home }: { home: string }) {
   // Pull-to-refresh: only starts tracking a drag when the list is already
   // scrolled to the very top (scrollTop <= 0) -- otherwise this is just a
   // normal scroll gesture and must not fight it. Disabled outside the
-  // regular list (My Computer / Internet aren't backed by `refresh()`) and
-  // on desktop, where there's no touchscreen for this to apply to.
-  const pullEligible = mobile && !showMyComputer && !showInternet && searchResults === null;
+  // regular list (My Computer isn't backed by `refresh()`) and on
+  // desktop, where there's no touchscreen for this to apply to.
+  const pullEligible = mobile && !showMyComputer && searchResults === null;
+
   // Pull-to-refresh must only arm when the thing under the finger is
   // itself at the top. Checking only the outer container meant a view with
   // its own scroller inside it (Library's shelves) armed the refresh on
@@ -2161,7 +1831,6 @@ function Explorer({ home }: { home: string }) {
     setShowMyComputer(false);
     setFreeUpSpaceOpen(false);
     setShowDevice(false);
-    setShowInternet(false);
     cancelPendingRenameClick();
     if (target.kind === "vault") {
       if (unlockedRoots.has(target.root)) {
@@ -2190,34 +1859,29 @@ function Explorer({ home }: { home: string }) {
     commitLoc(target, push);
   }
 
-  // My Computer/Internet overlay the content area without ever pushing a
-  // history entry (opening a saved search file doesn't change `loc`
-  // either) -- so Back/Forward's normal history-index math doesn't apply
-  // to them at all. Dismissing the overlay is enough: `loc`/`curDir`
+  // My Computer overlays the content area without ever pushing a history
+  // entry -- so Back/Forward's normal history-index math doesn't apply to
+  // it at all. Dismissing the overlay is enough: `loc`/`curDir`
   // never moved, so whatever's underneath is still exactly the folder the
   // user was in. Without this, Back either did nothing (disabled at
   // histIdx 0, which is exactly when a saved search opened from the
   // start-page folder) or jumped past the current folder to an earlier
   // one in history.
   function goBack() {
-    if (showMyComputer || showInternet) {
+    if (showMyComputer) {
       setShowMyComputer(false);
       setFreeUpSpaceOpen(false);
       setShowDevice(false);
-      setShowInternet(false);
-      setInternetInitial(null);
       return;
     }
     if (histIdx === 0) return;
     go(history[histIdx - 1], false).then(() => setHistIdx(histIdx - 1));
   }
   function goForward() {
-    if (showMyComputer || showInternet) {
+    if (showMyComputer) {
       setShowMyComputer(false);
       setFreeUpSpaceOpen(false);
       setShowDevice(false);
-      setShowInternet(false);
-      setInternetInitial(null);
       return;
     }
     if (histIdx >= history.length - 1) return;
@@ -2305,12 +1969,6 @@ function Explorer({ home }: { home: string }) {
       // folder view up a level while the still-open viewer hides that from
       // the user entirely (confirmed live: pressing back while playing
       // audio just kept playing with nothing visibly changing).
-      // Internet gets first refusal after the media viewer: a playing
-      // video should close on back, and a search should step back to the
-      // Videos/Images/Books tiles -- pressing back there used to leave the
-      // whole section, losing the search. InternetView registers what it
-      // can consume; anything it doesn't falls through to this chain.
-      if (internetBackRef.current?.()) return;
       if (s.mobileEditorTarget) {
         setMobileEditorTarget(null);
         s.refresh();
@@ -2493,9 +2151,6 @@ function Explorer({ home }: { home: string }) {
   const LIST_PANE_MIN = 140;
   // What the preview pane must keep for itself, so a drag can't collapse it.
   const PREVIEW_PANE_MIN = 320;
-  // Bumped after the tag updater runs, so the library is re-read and shows
-  // the titles that were just written.
-  const [musicReloadKey, setMusicReloadKey] = useState(0);
   const [listPaneWidth, setListPaneWidth] = useState<number>(() => {
     const saved = Number(localStorage.getItem("vaultexplorer:list-pane-width"));
     return Number.isFinite(saved) && saved >= LIST_PANE_MIN ? saved : LIST_PANE_DEFAULT;
@@ -2891,49 +2546,6 @@ function Explorer({ home }: { home: string }) {
     if (ARCHIVE_EXT_RE.test(entry.name)) {
       return mountArchive(dir, entry);
     }
-    // Saved Internet search (see InternetView). Malformed/hand-edited JSON
-    // just surfaces as a normal error rather than silently falling through
-    // to a text-editor open, which would show raw JSON that looks broken
-    // for no reason.
-    if (/\.(ytsearch|imgsearch|booksearch)$/i.test(entry.name)) {
-      try {
-        const saved = JSON.parse(await api.fsReadText(full)) as SavedInternetSearch;
-        if (saved.kind !== "videos" && saved.kind !== "images" && saved.kind !== "books") {
-          throw new Error("not a saved search");
-        }
-        openInternetSearchFile(saved);
-      } catch (e) {
-        setError(String(e));
-      }
-      return;
-    }
-    // A contact opens in the same form editor the Contacts view uses, from
-    // wherever it was double-clicked: a .vcf is a contact everywhere, not
-    // only inside one view (see the contact rows in EntryTile).
-    if (/\.vcf$/i.test(entry.name)) {
-      withSensitive(full, () => setMobileEditorTarget({ entry, fullPath: full, inVault: false }));
-      return;
-    }
-    // A `.url` shortcut -- what dropping an Internet video result into a
-    // folder writes (see downloadInternetItems). Opening it should do what
-    // opening the result did, not show the shortcut's own text: a YouTube
-    // link goes to the in-app player window, anything else to the browser.
-    if (/\.url$/i.test(entry.name)) {
-      try {
-        const body = await api.fsReadText(full);
-        const url = body.match(/^URL=(.+)$/mi)?.[1]?.trim();
-        if (!url) throw new Error("This shortcut has no URL in it.");
-        const ytId = url.match(/[?&]v=([A-Za-z0-9_-]{5,})/)?.[1];
-        if (ytId && !mobile) {
-          await api.openPlayerWindow("youtube", [{ key: ytId, title: entry.name.replace(/\.youtube\.url$|\.url$/i, "") }], 0);
-        } else {
-          await osOpen(url);
-        }
-      } catch (e) {
-        setError(String(e));
-      }
-      return;
-    }
     if (mobile && !appSettings.mobileExternalEditor && isPlainTextEntry(entry)) {
       setMobileEditorTarget({ entry, fullPath: full, inVault: false });
       return;
@@ -3185,62 +2797,6 @@ function Explorer({ home }: { home: string }) {
     return `${stem} ${i}${ext}`;
   }
 
-  // ---- git ----
-  function relToGitRoot(name: string): string | null {
-    if (!gitRoot) return null;
-    const full = joinPath(curDir, name);
-    if (full === gitRoot) return "";
-    if (full.startsWith(gitRoot + "/")) return full.slice(gitRoot.length + 1);
-    return null;
-  }
-  async function gitPullNow() {
-    if (!gitRoot) return;
-    try {
-      await api.gitPull(gitRoot);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-  async function gitPushNow() {
-    if (!gitRoot) return;
-    try {
-      await api.gitPush(gitRoot);
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-  async function gitStageEntry(entry: Entry) {
-    const rel = relToGitRoot(entry.name);
-    if (!gitRoot || rel === null) return;
-    try {
-      await api.gitStage(gitRoot, rel);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-  async function gitUnstageEntry(entry: Entry) {
-    const rel = relToGitRoot(entry.name);
-    if (!gitRoot || rel === null) return;
-    try {
-      await api.gitUnstage(gitRoot, rel);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-  async function gitDiscardEntry(entry: Entry) {
-    const rel = relToGitRoot(entry.name);
-    if (!gitRoot || rel === null) return;
-    try {
-      await api.gitDiscard(gitRoot, rel);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
   async function clearMetadataSelection(names: string[]) {
     if (names.length === 0) return;
     const paths = names.map((n) => joinPath(curDir, n));
@@ -3380,9 +2936,9 @@ function Explorer({ home }: { home: string }) {
       // the vault's ciphertext transparently re-encrypts whatever the
       // nested vault writes underneath it.
       const realPath = inVault ? await api.openPath(relOrAbs) : relOrAbs;
-      // Convert-in-place: encrypt the folder's existing contents into the new
-      // vault (not just drop an empty .vault.meta), so a populated folder
-      // actually becomes an encrypted vault of those files.
+      // Convert-in-place: encrypt the folder's existing contents into the
+      // new vault (not just write an empty vault config), so a populated
+      // folder actually becomes an encrypted vault of those files.
       await api.convertFolderToVault(realPath, password);
       setEncryptTarget(null);
       await refresh();
@@ -3696,47 +3252,6 @@ function Explorer({ home }: { home: string }) {
   // number and the album cover -- from MusicBrainz and the Cover Art
   // Archive, writing into the files and moving nothing. The counterpart to
   // organizeMusicIn, which moves files and leaves their tags alone.
-  async function updateMusicDataIn(path: string) {
-    try {
-      const updates = await api.updateMusicTags(
-        path,
-        beginProgress(`Updating song data in "${baseName(path)}"`)
-      );
-      const changed = updates.filter((u) => u.changed.length > 0);
-      refresh();
-      setMusicReloadKey((k) => k + 1);
-      if (updates.length === 0) {
-        setError("No audio files in this folder.");
-        return;
-      }
-      // Naming the commonest reason is worth more than a count: "no
-      // matches" and "MusicBrainz is busy" need different things from the
-      // user.
-      const reason = updates.find((u) => u.skipped && !u.skipped.includes("ya estaba"))?.skipped;
-      setError(
-        changed.length === 0
-          ? `Nothing to fill in${reason ? ` -- ${reason}` : ""}.`
-          : `Updated ${changed.length} of ${updates.length} track${updates.length === 1 ? "" : "s"}.`
-      );
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function organizeMusicIn(path: string) {
-    try {
-      const moved = await api.organizeMusic(path, beginProgress(`Organizing music in "${baseName(path)}"`));
-      refresh();
-      setError(
-        moved.length === 0
-          ? "Nothing to reorganize -- no tracks could be identified."
-          : `Filed ${moved.length} track${moved.length === 1 ? "" : "s"}.`
-      );
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
   async function moveSelectionTo() {
     const names = [...selected];
     if (names.length === 0) return;
@@ -3833,101 +3348,6 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
-  // ---- Internet result -> real folder (drag or "Save to Folder…") ----
-  // Same per-item sequential-with-progress shape the paste/copy loop above
-  // uses (one beginProgress row per item) -- these are real network
-  // downloads, not instant fs renames, so each genuinely wants its own
-  // progress row.
-  async function downloadInternetItems(items: InternetDownloadItem[], destDir: string) {
-    try {
-      for (const item of items) {
-        if (item.linkBody) {
-          // A video result has no file on the web to fetch -- dropping one
-          // into a folder writes a real `.youtube.url` shortcut instead,
-          // so the result becomes a file you own: movable, copyable,
-          // renameable, and reopenable like anything else.
-          await api.fsWriteText(joinPath(destDir, item.filename), item.linkBody);
-        } else {
-          await api.downloadWebResult(item.url, destDir, item.filename, beginProgress(`Downloading "${item.filename}"`));
-        }
-      }
-      refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-  // Straight to Downloads, no destination prompt (see ytdl.rs) -- each URL
-  // gets its own Actions row, so several downloads read as several jobs
-  // and each can be cancelled on its own.
-  function downloadInternetVideos(pageUrls: string[], kind: VideoDownloadKind) {
-    for (const url of pageUrls) {
-      const run = mobile ? downloadOnMobile(url, kind) : desktopDownload(url, kind);
-      run.then(() => refresh()).catch((e) => setError(String(e)));
-    }
-  }
-
-  function desktopDownload(url: string, kind: VideoDownloadKind) {
-    // yt-dlp (+ffmpeg) already produces a real mp3 for the audio-only
-    // case on desktop, so "mp3" and the raw-container "m4a" collapse to
-    // the same call here -- the distinction only exists on mobile, where
-    // the conversion is a second step this app does itself.
-    const audioOnly = kind !== "video";
-    return api.downloadVideo(url, audioOnly, beginProgress(`Downloading ${audioOnly ? "MP3" : "MP4"}`));
-  }
-
-  // Android has no yt-dlp (it's Python) and no ffmpeg, so the same job is
-  // done in three steps the phone *can* do: resolve the streams in-process
-  // (see ytstreams.rs), fetch them over plain HTTP with the downloader
-  // that already reports into Actions, and -- for video, since YouTube
-  // stopped serving progressive streams -- join the two tracks with
-  // Android's own MediaMuxer.
-  async function downloadOnMobile(url: string, kind: VideoDownloadKind) {
-    const streams = await api.youtubeStreams(url);
-    const safe = streams.title.replace(/[/\\?%*:|"<>]/g, "-").slice(0, 120) || "video";
-    const dest = joinPath(home ?? "", "Download");
-    if (kind !== "video") {
-      if (!streams.audio_url) throw new Error("No audio stream available for this video.");
-      // What YouTube actually serves is AAC in an MP4 container (.m4a).
-      // "MP3" downloads keep it only as an intermediate and transcode it
-      // in-process (see mp3.rs) -- no ffmpeg needed, and Android has no
-      // MP3 encoder of its own to lean on. "Audio (M4A)" keeps that file
-      // as-is, which is faster and loses nothing.
-      const ext = streams.audio_ext || "m4a";
-      const audioName = `${safe}.${ext}`;
-      await api.downloadStream(
-        streams.audio_url,
-        dest,
-        audioName,
-        beginProgress(`Downloading audio — ${safe}`)
-      );
-      if (kind === "m4a" || ext === "mp3") return;
-      await api.audioToMp3(
-        joinPath(dest, audioName),
-        joinPath(dest, `${safe}.mp3`),
-        streams.title,
-        true,
-        beginProgress(`Converting to MP3 — ${safe}`)
-      );
-      return;
-    }
-    if (!streams.video_url || !streams.audio_url) throw new Error("No downloadable streams for this video.");
-    const videoPart = `${safe}.video.mp4`;
-    const audioPart = `${safe}.audio.m4a`;
-    await api.downloadStream(streams.video_url, dest, videoPart, beginProgress(`Downloading video — ${safe}`));
-    await api.downloadStream(streams.audio_url, dest, audioPart, beginProgress(`Downloading audio — ${safe}`));
-    await api.androidMuxVideo(joinPath(dest, videoPart), joinPath(dest, audioPart), joinPath(dest, `${safe}.mp4`));
-    // The halves are an implementation detail; leaving them behind would
-    // just look like three copies of the same video.
-    await api.fsDelete(joinPath(dest, videoPart)).catch(() => {});
-    await api.fsDelete(joinPath(dest, audioPart)).catch(() => {});
-  }
-
-  async function saveInternetResultsToFolder(items: InternetDownloadItem[]) {
-    const dir = await pickPath({ directory: true, multiple: false, title: "Save to folder" });
-    if (!dir || Array.isArray(dir)) return;
-    await downloadInternetItems(items, dir);
-  }
-
   // ---- inline create (new folder / new file) ----
   function nextUntitledName(base: string, ext: string): string {
     const used = new Set(entries.map((e) => e.name));
@@ -3950,29 +3370,16 @@ function Explorer({ home }: { home: string }) {
   }
   async function createNewFile() {
     const base = formatNameTemplate(appSettings.newFileNameTemplate || "untitled document");
-    const isContacts = view === "contacts";
-    // List-with-preview and Notes both exist specifically to write/read
-    // markdown in place, so a new file made from either defaults to .md
-    // instead of the generic .txt. Contacts wants a real (if empty) vCard,
-    // not a blank .txt, since it opens straight into ContactEditForm below.
-    const name = nextUntitledName(base, isContacts ? ".vcf" : view === "listPreview" || view === "notes" ? ".md" : ".txt");
+    // List-with-preview exists specifically to write/read markdown in
+    // place, so a new file made from there defaults to .md instead of the
+    // generic .txt.
+    const name = nextUntitledName(base, view === "listPreview" ? ".md" : ".txt");
     const path = joinPath(curDir, name);
     try {
-      if (isContacts) {
-        const vcf = serializeVCard(emptyVCard());
-        inVault ? await api.vaultWriteText(path, vcf) : await api.fsWriteText(path, vcf);
-      } else {
-        inVault ? await api.newFile(path) : await api.fsNewFile(path);
-      }
+      inVault ? await api.newFile(path) : await api.fsNewFile(path);
       await refresh();
       selectAndReveal(name);
-      if (isContacts) {
-        setMobileEditorTarget({
-          entry: { name, is_dir: false, size: 0, mtime: Date.now() / 1000 },
-          fullPath: path,
-          inVault,
-        });
-      } else if (view !== "listPreview") {
+      if (view !== "listPreview") {
         // In listPreview, selecting the new note is enough -- the effect
         // below picks it up and opens it in the preview pane ready to type
         // into, so there's no separate inline-rename step to interrupt that.
@@ -4073,14 +3480,6 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
-  // Same desktop-trash-vs-mobile/vault-confirm split the regular context
-  // menu's "Move to Trash"/"Delete" already uses -- the Notes grid's quick
-  // trash-icon action just skips having to right-click first.
-  function deleteNoteQuick(entry: Entry) {
-    if (!inVault && !mobile) trashSelection([entry.name]);
-    else setPending({ kind: "delete", names: [entry.name] });
-  }
-
   async function emptyTrashNow() {
     try {
       await api.emptyTrash();
@@ -4108,16 +3507,6 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
-  async function confirmIncomingDevice() {
-    if (!incomingDevice) return;
-    try {
-      await api.syncthingAddDevice(incomingDevice.id, incomingDevice.name);
-    } catch (e) {
-      setError(String(e));
-    }
-    setIncomingDevice(null);
-  }
-
   async function openTerminalAt(path: string) {
     try {
       await api.openTerminal(path, appSettings.terminalApp);
@@ -4143,7 +3532,7 @@ function Explorer({ home }: { home: string }) {
   }
 
   // ---- delete / unlock / new-vault ----
-  async function submitPending(value: string) {
+  async function submitPending(_value: string) {
     if (!pending) return;
     try {
       switch (pending.kind) {
@@ -4167,14 +3556,6 @@ function Explorer({ home }: { home: string }) {
           await api.fsSecureDelete(paths, beginProgress("Secure Delete"));
           break;
         }
-        case "gitCommit":
-          if (value.trim() === "" || !gitRoot) return;
-          await api.gitCommitAll(gitRoot, value.trim());
-          break;
-        case "freeze":
-          if (value.trim() === "") return;
-          await api.freezeFolder(joinPath(curDir, pending.entry.name), value);
-          break;
       }
       setPending(null);
       refresh();
@@ -4626,10 +4007,6 @@ function Explorer({ home }: { home: string }) {
       const ext = exts.size === 1 ? [...exts][0] : "";
       const n = convertTargets.length;
       const convertLabel = n > 1 ? `Convert ${n} Items To` : "Convert To";
-      // Transcription is per-file work with its own model download and a
-      // long run; kept to a single selection rather than silently queueing
-      // a dozen of them.
-      const single = n === 1 ? convertTargets[0] : null;
       if (kind === "image" && !inVault && convertTargets.every((en) => ["png", "jpg", "jpeg", "bmp", "webp", "tiff", "tif"].includes(extOf(en)))) {
         const targets = IMAGE_CONVERT_TARGETS.filter((t) => t.ext !== ext && !(ext === "jpeg" && t.ext === "jpg"));
         const convertItems: MenuItem[] = targets.map((t) => ({
@@ -4697,9 +4074,6 @@ function Explorer({ home }: { home: string }) {
               setConvertTarget({ entries: convertTargets, targetExt: "mp3", targetLabel: "MP3", mode: "mediaQuality" }),
           },
         ];
-        if (single) {
-          videoItems.push({ label: "Transcribe to Text (offline)…", onClick: () => runTranscribe(single) });
-        }
         moreItems.push({ type: "submenu", label: convertLabel, items: videoItems });
       } else if (kind === "audio" && !inVault && ffmpegAvailable) {
         const targets = AUDIO_CONVERT_TARGETS.filter((t) => t.ext !== ext);
@@ -4710,10 +4084,6 @@ function Explorer({ home }: { home: string }) {
               ? setConvertTarget({ entries: convertTargets, targetExt: t.ext, targetLabel: t.label, mode: "mediaQuality" })
               : runMediaConvert(convertTargets, t.ext, "medium"),
         }));
-        if (single) {
-          audioItems.push({ type: "separator" as const });
-          audioItems.push({ label: "Transcribe to Text (offline)…", onClick: () => runTranscribe(single) });
-        }
         moreItems.push({ type: "submenu", label: convertLabel, items: audioItems });
       }
     }
@@ -4786,24 +4156,6 @@ function Explorer({ home }: { home: string }) {
       moreItems.push({ type: "submenu", label: "Security", items: securityItems });
     }
 
-    if (!many && !inVault && gitRoot) {
-      const rel = relToGitRoot(entry.name);
-      const code = rel !== null ? gitStatus[rel] : undefined;
-      if (code) {
-        const staged = code[0] !== " " && code[0] !== "?";
-        items.push({
-          type: "submenu",
-          label: "Git",
-          items: [
-            staged
-              ? { label: "Unstage", onClick: () => gitUnstageEntry(entry) }
-              : { label: "Stage", onClick: () => gitStageEntry(entry) },
-            { label: "Discard Changes…", danger: true, onClick: () => gitDiscardEntry(entry) },
-          ],
-        });
-      }
-    }
-
     if (!many && !inVault) {
       moreItems.push({
         type: "submenu",
@@ -4826,33 +4178,7 @@ function Explorer({ home }: { home: string }) {
           ? { label: "Remove from Favorites", onClick: () => removeFavorite(path) }
           : { label: "Add to Favorites", onClick: () => addFavorite(path) }
       );
-      // On desktop every provider here shells out to a binary
-      // (git/unison/syncthing); on Android none of those exist, so the
-      // submenu narrows to the in-process folder-to-folder sync.
-      if (!inVault) {
-        moreItems.push(
-          buildSyncSubmenu(path, {
-            gitSyncedPaths,
-            localSyncedPaths,
-            setGitSyncTarget,
-            setLocalSyncTarget,
-            setSyncthingTarget,
-            mobile,
-            setMobileFolderSyncTarget,
-          })
-        );
-      }
       moreItems.push({ label: "Change Icon…", onClick: () => setIconTarget(path) });
-      if (!mobile) {
-        moreItems.push(
-          frozenPaths.has(path)
-            ? { label: "Unfreeze…", onClick: () => setUnfreezeTarget(path) }
-            : { label: "Freeze…", onClick: () => setPending({ kind: "freeze", entry }) }
-        );
-        // Shells out to the `claude` CLI (see reorganize.rs) -- no
-        // equivalent on Android.
-        moreItems.push({ label: "Reorganize & Clean…", onClick: () => setReorganizeTarget(path) });
-      }
     }
     items.push({ type: "submenu", label: "More", items: moreItems });
     if (inVault && !many) {
@@ -4927,42 +4253,10 @@ function Explorer({ home }: { home: string }) {
       { key: "icon", label: "Icons" },
       { key: "list", label: "List" },
       ...(mobile ? [] : [{ key: "column" as const, label: "Columns" }, { key: "listPreview" as const, label: "List with Preview" }]),
-      // Experiment: markdown files as Keep-style note cards (a content
-      // preview instead of just an icon+name), tap opens the same
-      // full-screen editor mobile's plain file-open already uses. Not
-      // useful for a folder that's mostly non-markdown, but folders that
-      // are basically a notes stash don't have anything like this in
-      // any other view.
-      { key: "notes", label: "Notes" },
-      { key: "contacts", label: "Contacts" },
-      // Experiment: a folder of PDFs/ebooks as an actual wooden bookshelf
-      // (see LibraryShelf) instead of an icon grid -- explicitly a first
-      // pass at the idea, not a finished look.
-      { key: "library", label: "Library" },
     ];
-    // A folder of audio read as songs rather than files: tags, folders, play
-    // counts, and a queue that advances on its own. Handing a track to the
-    // system player instead (which is what opening one does) is fine for one
-    // song and useless for an album -- the system player is given one file
-    // and knows nothing about the next.
-    //
-    // Not offered inside a vault: the files there are encrypted on disk, so
-    // there are no tags to read and nothing a media element can play. An
-    // option that can only say "no music here" is worse than no option.
-    if (!inVault) options.push({ key: "music", label: "Music" });
     const items: MenuItem[] = options.map((o) => ({
-      label: view === o.key && !showDigest ? `✓ ${o.label}` : o.label,
-      // Picking a view here is the one consistent escape hatch this app
-      // already has for "no, show me the real files" -- the auto-digest
-      // (see SavedSearchDigest) has its own inline "View as files" link
-      // too, but that's only discoverable once you're already looking at
-      // it. Dismissing here as well means the toolbar's normal view
-      // switcher works as the way out, same as a user would expect from
-      // every other view choice in this menu.
-      onClick: () => {
-        setDigestDismissed(true);
-        setView(o.key);
-      },
+      label: view === o.key ? `✓ ${o.label}` : o.label,
+      onClick: () => setView(o.key),
     }));
     // Per-folder pin. Hidden on My Computer (not a folder) and in column
     // view (which ignores pins while browsing -- see the restore effect).
@@ -5040,25 +4334,6 @@ function Explorer({ home }: { home: string }) {
           openTerminalAt(p);
         },
       });
-    }
-    if (gitRoot && !mobile) {
-      items.push({
-        type: "submenu",
-        label: "Git",
-        items: [
-          { label: "Status…", onClick: () => setGitStatusOpen(true) },
-          { label: "Pull", onClick: gitPullNow },
-          { label: "Push", onClick: gitPushNow },
-          { type: "separator" },
-          { label: "Commit All Changes…", onClick: () => setPending({ kind: "gitCommit" }) },
-        ],
-      });
-    }
-    if (!mobile && !inVault) {
-      // Same action as the per-folder "More" submenu entry -- here the
-      // target is the folder you're standing in (curDir) rather than one
-      // of its children, since this fired on empty space, not an entry.
-      items.push({ label: "Reorganize & Clean…", onClick: () => setReorganizeTarget(curDir) });
     }
     items.push(
       { type: "separator" },
@@ -5209,7 +4484,6 @@ function Explorer({ home }: { home: string }) {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
-      if (incomingDevice) return setIncomingDevice(null);
       if (multiInfoTarget) return setMultiInfoTarget(null);
       if (infoTarget) return setInfoTarget(null);
       if (iconTarget) return setIconTarget(null);
@@ -5222,11 +4496,6 @@ function Explorer({ home }: { home: string }) {
       if (resizeTarget) return setResizeTarget(null);
       if (convertTarget) return setConvertTarget(null);
       if (formatTarget) return setFormatTarget(null);
-      if (gitSyncTarget) return setGitSyncTarget(null);
-      if (localSyncTarget) return setLocalSyncTarget(null);
-      if (syncthingTarget) return setSyncthingTarget(null);
-      if (unfreezeTarget) return setUnfreezeTarget(null);
-      if (gitStatusOpen) return setGitStatusOpen(false);
       if (manageTemplatesOpen) return setManageTemplatesOpen(false);
       if (machineInfoOpen) return setMachineInfoOpen(false);
       if (settingsOpen) return setSettingsOpen(false);
@@ -5237,7 +4506,6 @@ function Explorer({ home }: { home: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     sidebarOpen,
-    incomingDevice,
     multiInfoTarget,
     infoTarget,
     iconTarget,
@@ -5250,11 +4518,6 @@ function Explorer({ home }: { home: string }) {
     resizeTarget,
     convertTarget,
     formatTarget,
-    gitSyncTarget,
-    localSyncTarget,
-    syncthingTarget,
-    unfreezeTarget,
-    gitStatusOpen,
     manageTemplatesOpen,
     machineInfoOpen,
     settingsOpen,
@@ -5296,42 +4559,6 @@ function Explorer({ home }: { home: string }) {
     path,
     icon: customIcons[path],
   }));
-
-  // A folder that's itself a distinct sync root gets its own specific
-  // badge; a file (or subfolder) merely *inside* a currently synced
-  // folder inherits that same badge (files don't get their own separate
-  // sync pairing) so the "this whole tree is under sync" fact is visible
-  // on more than just the one root folder, matching the same convention
-  // Dropbox/OneDrive/Google Drive Desktop use.
-  // Walks up from `path` (through every parent directory, not just an
-  // exact match) looking for a synced root -- a file several folders deep
-  // inside a paired tree is still "inside a synced folder" and should
-  // still show its badge, not just direct children of the paired root.
-  function syncRootFor(path: string): { badge: "git" | "local"; root: string } | null {
-    let p = path;
-    while (p) {
-      if (gitSyncedPaths.has(p)) return { badge: "git", root: p };
-      if (localSyncedPaths.has(p)) return { badge: "local", root: p };
-      const parent = parentPath(p);
-      if (parent === p) return null;
-      p = parent;
-    }
-    return null;
-  }
-
-  function syncInfoFor(entry: Entry): {
-    badge: "git" | "local" | null;
-    state: "syncing" | "synced" | null;
-  } {
-    const path = joinPath(curDir, entry.name);
-    const hit = (entry.is_dir ? syncRootFor(path) : null) ?? syncRootFor(curDir);
-    if (!hit) return { badge: null, state: null };
-    const { badge, root } = hit;
-    if (syncingPaths.has(root) || syncingPaths.has(path)) return { badge, state: "syncing" };
-    if (justSyncedPaths.has(root) || justSyncedPaths.has(path)) return { badge, state: "synced" };
-    return { badge, state: null };
-  }
-
   // "List with Preview" reuses the exact same row rendering as plain list
   // view (entryView forces the "list" CSS/thumbnail-size path for it) --
   // only the click handler and the pane alongside it differ.
@@ -5379,7 +4606,6 @@ function Explorer({ home }: { home: string }) {
           }
         >
           {sortedEntries.map((entry) => {
-            const syncInfo = syncInfoFor(entry);
             return (
             <EntryTile
               key={entry.name}
@@ -5401,8 +4627,6 @@ function Explorer({ home }: { home: string }) {
               hideExtensions={appSettings.hideExtensions}
               pinned={pinnedPaths.has(joinPath(curDir, entry.name))}
               sensitive={inVault && isSensitivePath(joinPath(curDir, entry.name))}
-              syncBadge={syncInfo.badge ?? undefined}
-              syncState={syncInfo.state ?? undefined}
               editing={renaming?.name === entry.name}
               editValue={renaming?.name === entry.name ? renaming.value : ""}
               onEditChange={(v) => setRenaming((r) => (r ? { ...r, value: v } : r))}
@@ -5584,7 +4808,7 @@ function Explorer({ home }: { home: string }) {
             has. */}
         {mobile ? (
           <div
-            className={`sidebar-item ${!showMyComputer && !showInternet && loc.kind === "fs" && loc.path === PHONE_STORAGE_PATH ? "active" : ""}`}
+            className={`sidebar-item ${!showMyComputer && loc.kind === "fs" && loc.path === PHONE_STORAGE_PATH ? "active" : ""}`}
             onClick={() => go({ kind: "fs", path: PHONE_STORAGE_PATH })}
           >
             <span className="sidebar-ico place">
@@ -5618,7 +4842,6 @@ function Explorer({ home }: { home: string }) {
             title={favCollapsed ? "My Device" : undefined}
             onClick={() => {
               setShowMyComputer(false);
-              setShowInternet(false);
               setFreeUpSpaceOpen(false);
               setShowDevice(true);
             }}
@@ -5629,18 +4852,8 @@ function Explorer({ home }: { home: string }) {
             {!favCollapsed && "My Device"}
           </div>
         )}
-        {/* Experimental (see InternetView) -- fake "Videos"/"Images"
-            folders backed by live search, not a real path. */}
-        <div
-          className={`sidebar-item ${showInternet ? "active" : ""} ${favCollapsed ? "icon-only" : ""}`}
-          title={favCollapsed ? "Internet" : undefined}
-          onClick={openInternet}
-        >
-          <span className="sidebar-ico place">🌐</span>
-          {!favCollapsed && "Internet"}
-        </div>
         {favorites.map((f, i) => {
-          const active = !showMyComputer && !showInternet && loc.kind === "fs" && loc.path === f.path;
+          const active = !showMyComputer && loc.kind === "fs" && loc.path === f.path;
           return (
             <div
               key={f.path}
@@ -5676,42 +4889,13 @@ function Explorer({ home }: { home: string }) {
                   moveFavorite(from, i);
                   return;
                 }
-                if (dragInternetItems.current) {
-                  const items = dragInternetItems.current;
-                  dragInternetItems.current = null;
-                  downloadInternetItems(items, f.path);
-                  return;
-                }
                 if (loc.kind === "fs") dropInto(f.path);
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 const items: MenuItem[] = [
                   { label: "Change Icon…", onClick: () => setIconTarget(f.path) },
-                  {
-                    label: "Reorganize Music…",
-                    onClick: () => organizeMusicIn(f.path),
-                  },
-                  // The counterpart: fills in the tags (title, artist,
-                  // album, year, cover) from MusicBrainz and moves nothing.
-                  {
-                    label: "Update song data…",
-                    onClick: () => updateMusicDataIn(f.path),
-                  },
                 ];
-                if (f.path !== "/" && !inVault) {
-                  items.push(
-                    buildSyncSubmenu(f.path, {
-                      gitSyncedPaths,
-                      localSyncedPaths,
-                      setGitSyncTarget,
-                      setLocalSyncTarget,
-                      setSyncthingTarget,
-                      mobile,
-                      setMobileFolderSyncTarget,
-                    })
-                  );
-                }
                 if (f.path !== "/") {
                   items.push({
                     type: "submenu",
@@ -5787,23 +4971,6 @@ function Explorer({ home }: { home: string }) {
                     color={TAG_COLORS.find((c) => c.key === favTags[f.path])?.hex}
                   />
                 )}
-                {(gitSyncedPaths.has(f.path) || localSyncedPaths.has(f.path)) && (
-                  <span
-                    className={`sync-badge ${syncingPaths.has(f.path) ? "syncing" : ""} ${
-                      justSyncedPaths.has(f.path) ? "synced" : ""
-                    }`}
-                  >
-                    {justSyncedPaths.has(f.path) ? (
-                      <CheckGlyph size={11} />
-                    ) : syncingPaths.has(f.path) ? (
-                      <RefreshGlyph size={11} />
-                    ) : gitSyncedPaths.has(f.path) ? (
-                      <GitBranchGlyph size={11} />
-                    ) : (
-                      <LocalSyncGlyph size={11} />
-                    )}
-                  </span>
-                )}
               </span>
               {!favCollapsed && f.label}
             </div>
@@ -5840,7 +5007,6 @@ function Explorer({ home }: { home: string }) {
           title={favCollapsed ? "Free Up Space" : undefined}
           onClick={() => {
             setShowMyComputer(false);
-            setShowInternet(false);
             setShowDevice(false);
             setFreeUpSpaceOpen(true);
           }}
@@ -5950,7 +5116,7 @@ function Explorer({ home }: { home: string }) {
             <button
               className="tool-btn"
               onClick={goBack}
-              disabled={!showMyComputer && !showInternet && histIdx === 0}
+              disabled={!showMyComputer && histIdx === 0}
               aria-label="Back"
             >
               <ChevronLeft />
@@ -5958,7 +5124,7 @@ function Explorer({ home }: { home: string }) {
             <button
               className="tool-btn"
               onClick={goForward}
-              disabled={!showMyComputer && !showInternet && histIdx >= history.length - 1}
+              disabled={!showMyComputer && histIdx >= history.length - 1}
               aria-label="Forward"
             >
               <ChevronRight />
@@ -5979,11 +5145,9 @@ function Explorer({ home }: { home: string }) {
           <div className="toolbar-title">
             {showMyComputer
               ? "My Computer"
-              : showInternet
-                ? "Internet"
-                : crumbs.length
-                  ? crumbs[crumbs.length - 1].label
-                  : "System"}
+              : crumbs.length
+                ? crumbs[crumbs.length - 1].label
+                : "System"}
           </div>
           <button
             className={`tool-btn cluster-start ${mobile ? "" : "wide-btn"}`}
@@ -6108,7 +5272,7 @@ function Explorer({ home }: { home: string }) {
         <div
           className="content"
           ref={contentRef}
-          onContextMenu={showMyComputer || showInternet ? undefined : backgroundMenu}
+          onContextMenu={showMyComputer ? undefined : backgroundMenu}
           onMouseDown={onContentMouseDown}
           onTouchStart={onContentTouchStart}
           onTouchMove={onContentTouchMove}
@@ -6154,46 +5318,6 @@ function Explorer({ home }: { home: string }) {
               onOpenDrive={(d) => d.mountpoint && go({ kind: "fs", path: d.mountpoint })}
               onMenu={driveMenu}
             />
-          ) : showInternet ? (
-            <InternetView
-              initial={internetInitial}
-              onSave={saveInternetSearch}
-              mobile={mobile}
-              onDragResults={(items) => {
-                dragInternetItems.current = items;
-              }}
-              onSaveToFolder={saveInternetResultsToFolder}
-              onDownloadVideos={downloadInternetVideos}
-              onOpenFolder={(path) => go({ kind: "fs", path })}
-              onRegisterBack={(fn) => {
-                internetBackRef.current = fn;
-              }}
-            />
-          ) : searchResults !== null && view === "contacts" ? (
-            <ContactsGrid
-              entries={searchEntryList}
-              curDir={curDir}
-              inVault={inVault}
-              pathFor={(entry) => searchPathByEntry.get(entry) ?? ""}
-              header={searchResultsHeader(searchQuery, searchResults.length)}
-              emptyMessage={`No contacts found for “${searchQuery}”.`}
-              onEditContact={(entry, fullPath) =>
-                withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
-              }
-              onActivateOther={(entry) => activate(parentPath(searchPathByEntry.get(entry) ?? ""), entry)}
-              onMenu={(e, entry) => pathMenu(e, searchPathByEntry.get(entry) ?? "", () => runSearch(searchQuery))}
-            />
-          ) : searchResults !== null && view === "library" ? (
-            <LibraryShelf
-              entries={searchEntryList}
-              curDir={curDir}
-              inVault={inVault}
-              pathFor={(entry) => searchPathByEntry.get(entry) ?? ""}
-              header={searchResultsHeader(searchQuery, searchResults.length)}
-              emptyMessage={`No results for “${searchQuery}”.`}
-              onOpen={(entry) => activate(parentPath(searchPathByEntry.get(entry) ?? ""), entry)}
-              onMenu={(e, entry) => pathMenu(e, searchPathByEntry.get(entry) ?? "", () => runSearch(searchQuery))}
-            />
           ) : searchResults !== null ? (
             <SearchResults
               query={searchQuery}
@@ -6208,14 +5332,6 @@ function Explorer({ home }: { home: string }) {
                 setSearchSelected(p);
                 pathMenu(e, p, () => runSearch(searchQuery));
               }}
-            />
-          ) : showDigest ? (
-            <SavedSearchDigest
-              dir={curDir}
-              entries={entries}
-              ext={savedSearchExt as "ytsearch" | "imgsearch" | "booksearch"}
-              onDismiss={() => setDigestDismissed(true)}
-              onOpenFile={(entry) => activate(curDir, entry)}
             />
           ) : view === "column" ? (
             <ColumnView
@@ -6257,53 +5373,6 @@ function Explorer({ home }: { home: string }) {
               cutPaths={clipboard?.mode === "cut" && clipboard.kind === loc.kind ? clipboard.paths : undefined}
               textEditorExts={textEditorExts}
               onOpenInEditor={(ext) => setExtOpensInEditor(ext, true)}
-            />
-          ) : view === "notes" ? (
-            <NotesGrid
-              entries={entries}
-              curDir={curDir}
-              inVault={inVault}
-              tags={tags}
-              pinnedPaths={pinnedPaths}
-              onOpenNote={(entry, fullPath) =>
-                withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
-              }
-              onActivateOther={(entry) => activate(curDir, entry)}
-              onMenu={(e, entry) => entryMenu(e, entry)}
-              onDelete={deleteNoteQuick}
-              onTogglePin={togglePin}
-              onSetColor={setTagFor}
-            />
-          ) : view === "contacts" ? (
-            <ContactsGrid
-              entries={entries}
-              curDir={curDir}
-              inVault={inVault}
-              selection={selection}
-              renaming={renaming}
-              onRenameChange={(v) => setRenaming((r) => (r ? { ...r, value: v } : r))}
-              onRenameCommit={commitRename}
-              onRenameCancel={() => setRenaming(null)}
-              onEditContact={(entry, fullPath) =>
-                withSensitive(fullPath, () => setMobileEditorTarget({ entry, fullPath, inVault }))
-              }
-              onActivateOther={(entry) => activate(curDir, entry)}
-              onMenu={(e, entry) => entryMenu(e, entry)}
-              onFilesChanged={refresh}
-            />
-          ) : view === "music" ? (
-            <MusicView
-              key={`${curDir}:${musicReloadKey}`}
-              root={curDir}
-              onUpdateTags={updateMusicDataIn}
-            />
-          ) : view === "library" ? (
-            <LibraryShelf
-              entries={entries}
-              curDir={curDir}
-              inVault={inVault}
-              onOpen={(entry) => activate(curDir, entry)}
-              onMenu={(e, entry) => entryMenu(e, entry)}
             />
           ) : view === "listPreview" ? (
             <div
@@ -6347,7 +5416,7 @@ function Explorer({ home }: { home: string }) {
           className="breadcrumb-bar"
           ref={breadcrumbRef}
           onClick={(e) => {
-            if (showMyComputer || showInternet) return;
+            if (showMyComputer) return;
             if (!(e.target as HTMLElement).closest(".crumb, .breadcrumb-copy")) beginEditPath();
           }}
         >
@@ -6355,12 +5424,6 @@ function Explorer({ home }: { home: string }) {
             <div className="breadcrumb-crumbs">
               <span className="crumb-group">
                 <span className="crumb">My Computer</span>
-              </span>
-            </div>
-          ) : showInternet ? (
-            <div className="breadcrumb-crumbs">
-              <span className="crumb-group">
-                <span className="crumb">Internet</span>
               </span>
             </div>
           ) : editingPath ? (
@@ -6575,21 +5638,12 @@ function Explorer({ home }: { home: string }) {
               Back
             </button>
           </div>
-          {mobileEditorTarget.entry.name.toLowerCase().endsWith(".vcf") ? (
-            <ContactEditForm
-              entry={mobileEditorTarget.entry}
-              fullPath={mobileEditorTarget.fullPath}
-              inVault={mobileEditorTarget.inVault}
-              onRename={renameMobileEditorEntry}
-            />
-          ) : (
-            <TextEditorPane
-              entry={mobileEditorTarget.entry}
-              fullPath={mobileEditorTarget.fullPath}
-              inVault={mobileEditorTarget.inVault}
-              onRename={renameMobileEditorEntry}
-            />
-          )}
+          <TextEditorPane
+            entry={mobileEditorTarget.entry}
+            fullPath={mobileEditorTarget.fullPath}
+            inVault={mobileEditorTarget.inVault}
+            onRename={renameMobileEditorEntry}
+          />
         </div>
       )}
       {reauthPrompt && (
@@ -6670,60 +5724,6 @@ function Explorer({ home }: { home: string }) {
           }}
         />
       )}
-      {mobileFolderSyncTarget && (
-        <MobileFolderSyncSheet
-          folderA={mobileFolderSyncTarget}
-          onClose={() => {
-            setMobileFolderSyncTarget(null);
-            refreshSyncStatus();
-            refresh();
-          }}
-        />
-      )}
-      {gitSyncTarget && (
-        <GitSyncSheet
-          localPath={gitSyncTarget}
-          onClose={() => {
-            setGitSyncTarget(null);
-            refreshSyncStatus();
-          }}
-        />
-      )}
-      {localSyncTarget && (
-        <LocalSyncSheet
-          folderA={localSyncTarget}
-          onClose={() => {
-            setLocalSyncTarget(null);
-            refreshSyncStatus();
-          }}
-        />
-      )}
-      {syncthingTarget && (
-        <SyncthingSheet folderA={syncthingTarget} onClose={() => setSyncthingTarget(null)} />
-      )}
-      {incomingDevice && (
-        <div className="sheet-overlay" onMouseDown={() => setIncomingDevice(null)}>
-          <div className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
-            <h3>Pair with “{incomingDevice.name}”?</h3>
-            <p className="hint">
-              This link came from another device for P2P sync. Its ID:
-            </p>
-            <div className="info-row">
-              <span className="info-path" title={incomingDevice.id}>
-                {incomingDevice.id}
-              </span>
-            </div>
-            <div className="sheet-actions">
-              <button className="btn-plain" onClick={() => setIncomingDevice(null)}>
-                Cancel
-              </button>
-              <button className="btn-primary" onClick={confirmIncomingDevice}>
-                Pair
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {machineInfoOpen && <MachineInfoSheet onClose={() => setMachineInfoOpen(false)} />}
       {openWithTarget && (
         <OpenWithSheet
@@ -6788,28 +5788,6 @@ function Explorer({ home }: { home: string }) {
             setMontageTarget(null);
             runMontage(target, opts);
           }}
-        />
-      )}
-      {gitStatusOpen && gitRoot && (
-        <GitStatusSheet root={gitRoot} status={gitStatus} onClose={() => setGitStatusOpen(false)} />
-      )}
-      {unfreezeTarget && (
-        <UnfreezeSheet
-          path={unfreezeTarget}
-          onDone={() => {
-            setUnfreezeTarget(null);
-            refreshFrozen();
-            refresh();
-          }}
-          onClose={() => setUnfreezeTarget(null)}
-        />
-      )}
-      {reorganizeTarget && (
-        <ReorganizeSheet
-          path={reorganizeTarget}
-          onDone={() => refresh()}
-          onBackground={beginIndeterminate}
-          onClose={() => setReorganizeTarget(null)}
         />
       )}
       {infoTarget && (
@@ -6900,22 +5878,6 @@ export default function App() {
         initialFilters={initialFilters}
         initialFolder={params.get("folder")}
         directory={params.get("directory") === "true"}
-      />
-    );
-  }
-
-  if (params.get("player") === "1") {
-    let items: PlayerItem[] = [];
-    try {
-      items = JSON.parse(params.get("items") ?? "[]");
-    } catch {
-      /* malformed items -- PlayerWindow renders an empty playlist */
-    }
-    return (
-      <PlayerWindow
-        kind={params.get("kind") ?? "youtube"}
-        items={items}
-        startIndex={Number(params.get("index") ?? "0")}
       />
     );
   }

@@ -18,13 +18,6 @@ mod errmap;
 #[cfg(desktop)]
 mod filemanager1;
 #[cfg(desktop)]
-mod freeze;
-mod git;
-mod git_sync;
-// Folder sync is a phone feature as much as a desktop one, so it is
-// *not* desktop-gated.
-mod folder_sync;
-#[cfg(desktop)]
 mod fs_watch;
 // Android gets a stub with the same shape, aliased to the same name so the
 // command list stays one list; see fs_watch_stub.rs.
@@ -32,8 +25,6 @@ mod fs_watch;
 mod fs_watch_stub;
 #[cfg(not(desktop))]
 use fs_watch_stub as fs_watch;
-#[cfg(desktop)]
-mod local_sync;
 mod info;
 mod largefiles;
 mod machine;
@@ -45,27 +36,11 @@ mod ops;
 mod portal;
 mod progress;
 mod recovery;
-mod reorganize;
 mod share;
 mod shred;
-mod syncthing;
 mod terminal;
-mod cast;
 mod mediaserver;
-mod music;
-mod musicorg;
-mod ytstreams;
-mod webfind;
-#[cfg(desktop)]
-mod ytdl;
-// Not desktop-only: the same loopback embed page is what lets mobile play
-// a YouTube result inside the app instead of handing it to the YouTube
-// app, so the module has to exist on Android too (its command is
-// registered unconditionally).
-mod ytembed;
 mod thumbnail;
-#[cfg(desktop)]
-mod transcribe;
 
 use errmap::{LockExt, ToStringErr};
 use progress::{ProgressEvent, ProgressReporter};
@@ -200,15 +175,6 @@ pub(crate) struct AppState {
     active: Mutex<Option<String>>,
 }
 
-#[cfg(desktop)]
-#[derive(Default)]
-pub(crate) struct FreezeState {
-    /// Live FUSE mounts, keyed by original folder path. Removing an entry
-    /// drops its `BackgroundSession`, which unmounts (fuser's own Drop
-    /// impl) -- same convention as `VaultSession`'s mount handle.
-    pub(crate) mounts: Mutex<HashMap<String, fuser::BackgroundSession>>,
-}
-
 #[derive(Serialize)]
 struct EntryDto {
     name: String,
@@ -280,8 +246,9 @@ fn create_vault(state: State<AppState>, path: String, password: String) -> Resul
 
 /// Turn an existing (populated) folder into a vault, encrypting its current
 /// contents in place -- "Convert to Vault". Snapshots the folder's entries
-/// first, writes the vault meta, then absorbs each pre-existing entry into
-/// the vault (encrypting + removing the plaintext original).
+/// first, writes the vault's config + masterkey, then absorbs each
+/// pre-existing entry into it (encrypting + removing the plaintext
+/// original).
 #[tauri::command]
 fn convert_folder_to_vault(state: State<AppState>, path: String, password: String) -> Result<(), String> {
     let root = std::path::PathBuf::from(&path);
@@ -1140,7 +1107,7 @@ pub(crate) fn home_dir() -> String {
 
 /// Lets the frontend adapt its own UI (hide the custom desktop titlebar/
 /// resize handles, skip menu entries for desktop-only integrations like
-/// git/P2P sync, freeze, machine tools, terminal) without needing a
+/// machine tools and the terminal) without needing a
 /// separate mobile build of the JS bundle -- same binary, one runtime
 /// check.
 #[tauri::command]
@@ -1178,12 +1145,14 @@ fn browse_root_dir(app: tauri::AppHandle) -> String {
 /// row with `is_vault` already attached.
 #[tauri::command]
 fn fs_is_vault(path: String) -> bool {
-    Path::new(&path).join(".vault.meta").exists()
+    vaultcore::vault_exists(&path)
 }
 
 /// List a real OS directory. Hidden entries (dotfiles) are skipped. A
-/// subdirectory that contains a `.vault.meta` is flagged `is_vault` so the
-/// UI can render it as a lockable vault-folder.
+/// subdirectory that holds a Cryptomator vault (`vault.cryptomator` +
+/// `masterkey.cryptomator`) is flagged `is_vault` so the UI can render it
+/// as a lockable vault-folder -- including vaults made by Cryptomator
+/// itself, which is the point.
 #[tauri::command]
 fn fs_list(path: String, show_hidden: bool) -> Result<Vec<FsEntryDto>, String> {
     let mut out = Vec::new();
@@ -1196,7 +1165,7 @@ fn fs_list(path: String, show_hidden: bool) -> Result<Vec<FsEntryDto>, String> {
         }
         let p = entry.path();
         let is_dir = p.is_dir();
-        let is_vault = is_dir && p.join(".vault.meta").exists();
+        let is_vault = is_dir && vaultcore::vault_exists(&p);
         let metadata = entry.metadata().str_err()?;
         let size = if is_dir { 0 } else { metadata.len() };
         let mtime = metadata
@@ -1379,57 +1348,6 @@ fn fs_create_shortcut(target: String, dest: String) -> Result<(), String> {
     std::os::unix::fs::symlink(&target, &dest).str_err()
 }
 
-/// Frozen-folder remounts plus every configured sync watch loop --
-/// everything a real user launch resumes in the background. Split out of
-/// `setup()` so (a) it runs off the main thread (freeze remounts do
-/// blocking FUSE mounts, which used to stall the first paint), and (b) a
-/// formerly portal-activated primary instance can start it lazily when a
-/// real launch gets forwarded to it by the single-instance plugin. Runs at
-/// most once per process -- the loops themselves also no-op when already
-/// active, this guard just avoids re-walking the freeze remounts.
-#[cfg(desktop)]
-fn start_background_loops(handle: tauri::AppHandle) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static STARTED: AtomicBool = AtomicBool::new(false);
-    if STARTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    std::thread::spawn(move || {
-        // Re-mount every frozen folder fresh, from a discarded shadow --
-        // this *is* the "back to how it was after a restart" guarantee
-        // (see freeze.rs): only holds while VaultExplorer's mount is
-        // alive, so each launch re-establishes it from scratch rather
-        // than resuming whatever was left dangling.
-        let freeze_state = handle.state::<FreezeState>();
-        for meta in freeze::list_frozen() {
-            if let Err(e) = freeze::discard_shadow(&meta.original_path) {
-                eprintln!("freeze: failed to discard shadow for {}: {e}", meta.original_path);
-                continue;
-            }
-            if std::fs::create_dir_all(&meta.original_path).is_err() {
-                continue;
-            }
-            match freeze::spawn(&meta.original_path, Path::new(&meta.original_path)) {
-                Ok(session) => {
-                    freeze_state.mounts.lock_safe().insert(meta.original_path, session);
-                }
-                Err(e) => eprintln!("freeze: failed to remount {}: {e}", meta.original_path),
-            }
-        }
-        // ...and every sync pair's event-driven watch loop -- without
-        // this, a pair only actually kept syncing until the app was next
-        // closed, since nothing else ever calls the start_loops again.
-        let local_sync_state = handle.state::<local_sync::LocalSyncState>();
-        for pair in local_sync::list_pairs_pruning_missing() {
-            local_sync::start_loop(&local_sync_state, pair.folder_a, pair.folder_b);
-        }
-        let git_sync_state = handle.state::<git_sync::GitSyncState>();
-        for pair in git_sync::list_pairs() {
-            git_sync::start_loop(&git_sync_state, pair.local_path);
-        }
-    });
-}
-
 /// A second launch of the binary, forwarded here by the single-instance
 /// plugin: open another Explorer window in this already-running process
 /// (near-instant) instead of letting a whole second app boot (seconds).
@@ -1443,7 +1361,6 @@ fn open_extra_explorer_window(app: &tauri::AppHandle) {
             let _ = main.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)));
             let _ = main.show();
             let _ = main.set_focus();
-            start_background_loops(app.clone());
             return;
         }
     }
@@ -1504,21 +1421,6 @@ fn open_player_window(app: tauri::AppHandle, kind: String, items: String, index:
     Ok(())
 }
 
-/// The real folder behind the Internet section.
-///
-/// Internet's "Videos"/"Images"/"Books" are live searches with no path
-/// behind them, but a saved search or a kept `.youtube.url` link is an
-/// ordinary file and wants an ordinary place to live -- and folders to
-/// organise into. That place is here, created on first use, so the section
-/// behaves like the rest of the file manager instead of being a dead end.
-#[tauri::command]
-fn internet_root() -> Result<String, String> {
-    let home = std::env::var("HOME").str_err()?;
-    let dir = std::path::Path::new(&home).join(".local/share/vaultexplorer/internet");
-    std::fs::create_dir_all(&dir).str_err()?;
-    Ok(dir.to_string_lossy().to_string())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -1544,8 +1446,6 @@ pub fn run() {
     let builder = builder
         .manage(AppState::default())
         .manage(ops::OpRegistry::default())
-        .manage(git_sync::GitSyncState::default())
-        .manage(folder_sync::FolderSyncState::default())
         .manage(archive_browse::ArchiveMountState::default());
     // Desktop-only managed state -- see the mobile-scoping note by the
     // `mod` declarations at the top of this file.
@@ -1553,8 +1453,6 @@ pub fn run() {
     let builder = builder
         .manage(portal::PortalState::default())
         .manage(filemanager1::FileManagerState::default())
-        .manage(FreezeState::default())
-        .manage(local_sync::LocalSyncState::default())
         .manage(fs_watch::FsWatchState::default())
         .plugin(tauri_plugin_drag::init());
 
@@ -1716,36 +1614,6 @@ pub fn run() {
                         let _ = main.show();
                     }
                 }
-                // A `--portal-activated` launch is a transient picker server for
-                // another app's dialog; it must not resurrect the user's frozen
-                // mounts or start any background sync watcher (see the hoisted
-                // `portal_activated` comment). Those
-                // are the real launch's job -- started off the main thread so
-                // the blocking freeze remounts never stall the first paint.
-                if !portal_activated {
-                    start_background_loops(app.handle().clone());
-                }
-            }
-            // NOTE: most of the above has no mobile equivalent --
-            // `git_sync`'s loop shells out to the `git` binary (see
-            // git_sync.rs), which doesn't exist on Android/iOS. An earlier
-            // version of this resumed it there anyway on the mistaken
-            // premise that "git is cross-platform" (true of the Rust code,
-            // not of a `git` binary to exec); it started a loop that could
-            // only ever fail every tick. Desktop's copy lives inside
-            // start_background_loops.
-            //
-            // Folder-to-folder sync resumes here on every platform: the
-            // pair list lives in this app's own data dir, so where it's
-            // empty this starts nothing -- and staying uncompiled on
-            // desktop would mean it only ever gets type-checked by an
-            // Android build.
-            {
-                let handle = app.handle().clone();
-                let folder_state = app.state::<folder_sync::FolderSyncState>();
-                for pair in folder_sync::list_pairs(&handle) {
-                    folder_sync::start_loop(&handle, &folder_state, pair);
-                }
             }
             Ok(())
         })
@@ -1827,11 +1695,6 @@ pub fn run() {
             convert::fs_resize_images,
             convert::vault_resize_images,
             #[cfg(desktop)]
-            transcribe::transcribe_model_downloaded,
-            #[cfg(desktop)]
-            transcribe::transcribe_download_model,
-            #[cfg(desktop)]
-            transcribe::transcribe_run,
             vault_set_sensitive,
             vault_is_sensitive,
             vault_list_sensitive,
@@ -1841,35 +1704,12 @@ pub fn run() {
             change_vault_password,
             #[cfg(desktop)]
             open_path,
-            webfind::search_youtube,
-            webfind::search_images,
-            webfind::search_books,
-            webfind::list_video_providers,
-            webfind::search_provider_videos,
-            webfind::resolve_provider_playable,
-            webfind::list_animeflv_episodes,
-            webfind::download_web_result,
             mediaserver::media_url,
-            musicorg::organize_music,
-            music::music_library,
-            music::music_played,
-            music::music_art,
-            music::update_music_tags,
-            ytstreams::youtube_streams,
-            ytstreams::download_stream,
             mp3::audio_to_mp3,
-            cast::cast_discover,
-            cast::cast_play_youtube,
             #[cfg(target_os = "android")]
             android::android_mux_video,
-            internet_root,
-            #[cfg(desktop)]
-            ytdl::download_video,
-            #[cfg(desktop)]
-            ytdl::resolve_stream_url,
             #[cfg(desktop)]
             open_player_window,
-            ytembed::youtube_embed_url,
             #[cfg(desktop)]
             terminal::open_terminal,
             #[cfg(desktop)]
@@ -1884,14 +1724,6 @@ pub fn run() {
             android::android_request_storage_access,
             #[cfg(target_os = "android")]
             android::android_pin_folder_shortcut,
-            #[cfg(target_os = "android")]
-            android::android_contacts_permission_granted,
-            #[cfg(target_os = "android")]
-            android::android_request_contacts_permission,
-            #[cfg(target_os = "android")]
-            android::android_export_contacts,
-            #[cfg(target_os = "android")]
-            android::android_import_contacts,
             #[cfg(target_os = "android")]
             android::android_open_path,
             #[cfg(target_os = "android")]
@@ -1935,14 +1767,6 @@ pub fn run() {
             #[cfg(desktop)]
             trash_purge,
             templates_dir,
-            git::git_repo_root,
-            git::git_status,
-            git::git_pull,
-            git::git_push,
-            git::git_commit_all,
-            git::git_stage,
-            git::git_unstage,
-            git::git_discard,
             #[cfg(desktop)]
             portal::portal_is_enabled,
             #[cfg(desktop)]
@@ -1964,13 +1788,6 @@ pub fn run() {
             recovery::recovery_same_disk,
             recovery::recovery_run,
             #[cfg(desktop)]
-            reorganize::claude_reorganize_folder,
-            #[cfg(desktop)]
-            freeze::freeze_folder,
-            #[cfg(desktop)]
-            freeze::list_frozen_folders,
-            #[cfg(desktop)]
-            freeze::unfreeze_folder,
             fs_rename,
             fs_copy,
             archive::fs_compress,
@@ -1988,45 +1805,8 @@ pub fn run() {
             encrypt_file_in_vault,
             decrypt_file_in_vault,
             vault_decrypt_to_temp,
-            folder_sync::folder_sync_list_pairs,
-            folder_sync::folder_sync_add,
-            folder_sync::folder_sync_remove,
-            folder_sync::folder_sync_now,
-            folder_sync::folder_sync_syncing_now,
             #[cfg(desktop)]
             fs_watch::fs_watch_set,
-            git_sync::git_sync_list_pairs,
-            git_sync::git_sync_is_active,
-            git_sync::git_sync_syncing_now,
-            git_sync::git_sync_last_error,
-            git_sync::git_sync_add,
-            git_sync::git_sync_remove,
-            #[cfg(desktop)]
-            local_sync::local_sync_available,
-            #[cfg(desktop)]
-            local_sync::local_sync_list_pairs,
-            #[cfg(desktop)]
-            local_sync::local_sync_is_active,
-            #[cfg(desktop)]
-            local_sync::local_sync_syncing_now,
-            #[cfg(desktop)]
-            local_sync::local_sync_add,
-            #[cfg(desktop)]
-            local_sync::local_sync_remove,
-            #[cfg(desktop)]
-            local_sync::local_sync_now,
-            syncthing::syncthing_installed,
-            syncthing::syncthing_syncing_now,
-            syncthing::syncthing_qr_svg,
-            syncthing::syncthing_my_device_id,
-            syncthing::syncthing_list_devices,
-            syncthing::syncthing_add_device,
-            syncthing::syncthing_remove_device,
-            syncthing::syncthing_list_folders,
-            syncthing::syncthing_share_folder,
-            syncthing::syncthing_remove_folder,
-            syncthing::syncthing_pending_devices,
-            syncthing::syncthing_pending_folders,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

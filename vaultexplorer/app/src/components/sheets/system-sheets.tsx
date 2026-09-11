@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, osOpen, formatSize, joinPath } from "../../api";
-import { PHONE_STORAGE_PATH } from "../../constants";
+import { api, osOpen, formatSize } from "../../api";
 import { ComputerGlyph, ChevronLeft } from "../../icons";
 import { Dropdown } from "../../ContextMenu";
-import { RecoverySheet, UnfreezeSheet } from "./vault-sheets";
+import { RecoverySheet } from "./vault-sheets";
 import {
   SensitiveTimeout,
   SENSITIVE_TIMEOUT_CHOICES,
@@ -356,11 +355,6 @@ export function SettingsScreen({
   onImportConfig: () => void;
 }) {
   const [tab, setTab] = useState<"general" | "security" | "system">("general");
-  const defaultContactsDir = joinPath(joinPath(PHONE_STORAGE_PATH, "Documents"), "Contacts");
-  const [exportDir, setExportDir] = useState(defaultContactsDir);
-  const [importDir, setImportDir] = useState(defaultContactsDir);
-  const [contactsBusy, setContactsBusy] = useState(false);
-  const [contactsMsg, setContactsMsg] = useState("");
   const [appVersion, setAppVersion] = useState("");
   const [updateCheck, setUpdateCheck] = useState<UpdateCheck>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -410,59 +404,6 @@ export function SettingsScreen({
     } finally {
       setUpdateBusy(false);
     }
-  }
-  async function withContactsPermission(action: () => Promise<void>) {
-    setContactsBusy(true);
-    setContactsMsg("");
-    try {
-      const contactsGranted = await api.androidContactsPermissionGranted();
-      if (!contactsGranted) {
-        await api.androidRequestContactsPermission();
-        setContactsMsg("Grant the permission in the dialog, then try again.");
-        return;
-      }
-      // The export/import folders default to a real Phone Storage path
-      // (see exportDir/importDir below) -- writing/reading .vcf files
-      // there needs "All files access" too, same as any other real-fs
-      // folder (see `go()` in App.tsx). Missing this check meant export
-      // failed with a raw "Permission denied (os error 13)" from the
-      // write itself instead of ever prompting for the permission.
-      const storageGranted = await api.androidStorageAccessGranted();
-      if (!storageGranted) {
-        await api.androidRequestStorageAccess();
-        setContactsMsg('Also grant "All files access" (just opened in Settings) so contacts can be written to your phone storage, then try again.');
-        return;
-      }
-      await action();
-    } catch (e) {
-      setContactsMsg(String(e));
-    } finally {
-      setContactsBusy(false);
-    }
-  }
-  async function exportContacts() {
-    await withContactsPermission(async () => {
-      const { exported, failed_names } = await api.androidExportContacts(exportDir);
-      let msg = `Exported ${exported} contact${exported === 1 ? "" : "s"} to ${exportDir}`;
-      if (failed_names.length > 0) {
-        msg += ` -- failed: ${failed_names.join("; ")}`;
-      }
-      setContactsMsg(msg);
-    });
-  }
-  async function importContacts() {
-    await withContactsPermission(async () => {
-      const entries = await api.fsList(importDir, false);
-      const vcfPaths = entries
-        .filter((e) => !e.is_dir && e.name.toLowerCase().endsWith(".vcf"))
-        .map((e) => joinPath(importDir, e.name));
-      if (vcfPaths.length === 0) {
-        setContactsMsg(`No .vcf files found in ${importDir}`);
-        return;
-      }
-      await api.androidImportContacts(vcfPaths);
-      setContactsMsg(`Opened ${vcfPaths.length} import prompt${vcfPaths.length === 1 ? "" : "s"} -- confirm each in the Contacts app`);
-    });
   }
   const [portalEnabled, setPortalEnabled] = useState(false);
   const [portalBusy, setPortalBusy] = useState(false);
@@ -516,13 +457,6 @@ export function SettingsScreen({
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   useEffect(() => {
     api.recoveryToolAvailable().then(setRecoveryAvailable).catch(() => {});
-  }, []);
-
-  const [frozen, setFrozen] = useState<import("../../api").FreezeMeta[]>([]);
-  const [unfreezePath, setUnfreezePath] = useState<string | null>(null);
-  const refreshFrozenList = () => api.listFrozenFolders().then(setFrozen).catch(() => setFrozen([]));
-  useEffect(() => {
-    refreshFrozenList();
   }, []);
 
   async function togglePortal(checked: boolean) {
@@ -634,45 +568,6 @@ export function SettingsScreen({
                 Paste config from clipboard
               </button>
             </div>
-            {mobile && (
-              <>
-                <label className="field-label" style={{ marginTop: 14 }}>
-                  Contacts
-                </label>
-                <p className="hint" style={{ marginTop: -2 }}>
-                  Export writes one .vcf per contact. Import hands each .vcf in the folder to the
-                  Contacts app to confirm.
-                </p>
-                <label className="field-label">Export folder</label>
-                <input value={exportDir} onChange={(e) => setExportDir(e.target.value)} />
-                <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
-                  <button className="btn-plain small" disabled={contactsBusy} onClick={exportContacts}>
-                    Export contacts
-                  </button>
-                </div>
-                <label className="field-label">Import folder</label>
-                <input value={importDir} onChange={(e) => setImportDir(e.target.value)} />
-                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  <button className="btn-plain small" disabled={contactsBusy} onClick={importContacts}>
-                    Import contacts from folder
-                  </button>
-                </div>
-                {contactsMsg && (
-                  <p className="hint" style={{ marginTop: 6 }}>
-                    {contactsMsg}
-                  </p>
-                )}
-                <label className="field-label" style={{ marginTop: 14 }}>
-                  Folder sync
-                </label>
-                <p className="hint" style={{ marginTop: -2 }}>
-                  Folder-to-folder sync works here: this app syncs two local folders itself, so
-                  nothing has to shell out to <code>unison</code> (Android can't run it). It's
-                  two-way -- link it from a folder: long-press it → Sync. Git and P2P stay
-                  desktop-only -- each needs its own binary.
-                </p>
-              </>
-            )}
             <label className="field-label" style={{ marginTop: 14 }}>
               Updates
             </label>
@@ -798,35 +693,10 @@ export function SettingsScreen({
                 </span>
               )}
             </div>
-            {frozen.length > 0 && (
-              <div className="info-rows" style={{ marginBottom: 10 }}>
-                {frozen.map((f) => (
-                  <div className="info-row" key={f.original_path}>
-                    <span className="info-path">{f.original_path}</span>
-                    <button
-                      className="btn-plain small"
-                      onClick={() => setUnfreezePath(f.original_path)}
-                    >
-                      Unfreeze…
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
           </>
         )}
       </div>
       {recoveryOpen && <RecoverySheet onClose={() => setRecoveryOpen(false)} />}
-      {unfreezePath && (
-        <UnfreezeSheet
-          path={unfreezePath}
-          onDone={() => {
-            setUnfreezePath(null);
-            refreshFrozenList();
-          }}
-          onClose={() => setUnfreezePath(null)}
-        />
-      )}
     </div>
   );
 }

@@ -1,5 +1,3 @@
-import { Entry } from "./api";
-
 // A browsing location is either a real OS directory ("fs") or a directory
 // inside a currently-unlocked vault ("vault", rel = path relative to root).
 export type Loc = { kind: "fs"; path: string } | { kind: "vault"; root: string; rel: string };
@@ -12,7 +10,7 @@ export type Loc = { kind: "fs"; path: string } | { kind: "vault"; root: string; 
 export type Clipboard =
   | { paths: string[]; mode: "copy" | "cut"; kind: Loc["kind"]; root?: string }
   | null;
-export type View = "icon" | "list" | "column" | "listPreview" | "notes" | "contacts" | "library" | "music";
+export type View = "icon" | "list" | "column" | "listPreview";
 export type ProgressOp = {
   id: number;
   label: string;
@@ -27,8 +25,6 @@ export type ProgressOp = {
 export type PendingAction =
   | { kind: "delete"; names: string[] }
   | { kind: "secureDelete"; names: string[] }
-  | { kind: "gitCommit" }
-  | { kind: "freeze"; entry: Entry }
   | { kind: "unlock"; path: string; name: string }
   | { kind: "newVault" };
 

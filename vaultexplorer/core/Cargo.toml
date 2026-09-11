@@ -4,21 +4,23 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# The vault format itself: Cryptomator vault v8 / SIV_GCM, so a vault
+# made here opens in Cryptomator and vice versa.
+cryptomator-rs-crypto = { git = "https://github.com/Dar9586/cryptomator-rs", rev = "c0c96cf45ecf17f18d6ece1e68adf51b7d18446d" }
 aes-gcm = "0.10"
 argon2 = "0.5"
 rand_core = { version = "0.6", features = ["std"] }
 zeroize = { version = "1", features = ["derive"] }
 thiserror = "1"
-hkdf = "0.12"
 sha2 = "0.10"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-ml-kem = "0.2"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 bincode = "1"
-aes-siv = "0.7"
 base64 = "0.22"
-clap = { version = "4", features = ["derive"] }
-rpassword = "7"
+# Only for changing a vault password (re-wrapping masterkey.cryptomator),
+# which the engine crate doesn't expose -- see masterkey.rs.
+scrypt = "0.11"
+aes-kw = "0.2"
 libc = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate", "aes-crypto"] }
 
@@ -27,3 +29,4 @@ fuser = "0.14"
 
 [dev-dependencies]
 tempfile = "3"
+base64 = "0.22"

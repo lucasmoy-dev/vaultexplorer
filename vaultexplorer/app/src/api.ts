@@ -133,62 +133,10 @@ export const api = {
   androidRequestStorageAccess: () => invoke<void>("android_request_storage_access"),
   androidPinFolderShortcut: (id: string, label: string, url: string, iconBase64?: string) =>
     invoke<void>("android_pin_folder_shortcut", { id, label, url, iconBase64 }),
-  androidContactsPermissionGranted: () => invoke<boolean>("android_contacts_permission_granted"),
-  androidRequestContactsPermission: () => invoke<void>("android_request_contacts_permission"),
-  androidExportContacts: (destDir: string) =>
-    invoke<{ exported: number; failed_names: string[] }>("android_export_contacts", { destDir }),
-  androidImportContacts: (vcfPaths: string[]) => invoke<void>("android_import_contacts", { vcfPaths }),
   androidDownloadAndInstallApk: (url: string) => invoke<void>("android_download_and_install_apk", { url }),
   androidCanInstallPackages: () => invoke<boolean>("android_can_install_packages"),
   androidRequestInstallPackagesAccess: () => invoke<void>("android_request_install_packages_access"),
-  searchYoutube: (query: string, filters: YoutubeSearchFilters) =>
-    invoke<YoutubeResult[]>("search_youtube", {
-      query,
-      sortByDate: filters.sortByDate,
-      uploadDate: filters.uploadDate,
-      duration: filters.duration,
-    }),
-  searchImages: (query: string, filters?: ImageSearchFilters) =>
-    invoke<ImageResult[]>("search_images", {
-      query,
-      filters: filters
-        ? {
-            file_type: filters.fileType,
-            size: filters.size,
-            color: filters.color,
-            layout: filters.layout,
-          }
-        : null,
-    }),
-  searchBooks: (query: string) => invoke<BookResult[]>("search_books", { query }),
-  listVideoProviders: () => invoke<VideoProvider[]>("list_video_providers"),
-  searchProviderVideos: (provider: string, query: string) =>
-    invoke<ProviderVideoResult[]>("search_provider_videos", { provider, query }),
-  resolveProviderPlayable: (provider: string, pageUrl: string) =>
-    invoke<PlayableSource>("resolve_provider_playable", { provider, pageUrl }),
-  listAnimeflvEpisodes: (pageUrl: string) =>
-    invoke<AnimeflvEpisode[]>("list_animeflv_episodes", { pageUrl }),
-  downloadWebResult: (url: string, destDir: string, filename: string, channel: Channel<ProgressEvent>) =>
-    invoke<void>("download_web_result", { url, destDir, filename, channel }),
-  youtubeEmbedUrl: (videoId: string) => invoke<string>("youtube_embed_url", { videoId }),
   mediaUrl: (path: string) => invoke<string>("media_url", { path }),
-  internetRoot: () => invoke<string>("internet_root"),
-  organizeMusic: (root: string, channel: Channel<ProgressEvent>) =>
-    invoke<OrganizedTrack[]>("organize_music", { root, channel }),
-  // Music view: the library, play counts, cover art, and filling in tags
-  // from MusicBrainz (see src-tauri/src/music.rs).
-  musicLibrary: (root: string) => invoke<MusicTrack[]>("music_library", { root }),
-  musicPlayed: (path: string) => invoke<number>("music_played", { path }),
-  musicArt: (path: string) => invoke<string | null>("music_art", { path }),
-  updateMusicTags: (root: string, channel: Channel<ProgressEvent>) =>
-    invoke<TagUpdate[]>("update_music_tags", { root, channel }),
-  youtubeStreams: (pageUrl: string) => invoke<YoutubeStreams>("youtube_streams", { pageUrl }),
-  downloadStream: (url: string, destDir: string, filename: string, channel: Channel<ProgressEvent>) =>
-    invoke<void>("download_stream", { url, destDir, filename, channel }),
-  androidMuxVideo: (videoPath: string, audioPath: string, outPath: string) =>
-    invoke<void>("android_mux_video", { videoPath, audioPath, outPath }),
-  // Decode-and-re-encode to MP3 in-process (see mp3.rs) -- what lets a
-  // phone end up with a real .mp3 instead of the .m4a YouTube serves.
   audioToMp3: (
     src: string,
     dest: string,
@@ -198,16 +146,8 @@ export const api = {
     // Returns the path actually written -- "name (2).mp3" when something
     // was already sitting at `dest`.
   ) => invoke<string>("audio_to_mp3", { src, dest, title, removeSource, channel }),
-  castDiscover: () => invoke<CastDevice[]>("cast_discover"),
-  castPlayYoutube: (appUrl: string, videoId: string) =>
-    invoke<void>("cast_play_youtube", { appUrl, videoId }),
-  resolveStreamUrl: (pageUrl: string) => invoke<string>("resolve_stream_url", { pageUrl }),
   fsTrashMany: (paths: string[], channel: Channel<ProgressEvent>) =>
     invoke<void>("fs_trash_many", { paths, channel }),
-  downloadVideo: (pageUrl: string, audioOnly: boolean, channel: Channel<ProgressEvent>) =>
-    invoke<string>("download_video", { pageUrl, audioOnly, channel }),
-  openPlayerWindow: (kind: string, items: PlayerItem[], index: number) =>
-    invoke<void>("open_player_window", { kind, items: JSON.stringify(items), index }),
   openTerminal: (path: string, terminal: string) =>
     invoke<void>("open_terminal", { path, terminal }),
   runShellScript: (path: string, terminal: string) =>
@@ -244,24 +184,12 @@ export const api = {
   fsTrash: (path: string) => invoke<void>("fs_trash", { path }),
   scanLargeFiles: (roots: string[], channel: Channel<LargeFilesEvent>) =>
     invoke<void>("scan_large_files", { roots, channel }),
-  claudeReorganizeFolder: (path: string, channel: Channel<string>) =>
-    invoke<void>("claude_reorganize_folder", { path, channel }),
   trashDir: () => invoke<string>("trash_dir"),
   emptyTrash: () => invoke<void>("empty_trash"),
   trashRestoreAll: () => invoke<void>("trash_restore_all"),
   trashRestore: (names: string[]) => invoke<void>("trash_restore", { names }),
   trashPurge: (names: string[]) => invoke<void>("trash_purge", { names }),
   templatesDir: () => invoke<string>("templates_dir"),
-  gitRepoRoot: (path: string) => invoke<string | null>("git_repo_root", { path }),
-  gitStatus: (root: string) => invoke<GitFileStatus[]>("git_status", { root }),
-  gitPull: (root: string) => invoke<string>("git_pull", { root }),
-  gitPush: (root: string) => invoke<string>("git_push", { root }),
-  gitCommitAll: (root: string, message: string) => invoke<string>("git_commit_all", { root, message }),
-  gitStage: (root: string, path: string) => invoke<void>("git_stage", { root, path }),
-  gitUnstage: (root: string, path: string) => invoke<void>("git_unstage", { root, path }),
-  gitDiscard: (root: string, path: string) => invoke<void>("git_discard", { root, path }),
-
-  // System file-picker portal integration
   portalIsEnabled: () => invoke<boolean>("portal_is_enabled"),
   portalEnable: () => invoke<void>("portal_enable"),
   portalDisable: () => invoke<void>("portal_disable"),
@@ -310,11 +238,6 @@ export const api = {
     invoke<boolean>("recovery_same_disk", { device, destDir }),
   recoveryRun: (device: string, destDir: string) => invoke<void>("recovery_run", { device, destDir }),
 
-  // Freeze Folder
-  freezeFolder: (path: string, password: string) => invoke<void>("freeze_folder", { path, password }),
-  listFrozenFolders: () => invoke<FreezeMeta[]>("list_frozen_folders"),
-  unfreezeFolder: (path: string, password: string, keepChanges: boolean) =>
-    invoke<void>("unfreeze_folder", { path, password, keepChanges }),
   fsRename: (src: string, dest: string) => invoke<void>("fs_rename", { src, dest }),
   fsCopy: (src: string, dest: string, channel: Channel<ProgressEvent>) =>
     invoke<void>("fs_copy", { src, dest, channel }),
@@ -382,11 +305,6 @@ export const api = {
   fsPdfPage: (path: string, page: number, maxSize: number) =>
     invoke<string>("fs_pdf_page", { path, page, maxSize }),
   fsPdfPageCount: (path: string) => invoke<number>("fs_pdf_page_count", { path }),
-  transcribeModelDownloaded: () => invoke<boolean>("transcribe_model_downloaded"),
-  transcribeDownloadModel: (channel: Channel<ProgressEvent>) =>
-    invoke<void>("transcribe_download_model", { channel }),
-  transcribeRun: (path: string, destTxtPath: string, channel: Channel<ProgressEvent>) =>
-    invoke<void>("transcribe_run", { path, destTxtPath, channel }),
   fsConvertMedia: (
     path: string,
     destPath: string,
@@ -442,52 +360,7 @@ export const api = {
   // copy in the app's cache dir (shareable via FileProvider) instead.
   vaultDecryptToTemp: (relPath: string) => invoke<string>("vault_decrypt_to_temp", { relPath }),
 
-  // Folder-to-folder sync without unison (see folder_sync.rs) -- the
-  // mobile counterpart of the localSync* calls below.
-  folderSyncListPairs: () => invoke<FolderSyncPair[]>("folder_sync_list_pairs"),
-  folderSyncAdd: (folderA: string, folderB: string) =>
-    invoke<FolderSyncPair>("folder_sync_add", { folderA, folderB }),
-  folderSyncRemove: (folder: string) => invoke<void>("folder_sync_remove", { folder }),
-  folderSyncNow: (folder: string, channel: Channel<ProgressEvent>) =>
-    invoke<FolderSyncOutcome>("folder_sync_now", { folder, channel }),
-  folderSyncSyncingNow: () => invoke<string[]>("folder_sync_syncing_now"),
   fsWatchSet: (path: string | null) => invoke<void>("fs_watch_set", { path }),
-  gitSyncListPairs: () => invoke<GitSyncPair[]>("git_sync_list_pairs"),
-  gitSyncIsActive: (localPath: string) => invoke<boolean>("git_sync_is_active", { localPath }),
-  gitSyncSyncingNow: () => invoke<string[]>("git_sync_syncing_now"),
-  gitSyncLastError: (localPath: string) => invoke<string | null>("git_sync_last_error", { localPath }),
-  gitSyncAdd: (localPath: string, remoteUrl: string, repoName: string) =>
-    invoke<GitSyncPair>("git_sync_add", { localPath, remoteUrl, repoName }),
-  gitSyncRemove: (localPath: string) => invoke<void>("git_sync_remove", { localPath }),
-  localSyncAvailable: () => invoke<boolean>("local_sync_available"),
-  localSyncListPairs: () => invoke<LocalSyncPair[]>("local_sync_list_pairs"),
-  localSyncIsActive: (folderA: string, folderB: string) =>
-    invoke<boolean>("local_sync_is_active", { folderA, folderB }),
-  localSyncSyncingNow: () => invoke<string[]>("local_sync_syncing_now"),
-  localSyncAdd: (folderA: string, folderB: string) =>
-    invoke<string[]>("local_sync_add", { folderA, folderB }),
-  localSyncRemove: (folderA: string, folderB: string) =>
-    invoke<void>("local_sync_remove", { folderA, folderB }),
-  localSyncNow: (folderA: string, folderB: string) =>
-    invoke<string[]>("local_sync_now", { folderA, folderB }),
-  syncthingInstalled: () => invoke<boolean>("syncthing_installed"),
-  syncthingSyncingNow: () => invoke<string[]>("syncthing_syncing_now"),
-  syncthingMyDeviceId: () => invoke<string>("syncthing_my_device_id"),
-  syncthingQrSvg: (data: string) => invoke<string>("syncthing_qr_svg", { data }),
-  syncthingListDevices: () => invoke<SyncthingDevice[]>("syncthing_list_devices"),
-  syncthingAddDevice: (id: string, name: string) => invoke<void>("syncthing_add_device", { id, name }),
-  syncthingRemoveDevice: (id: string) => invoke<void>("syncthing_remove_device", { id }),
-  syncthingListFolders: () => invoke<SyncthingFolder[]>("syncthing_list_folders"),
-  syncthingShareFolder: (folderId: string, label: string, path: string, deviceIds: string[]) =>
-    invoke<void>("syncthing_share_folder", { folderId, label, path, deviceIds }),
-  syncthingRemoveFolder: (folderId: string) => invoke<void>("syncthing_remove_folder", { folderId }),
-  syncthingPendingDevices: () => invoke<SyncthingPendingDevice[]>("syncthing_pending_devices"),
-  syncthingPendingFolders: () => invoke<SyncthingPendingFolder[]>("syncthing_pending_folders"),
-  // Native OS-level drag-out (tauri-plugin-drag), so dropping a real file
-  // onto an external app (a browser tab, another native app) actually
-  // hands it real bytes -- HTML5's own `dataTransfer` never does, no
-  // matter what's put in it, since it can't carry real files across
-  // process boundaries.
   startFileDrag: (paths: string[], image?: string) =>
     invoke<void>("plugin:drag|start_drag", {
       item: paths,
@@ -502,53 +375,13 @@ export const api = {
     }),
 };
 
-export interface FolderSyncPair {
-  folder_a: string;
-  folder_b: string;
-}
 
-export interface FolderSyncOutcome {
-  copied_to_a: number;
-  copied_to_b: number;
-  deleted_in_a: number;
-  deleted_in_b: number;
-  conflicts: string[];
-  summary: string;
-}
 
-export interface GitSyncPair {
-  local_path: string;
-  remote_url: string;
-  repo_name: string;
-}
 
-export interface LocalSyncPair {
-  folder_a: string;
-  folder_b: string;
-}
 
-export interface SyncthingDevice {
-  id: string;
-  name: string;
-  connected: boolean;
-}
 
-export interface SyncthingFolder {
-  id: string;
-  label: string;
-  path: string;
-  device_ids: string[];
-}
 
-export interface SyncthingPendingDevice {
-  id: string;
-}
 
-export interface SyncthingPendingFolder {
-  id: string;
-  label: string;
-  offered_by_device_id: string;
-}
 
 export interface ClearResult {
   name: string;
@@ -573,67 +406,12 @@ export interface LargeFilesEvent {
 }
 
 /** One playable file, as the Music view sees it. */
-export interface MusicTrack {
-  path: string;
-  name: string;
-  /** Folder relative to the scanned root; "" is the root itself. */
-  folder: string;
-  title: string | null;
-  artist: string | null;
-  album: string | null;
-  year: number | null;
-  track_no: number | null;
-  duration_secs: number | null;
-  has_art: boolean;
-  plays: number;
-}
 
 /** What "Update song data" did to one file. */
-export interface TagUpdate {
-  path: string;
-  name: string;
-  /** Fields that were filled in, in the words shown to the user. */
-  changed: string[];
-  /** Why nothing changed, when nothing did. */
-  skipped: string | null;
-  title: string | null;
-  artist: string | null;
-  album: string | null;
-  year: number | null;
-}
 
-export interface OrganizedTrack {
-  from: string;
-  to: string;
-  artist: string;
-  album: string;
-  title: string;
-  year: number | null;
-  track_no: number | null;
-  from_online: boolean;
-}
 
-export interface YoutubeStreams {
-  title: string;
-  // Video-only: YouTube no longer serves progressive streams, so a
-  // playable file means muxing this with the audio (see ytstreams.rs).
-  video_url: string | null;
-  video_height: number;
-  audio_url: string | null;
-  // The real container ("m4a"/"webm") -- named honestly rather than
-  // promising an mp3 nobody transcoded.
-  audio_ext: string;
-}
 
-export interface CastDevice {
-  name: string;
-  app_url: string;
-}
 
-export interface GitFileStatus {
-  path: string;
-  status: string;
-}
 
 export interface DiskInfo {
   name: string;
@@ -642,94 +420,16 @@ export interface DiskInfo {
   type: string;
 }
 
-export interface FreezeMeta {
-  original_path: string;
-  frozen_at: number;
-}
 
-export interface YoutubeResult {
-  id: string;
-  title: string;
-  thumbnail: string;
-  duration: string | null;
-  published: string | null;
-}
 
-// Mirrors youtube_sp_param's Rust-side enums directly -- see webfind.rs.
-export type YoutubeUploadDate = 1 | 2 | 3 | 4 | 5; // hour/today/week/month/year
-export type YoutubeDuration = 1 | 2 | 3; // short(<4m)/long(>20m)/medium(4-20m)
-export interface YoutubeSearchFilters {
-  sortByDate: boolean;
-  uploadDate: YoutubeUploadDate | null;
-  duration: YoutubeDuration | null;
-}
 
-export interface ImageResult {
-  title: string;
-  thumbnail: string;
-  image: string;
-  source_url: string;
-}
 
-// The standalone player window's playlist entry -- `key` is a video id for
-// youtube (embed URL built client-side, no lookup needed) or a page_url for
-// every other provider (resolved to a real playable source on open via
-// resolveProviderPlayable, since that needs a live per-item fetch).
-export interface PlayerItem {
-  title: string;
-  key: string;
-}
 
-export interface PlayableSource {
-  kind: "iframe" | "video";
-  url: string;
-}
 
-export interface ImageSearchFilters {
-  fileType: "photo" | "clipart" | "gif" | "transparent" | "line" | null;
-  size: "Small" | "Medium" | "Large" | "Wallpaper" | null;
-  color:
-    | "color"
-    | "Monochrome"
-    | "Red"
-    | "Orange"
-    | "Yellow"
-    | "Green"
-    | "Blue"
-    | "Purple"
-    | "Pink"
-    | "Brown"
-    | "Black"
-    | "Gray"
-    | "Teal"
-    | "White"
-    | null;
-  layout: "Square" | "Tall" | "Wide" | null;
-}
 
-export interface BookResult {
-  title: string;
-  url: string;
-  snippet: string | null;
-}
 
-export interface VideoProvider {
-  id: string;
-  label: string;
-}
 
-export interface ProviderVideoResult {
-  title: string;
-  thumbnail: string;
-  page_url: string;
-  duration: string | null;
-}
 
-export interface AnimeflvEpisode {
-  number: number;
-  thumbnail: string;
-  page_url: string;
-}
 
 export interface Drive {
   path: string;

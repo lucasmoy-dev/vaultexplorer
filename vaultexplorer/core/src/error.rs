@@ -41,6 +41,12 @@ pub enum VaultError {
     #[error("can't unmark: a parent folder is marked sensitive")]
     SensitiveInherited,
 
+    #[error("a file or folder already exists at that path")]
+    PathExists,
+
+    #[error("vault error: {0}")]
+    Crypt(String),
+
     #[error("archive error: {0}")]
     Zip(#[from] zip::result::ZipError),
 }

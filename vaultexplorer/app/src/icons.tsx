@@ -124,17 +124,10 @@ const OFFICE_EXT_RE = /\.(docx?|odt|xlsx?|ods|pptx?|odp)$/;
 export function kindOf(entry: Entry): Kind {
   if (entry.is_dir) return "folder";
   const l = displayName(entry);
-  // .ytsearch/.imgsearch/.booksearch (see InternetView) are a saved
-  // search's query + filters in JSON, not real media -- but they're meant
-  // to read as "a video/image/book file" in the UI, so they borrow the
-  // same icon as the kind of result they reopen.
-  if (/\.(png|jpe?g|gif|webp|bmp|svg|heic|tiff?|imgsearch)$/.test(l)) return "image";
-  // A `.youtube.url` (or any `.url`) saved from an Internet result is a
-  // link, not media -- but it stands in for a video the same way a saved
-  // search does, so it reads as one in the grid.
-  if (/\.(mp4|mkv|mov|avi|webm|m4v|ytsearch)$/.test(l) || /\.(youtube|video)\.url$/.test(l)) return "video";
+  if (/\.(png|jpe?g|gif|webp|bmp|svg|heic|tiff?)$/.test(l)) return "image";
+  if (/\.(mp4|mkv|mov|avi|webm|m4v)$/.test(l)) return "video";
   if (/\.(mp3|wav|flac|ogg|aac|m4a)$/.test(l)) return "audio";
-  if (/\.(pdf|booksearch)$/.test(l)) return "pdf";
+  if (/\.pdf$/.test(l)) return "pdf";
   if (/\.(zip|tar|gz|7z|rar|bz2|xz)$/.test(l)) return "archive";
   if (/\.(rs|ts|tsx|js|jsx|py|go|c|cpp|h|java|rb|sh|json|toml|yaml|yml|css|html)$/.test(l))
     return "code";
@@ -275,20 +268,6 @@ export function FileIcon({
         {art}
         <span className="fileicon-lock">
           <LockGlyph size={13} />
-        </span>
-      </span>
-    );
-  }
-  // A saved Internet search (see InternetView) borrows the video/image/pdf
-  // icon so it reads as an ordinary file, but plain video.svg alone was
-  // easy to mistake for an actual media file (looked like a QuickTime
-  // icon) -- this badge is what says "this is a search, not the real thing".
-  if (/\.(ytsearch|imgsearch|booksearch)$/i.test(entry.name)) {
-    return (
-      <span className="fileicon-wrap">
-        {art}
-        <span className="fileicon-badge" aria-hidden="true">
-          🌐
         </span>
       </span>
     );

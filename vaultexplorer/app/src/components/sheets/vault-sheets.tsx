@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, baseName, ENCRYPTED_FILE_EXT } from "../../api";
+import { api, ENCRYPTED_FILE_EXT } from "../../api";
 import { LockGlyph, EyeGlyph, EyeOffGlyph } from "../../icons";
 import {
   PendingAction,
@@ -49,19 +49,13 @@ export function ActionSheet({
 }) {
   const isDelete = action.kind === "delete";
   const isSecureDelete = action.kind === "secureDelete";
-  const [value, setValue] = useState("");
-
   const titles: Record<string, string> = {
     delete: "Delete",
     secureDelete: "Secure Delete",
-    gitCommit: "Commit All Changes",
-    freeze: "Freeze Folder",
   };
   const confirmLabels: Record<string, string> = {
     delete: "Delete",
     secureDelete: "Secure Delete",
-    gitCommit: "Commit",
-    freeze: "Freeze",
   };
   const deleteLabel =
     action.kind === "delete" || action.kind === "secureDelete"
@@ -85,36 +79,14 @@ export function ActionSheet({
             Are you sure you want to delete <strong>{deleteLabel}</strong>? This action cannot be
             undone.
           </p>
-        ) : action.kind === "freeze" ? (
-          <PasswordInput
-            autoFocus
-            placeholder="Choose a freeze password"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onSubmit(value);
-              if (e.key === "Escape") onCancel();
-            }}
-          />
-        ) : (
-          <input
-            autoFocus
-            placeholder="Commit message"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onSubmit(value);
-              if (e.key === "Escape") onCancel();
-            }}
-          />
-        )}
+        ) : null}
         <div className="sheet-actions">
           <button className="btn-plain" onClick={onCancel}>
             Cancel
           </button>
           <button
             className={isDelete || isSecureDelete ? "btn-primary danger" : "btn-primary"}
-            onClick={() => onSubmit(value)}
+            onClick={() => onSubmit("")}
           >
             {confirmLabels[action.kind]}
           </button>
@@ -424,7 +396,10 @@ export function NewVaultSheet({
           <LockGlyph size={22} />
         </div>
         <h3>New vault</h3>
-        <p>An encrypted vault folder will be created here.</p>
+        <p>
+          A Cryptomator vault will be created here — the same format the
+          Cryptomator apps use, so this folder opens there too.
+        </p>
         <input autoFocus placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
         <PasswordInput
           placeholder="Password"
@@ -689,59 +664,6 @@ export function RecoverySheet({ onClose }: { onClose: () => void }) {
             onClick={run}
           >
             {running ? "Running… (this can take a long time)" : "Start Recovery"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function UnfreezeSheet({
-  path,
-  onDone,
-  onClose,
-}: {
-  path: string;
-  onDone: () => void;
-  onClose: () => void;
-}) {
-  const [pw, setPw] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function go(keepChanges: boolean) {
-    setBusy(true);
-    setError("");
-    try {
-      await api.unfreezeFolder(path, pw, keepChanges);
-      onDone();
-    } catch (e) {
-      setError(String(e));
-    }
-    setBusy(false);
-  }
-
-  return (
-    <div className="sheet-overlay" onMouseDown={onClose}>
-      <div className="sheet-card" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>Unfreeze “{baseName(path)}”</h3>
-        <PasswordInput
-          autoFocus
-          placeholder="Freeze password"
-          value={pw}
-          onChange={(e) => setPw(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && go(true)}
-        />
-        {error && <p className="error">{error}</p>}
-        <div className="sheet-actions">
-          <button className="btn-plain" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button className="btn-plain danger" disabled={busy || !pw} onClick={() => go(false)}>
-            Discard Changes
-          </button>
-          <button className="btn-primary" disabled={busy || !pw} onClick={() => go(true)}>
-            Keep Changes
           </button>
         </div>
       </div>
