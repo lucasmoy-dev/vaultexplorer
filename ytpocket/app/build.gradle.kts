@@ -33,8 +33,8 @@ android {
         // and scoped storage as the only model worth targeting.
         minSdk = 29
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.1.9"
+        versionCode = 11
+        versionName = "0.2.0"
         // arm64 only: every phone worth running this on has been arm64 for
         // years, and a second ABI doubles build time and APK size.
         // A phone is arm64; an emulator is x86_64. Release ships arm64 only
@@ -117,6 +117,12 @@ dependencies {
     // unit tests, and parsing what the native side returns is exactly what
     // those tests are for.
     testImplementation("org.json:json:20240303")
+    // Compose's own test rule, on Robolectric: taps the real buttons and
+    // reads what the screen then says -- the only check of "did the tap
+    // register" short of a phone.
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

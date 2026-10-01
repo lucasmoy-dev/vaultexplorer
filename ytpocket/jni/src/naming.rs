@@ -25,6 +25,18 @@ const MAX_BYTES: usize = 120;
 
 /// A safe base name (no extension) for `title`.
 pub fn file_stem(title: &str) -> String {
+    let cleaned = clean(title, MAX_BYTES);
+    if cleaned.is_empty() {
+        "video".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// `title` made safe for one path component and capped at `max` bytes; empty
+/// when nothing usable is left. The rules `file_stem` is built on, exposed so
+/// the parts of an organised name can each be capped on their own.
+pub fn clean(title: &str, max: usize) -> String {
     let replaced: String = title
         .chars()
         .map(|c| {
@@ -44,12 +56,36 @@ pub fn file_stem(title: &str) -> String {
     // not become a filename with three spaces.
     let collapsed = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = collapsed.trim().trim_end_matches('.').trim();
-    let capped = truncate_bytes(trimmed, MAX_BYTES);
-    let cleaned = capped.trim().trim_end_matches('.').trim();
+    let capped = truncate_bytes(trimmed, max);
+    capped.trim().trim_end_matches('.').trim().to_string()
+}
+
+/// `Artist - Album - Song.mp3`, the name an organised MP3 gets, or
+/// `Artist - Song.mp3` when the album is not known (a name with an empty
+/// middle, "Artist -  - Song", helps nobody).
+///
+/// Each part is capped on its own rather than the whole being cut at the end:
+/// a long album name must not be what eats the song title, which is the part
+/// that tells two files apart. 50 + 60 + 80 bytes plus separators stays well
+/// under the 255-byte component limit.
+pub fn track_file_name(artist: &str, album: &str, title: &str, ext: &str) -> String {
+    let parts: Vec<String> = [(artist, 50), (album, 60), (title, 80)]
+        .iter()
+        .map(|(text, max)| clean(text, *max))
+        .filter(|part| !part.is_empty())
+        .collect();
+    let stem = if parts.is_empty() { "audio".to_string() } else { parts.join(" - ") };
+    file_name_with(stem, ext)
+}
+
+/// The folder an organised MP3 goes in: the artist, made safe, or a fixed
+/// name when there is none (a file must land *somewhere*).
+pub fn artist_folder(artist: &str) -> String {
+    let cleaned = clean(artist, 60);
     if cleaned.is_empty() {
-        "video".to_string()
+        "Artista desconocido".to_string()
     } else {
-        cleaned.to_string()
+        cleaned
     }
 }
 
@@ -61,6 +97,11 @@ pub fn file_name(title: &str, ext: &str) -> String {
     } else {
         format!("{}.{}", file_stem(title), ext)
     }
+}
+
+fn file_name_with(stem: String, ext: &str) -> String {
+    let ext = ext.trim().trim_start_matches('.');
+    if ext.is_empty() { stem } else { format!("{stem}.{ext}") }
 }
 
 /// Cut to at most `max` bytes without splitting a character in half.
@@ -134,6 +175,33 @@ mod tests {
         assert_eq!(file_name("Song", ".mp3"), "Song.mp3");
         assert_eq!(file_name("Song.", "mp4"), "Song.mp4");
         assert_eq!(file_name("Song", ""), "Song");
+    }
+
+    #[test]
+    fn an_organised_name_is_artist_album_song() {
+        assert_eq!(
+            track_file_name("Queen", "A Night At The Opera", "Bohemian Rhapsody", "mp3"),
+            "Queen - A Night At The Opera - Bohemian Rhapsody.mp3"
+        );
+        // No album: two parts, not an empty middle.
+        assert_eq!(track_file_name("ROSALÍA", "", "DESPECHÁ", "mp3"), "ROSALÍA - DESPECHÁ.mp3");
+        assert_eq!(track_file_name("AC/DC", "Back in Black", "Hells Bells", "mp3"), "AC-DC - Back in Black - Hells Bells.mp3");
+        assert_eq!(track_file_name("", "", "", "mp3"), "audio.mp3");
+    }
+
+    #[test]
+    fn a_long_album_cannot_eat_the_song_title() {
+        let name = track_file_name("Artist", &"Very Long Album Name ".repeat(10), "The Song", "mp3");
+        assert!(name.ends_with(" - The Song.mp3"), "{name}");
+        assert!(name.len() < 255, "{} bytes", name.len());
+        let worst = track_file_name(&"ä".repeat(200), &"ö".repeat(200), &"ü".repeat(200), "mp3");
+        assert!(worst.len() < 255, "{} bytes", worst.len());
+    }
+
+    #[test]
+    fn the_artist_folder_is_safe_and_never_empty() {
+        assert_eq!(artist_folder("AC/DC"), "AC-DC");
+        assert_eq!(artist_folder("  "), "Artista desconocido");
     }
 
     #[test]

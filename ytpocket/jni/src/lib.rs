@@ -11,4 +11,5 @@ pub mod download;
 pub mod innertube;
 pub mod mp3;
 pub mod naming;
+pub mod tagging;
 pub mod youtube;

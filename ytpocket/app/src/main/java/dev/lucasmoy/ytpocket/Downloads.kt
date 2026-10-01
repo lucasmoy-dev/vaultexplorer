@@ -212,8 +212,11 @@ object Downloads {
      * `MediaStore`, and return where it landed. `IS_PENDING` keeps it
      * invisible until the bytes are all there, so a music player never
      * indexes a half file.
+     *
+     * `folder` goes under `YT Pocket/`: an organised MP3 lands in its
+     * artist's folder there.
      */
-    fun publish(context: Context, source: File, displayName: String, audio: Boolean): Uri {
+    fun publish(context: Context, source: File, displayName: String, audio: Boolean, folder: String = ""): Uri {
         val collection = if (audio) {
             MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         } else {
@@ -222,10 +225,11 @@ object Downloads {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, if (audio) "audio/mpeg" else "video/mp4")
+            val base = if (audio) "${android.os.Environment.DIRECTORY_MUSIC}/$ALBUM"
+            else "${android.os.Environment.DIRECTORY_MOVIES}/$ALBUM"
             put(
                 MediaStore.MediaColumns.RELATIVE_PATH,
-                if (audio) "${android.os.Environment.DIRECTORY_MUSIC}/$ALBUM"
-                else "${android.os.Environment.DIRECTORY_MOVIES}/$ALBUM",
+                if (folder.isEmpty()) "$base/" else "$base/$folder/",
             )
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }

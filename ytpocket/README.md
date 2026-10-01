@@ -1,9 +1,11 @@
 # YT Pocket
 
 Search YouTube on the phone and keep the file: **MP3** (audio, tagged) or
-**MP4** (video + audio), named after the video and dropped straight into
-`Music/YT Pocket` or `Movies/YT Pocket` where the music player and the
-gallery find it.
+**MP4** (video + audio), dropped straight into `Music/YT Pocket` or
+`Movies/YT Pocket` (or any folder you pick, separately for each) where the
+music player and the gallery find it. An MP3 is looked up and tagged --
+artist, album, date, cover, length -- named `Artist - Album - Song.mp3` and
+filed in a folder per artist.
 
 Android only, arm64, no account and no API key.
 
@@ -21,12 +23,23 @@ the system installer, which asks you to confirm. Nothing installs silently.
 
 Type a search, or paste a link (or share a video to YT Pocket from the
 YouTube app — it lands in the search box). Then **MP3** or **MP4** on the
-result you want. The download runs in a notification, so you can leave the
-app; tapping the finished notification opens the file.
+result you want (right-hand side, MP3 last). The button answers the tap --
+it sinks, the phone ticks, it reads "✓ En cola" -- and a snackbar says what
+was queued and how many are ahead of it. The download runs in a
+notification, so you can leave the app; tapping the finished notification
+opens the file.
 
 Scrolling to the bottom of the results asks YouTube for the next page and
-keeps going. That is why diagnostics and updates live behind **Opciones**,
-top right: a list that never ends has no bottom to put them under.
+keeps going. That is why everything else lives behind the gear, top right
+(a list that never ends has no bottom to put it under):
+
+- **Carpetas de descarga:** a folder for MP3s and another for MP4s, picked
+  with the system's folder chooser; "Por defecto" goes back to
+  `Music/YT Pocket` / `Movies/YT Pocket`.
+- **Ordenar música:** the switch tags and files every new MP3 (on by
+  default); **Ordenar mis MP3** does it to every MP3 already in the MP3
+  folder, in the background, with progress in the notification.
+- Diagnostics and updates, as before.
 
 ## What is actually hard here, and how it's handled
 
@@ -135,6 +148,24 @@ top right: a list that never ends has no bottom to put them under.
   **bytes** without splitting a character — the limit filesystems enforce is
   on bytes, and a Japanese title hits it three times sooner than an English
   one.
+- **Tags, names and folders (`jni/src/tagging.rs`).** A video title is not
+  metadata, so an MP3 is looked up, best source first, all free and with no
+  key: the "Provided to YouTube by" block that auto-generated "Artist -
+  Topic" uploads carry in their description (song, artist, album, release
+  date); then the **iTunes Search API** (one request per song, 600px cover
+  included -- chosen over MusicBrainz + Cover Art Archive, which is two
+  services and a redirect chase for the same facts); and as the floor, the
+  video title split at its dash ("Queen – Bohemian Rhapsody (Official
+  Video)" -> Queen / Bohemian Rhapsody) with the thumbnail as cover. A store
+  result is believed only if artist *and* title agree and the length is
+  within 20s/20%; among the matches, the original album beats soundtracks,
+  best-ofs, live takes and lullaby covers (all real iTunes answers, kept as
+  fixtures in `jni/testdata`). Requests are spaced 3s apart (Apple asks for
+  ~20/min). Tags are written as **ID3v2.3**, because Android's own reader
+  ignores 2.4's date frame. Each file carries the app's mark (`TENC`), and
+  an organised one a comment, so a second run only checks names and folders;
+  in a folder you picked, files without the mark are never touched.
+  Reorganising writes the new file before deleting the old one.
 - **Where files land.** `MediaStore` with `IS_PENDING`, which needs no
   storage permission at all and keeps the file invisible until it is
   complete, so no music player indexes a half download.
@@ -209,6 +240,11 @@ cd jni && cargo test --release
 # Live: search YouTube, resolve streams, assert AAC + AVC came back
 cargo test --release -- --ignored --nocapture search_and_resolve
 
+# Live: iTunes answers, the original album wins, the cover downloads; and a
+# table of real searches through the whole lookup
+cargo test --release -- --ignored --nocapture itunes_lookup
+cargo test --release -- --ignored --nocapture real_searches
+
 # Live, the whole promise: resolve -> download -> MP3 named after the video,
 # tags and duration checked against what YouTube said
 cargo test --release -- --ignored --nocapture download_and_transcode
@@ -259,6 +295,11 @@ emulator -avd <your avd> -no-window -no-audio -gpu swiftshader_indirect &
 # release APK stays arm64-only
 gradle :app:connectedDebugAndroidTest -PrustAbis=x86_64
 ```
+
+`OrganizeOnDeviceTest` runs there too: a 0.1.x-style file comes out
+renamed, tagged (year and cover read back by Android's own
+`MediaMetadataRetriever`) and in `Queen/`, and a download queued through the
+real service lands the same way.
 
 That test deliberately picks the **longest, most popular** result it can
 find: it downloaded a 6h52m album, transcoded it, and checked the MP3's own

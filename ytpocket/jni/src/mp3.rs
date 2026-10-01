@@ -174,15 +174,18 @@ pub fn transcode(
 /// implementation detail the user never asked for.
 
 /// Write the title and artist tags, so a music player shows the video's
-/// name and channel instead of a filename.
+/// name and channel instead of a filename -- and the app's own mark, which is
+/// how the organiser later tells this app's files from the rest of a music
+/// folder (see `tagging.rs`).
 fn write_tags(path: &Path, title: &str, artist: &str) -> Result<(), String> {
     use lofty::config::WriteOptions;
-    use lofty::prelude::{Accessor, TagExt};
+    use lofty::prelude::{Accessor, ItemKey, TagExt};
     let mut tag = lofty::tag::Tag::new(lofty::tag::TagType::Id3v2);
     tag.set_title(title.to_string());
     if !artist.is_empty() {
         tag.set_artist(artist.to_string());
     }
+    tag.insert_text(ItemKey::EncodedBy, crate::tagging::MADE_BY.to_string());
     tag.save_to_path(path, WriteOptions::default()).map_err(|e| e.to_string())
 }
 

@@ -151,6 +151,7 @@ pub struct Player {
     pub title: String,
     pub channel: String,
     pub duration: Option<u32>,
+    pub description: String,
     pub is_live: bool,
     pub formats: Vec<Format>,
 }
@@ -316,6 +317,11 @@ pub fn player_as(
             .unwrap_or_default()
             .to_string(),
         duration,
+        description: details
+            .and_then(|d| d.get("shortDescription"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         is_live,
         formats,
     })

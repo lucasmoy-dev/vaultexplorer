@@ -91,6 +91,10 @@ pub struct Resolved {
     pub title: String,
     pub channel: String,
     pub duration: Option<u32>,
+    /// The video's description. Not shown anywhere: it is read for metadata
+    /// (an auto-generated "Artist - Topic" upload spells out song, artist,
+    /// album and release date in it -- see `tagging.rs`).
+    pub description: String,
     /// Which YouTube client produced these URLs, and the User-Agent that
     /// goes with it.
     ///
@@ -389,6 +393,7 @@ pub fn resolve(video: &str) -> Result<Resolved, String> {
         title: player.details.name.clone().unwrap_or_else(|| id.clone()),
         channel: player.details.channel_name.clone().unwrap_or_default(),
         duration: Some(player.details.duration).filter(|d| *d > 0),
+        description: player.details.description.clone().unwrap_or_default(),
         audio: audio_stream.map(|s| Stream {
             url: s.url.clone(),
             // "m4a" rather than the mime's "mp4": it is audio, and every
@@ -436,6 +441,7 @@ fn resolve_direct(client: crate::innertube::Client, id: &str) -> Result<Resolved
         title: player.title.clone(),
         channel: player.channel.clone(),
         duration: player.duration,
+        description: player.description.clone(),
         audio: Some(Stream {
             // Audio in an MP4 container is an .m4a as far as every player and
             // file manager is concerned.

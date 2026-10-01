@@ -47,7 +47,23 @@ class DownloadService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         val videoId = intent?.getStringExtra(EXTRA_VIDEO_ID)
         val kind = intent?.getStringExtra(EXTRA_KIND)
+        if (kind == KIND_ORGANISE) {
+            startForegroundWithType(getString(R.string.organise_running), 0f)
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    queue.withLock { organise() }
+                } finally {
+                    waiting.value = (waiting.value - 1).coerceAtLeast(0)
+                }
+                if (!queue.isLocked) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
+            return START_NOT_STICKY
+        }
         if (videoId.isNullOrEmpty() || kind.isNullOrEmpty()) {
+            waiting.value = (waiting.value - 1).coerceAtLeast(0)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -55,7 +71,11 @@ class DownloadService : LifecycleService() {
         startForegroundWithType(getString(R.string.download_preparing, title.ifEmpty { videoId }), 0f)
 
         lifecycleScope.launch(Dispatchers.IO) {
-            queue.withLock { run(videoId, kind == KIND_MP3, title) }
+            try {
+                queue.withLock { run(videoId, kind == KIND_MP3, title) }
+            } finally {
+                waiting.value = (waiting.value - 1).coerceAtLeast(0)
+            }
             // Nothing else waiting: let the service go rather than sitting
             // in the shade with a stale notification.
             if (!queue.isLocked) {
@@ -78,7 +98,9 @@ class DownloadService : LifecycleService() {
             val artist = resolved.channel
 
             val finished: File
-            val displayName: String
+            var displayName: String
+            var tagged: Native.Tagged? = null
+            var tagError: String? = null
             if (wantMp3) {
                 val audio = resolved.audio ?: throw IllegalStateException(getString(R.string.error_no_audio))
                 val source = File(work, "$videoId-audio.${audio.ext}")
@@ -103,6 +125,26 @@ class DownloadService : LifecycleService() {
                 Native.toMp3(source.absolutePath, mp3.absolutePath, title, artist)
                 finished = mp3
                 displayName = Native.nameFor(title, "mp3")
+                if (Settings.autoOrganise(this)) {
+                    update(getString(R.string.download_tagging, title), 0.85f)
+                    progress.value = Progress(title, getString(R.string.download_tagging_short), 0.85f)
+                    // Best effort, but never silent: a file whose lookup
+                    // failed still lands, named after the video, and the
+                    // result line says the tags are YouTube's only.
+                    tagged = runCatching {
+                        Native.tag(
+                            mp3.absolutePath,
+                            Native.Hint(
+                                videoId = videoId,
+                                title = title,
+                                channel = artist,
+                                duration = resolved.duration,
+                                description = resolved.description,
+                            ),
+                            Library.country(),
+                        )
+                    }.onFailure { tagError = it.message }.getOrNull()
+                }
             } else {
                 val video = resolved.video ?: throw IllegalStateException(getString(R.string.error_no_video))
                 val audio = resolved.audio ?: throw IllegalStateException(getString(R.string.error_no_audio))
@@ -143,21 +185,83 @@ class DownloadService : LifecycleService() {
                 displayName = Native.nameFor(title, "mp4")
             }
 
+            tagged?.let { displayName = it.fileName }
             update(getString(R.string.download_saving, displayName), 0.97f)
-            val uri = Downloads.publish(this, finished, displayName, audio = wantMp3)
+            val placed = Library.publish(this, finished, displayName, audio = wantMp3, folder = tagged?.folder.orEmpty())
             progress.value = null
-            lastResult.value = Result("$displayName · ${resolved.client}", uri, null)
-            notifyDone(displayName, uri, wantMp3)
+            val details = listOfNotNull(
+                tagged?.folder?.takeIf { it.isNotEmpty() }?.let { "$it/" },
+                tagged?.let { getString(R.string.tags_from, sourceLabel(it.source)) },
+                tagError?.let { getString(R.string.tags_failed, it) },
+                getString(R.string.saved_default_instead).takeIf { placed.fellBack },
+                resolved.client,
+            ).joinToString(" · ")
+            lastResult.value = Result("$displayName · $details", placed.uri, null, audio = wantMp3)
+            notifyDone(displayName, placed.uri, wantMp3)
         } catch (error: Throwable) {
             progress.value = null
             val message = (error.message ?: error::class.java.simpleName) + " · v" + BuildConfig.VERSION_NAME
-            lastResult.value = Result(label, null, message)
+            lastResult.value = Result(label, null, message, audio = wantMp3)
             notifyFailed(label, message)
         } finally {
             // The parts are an implementation detail; leaving them behind
             // would quietly fill the cache with hundreds of MB.
             parts.forEach { it.delete() }
         }
+    }
+
+    /** "Ordenar mis MP3", in the same queue as downloads so the two never touch one file at once. */
+    private fun organise() {
+        val label = getString(R.string.organise_running)
+        try {
+            progress.value = Progress(label, getString(R.string.organise_listing), 0f)
+            val tree = Settings.tree(this, audio = true)
+            val organizer = Organizer(
+                shelf = Library.mp3Shelf(this),
+                tagger = Library.NativeTagger(),
+                work = Downloads.workDir(this),
+                onlyOurs = tree != null,
+            )
+            val summary = organizer.run { done, total, name ->
+                val fraction = if (total > 0) done.toFloat() / total else 1f
+                val step = getString(R.string.organise_step, done + 1, total, name)
+                if (done < total) {
+                    progress.value = Progress(label, step, fraction)
+                    update(step, fraction)
+                }
+            }
+            progress.value = null
+            val text = summaryText(summary)
+            // Shown as a failure only when nothing worked at all; one bad
+            // file among a hundred is a line in the summary, not an error.
+            val allFailed = summary.total > 0 && summary.failed == summary.total
+            lastResult.value = Result(text, null, text.takeIf { allFailed }, audio = true, organised = true)
+            notifyText(getString(R.string.organise_done), text)
+        } catch (error: Throwable) {
+            progress.value = null
+            val message = (error.message ?: error::class.java.simpleName) + " · v" + BuildConfig.VERSION_NAME
+            lastResult.value = Result(label, null, message, audio = true, organised = true)
+            notifyFailed(label, message)
+        }
+    }
+
+    private fun summaryText(summary: Organizer.Summary): String = buildList {
+        if (summary.total == 0) {
+            add(getString(R.string.organise_empty))
+            return@buildList
+        }
+        add(getString(R.string.organise_count, summary.organised, summary.total))
+        if (summary.matched > 0) add(getString(R.string.organise_matched, summary.matched))
+        if (summary.fromTitle > 0) add(getString(R.string.organise_from_title, summary.fromTitle))
+        if (summary.unchanged > 0) add(getString(R.string.organise_unchanged, summary.unchanged))
+        if (summary.foreign > 0) add(getString(R.string.organise_foreign, summary.foreign))
+        if (summary.failed > 0) add(getString(R.string.organise_failed, summary.failed, summary.firstError.orEmpty()))
+    }.joinToString(" · ")
+
+    private fun sourceLabel(source: String): String = when (source) {
+        "itunes" -> "iTunes"
+        "youtube_music" -> "YouTube Music"
+        else -> "YouTube"
     }
 
     /**
@@ -290,6 +394,18 @@ class DownloadService : LifecycleService() {
         getSystemService(NotificationManager::class.java).notify(name.hashCode(), notification)
     }
 
+    private fun notifyText(title: String, text: String) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_DONE)
+            .setSmallIcon(R.drawable.ic_download)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .setContentIntent(openApp())
+            .build()
+        getSystemService(NotificationManager::class.java).notify(title.hashCode(), notification)
+    }
+
     private fun notifyFailed(label: String, message: String) {
         val notification = NotificationCompat.Builder(this, CHANNEL_DONE)
             .setSmallIcon(R.drawable.ic_download)
@@ -303,7 +419,14 @@ class DownloadService : LifecycleService() {
     }
 
     data class Progress(val title: String, val step: String, val fraction: Float)
-    data class Result(val name: String, val uri: Uri?, val error: String?)
+    data class Result(
+        val name: String,
+        val uri: Uri?,
+        val error: String?,
+        val audio: Boolean = true,
+        /** A summary of "Ordenar mis MP3" rather than one file. */
+        val organised: Boolean = false,
+    )
 
     companion object {
         private const val CHANNEL_PROGRESS = "downloads"
@@ -314,6 +437,7 @@ class DownloadService : LifecycleService() {
         private const val EXTRA_TITLE = "title"
         const val KIND_MP3 = "mp3"
         const val KIND_MP4 = "mp4"
+        const val KIND_ORGANISE = "organise"
 
         /** What is downloading right now, for the UI to mirror. */
         private val progress = MutableStateFlow<Progress?>(null)
@@ -323,12 +447,36 @@ class DownloadService : LifecycleService() {
         private val lastResult = MutableStateFlow<Result?>(null)
         val last: StateFlow<Result?> get() = lastResult
 
-        fun start(context: Context, videoId: String, title: String, kind: String) {
+        /**
+         * How many jobs are queued or running. The UI reads it to say "en
+         * cola, va después de 2" the moment a button is tapped -- a tap that
+         * only shows up as a notification minutes later feels like a tap that
+         * did nothing.
+         */
+        private val waiting = MutableStateFlow(0)
+        val queued: StateFlow<Int> get() = waiting
+
+        /** Queue a download, and answer how many jobs are ahead of it. */
+        fun start(context: Context, videoId: String, title: String, kind: String): Int {
             val intent = Intent(context, DownloadService::class.java)
                 .putExtra(EXTRA_VIDEO_ID, videoId)
                 .putExtra(EXTRA_TITLE, title)
                 .putExtra(EXTRA_KIND, kind)
+            val ahead = waiting.value
+            waiting.value = ahead + 1
             ContextCompat.startForegroundService(context, intent)
+            return ahead
+        }
+
+        /** Queue "Ordenar mis MP3". */
+        fun organise(context: Context): Int {
+            val ahead = waiting.value
+            waiting.value = ahead + 1
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, DownloadService::class.java).putExtra(EXTRA_KIND, KIND_ORGANISE),
+            )
+            return ahead
         }
     }
 }

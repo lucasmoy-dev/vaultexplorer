@@ -14,7 +14,7 @@
 //! search is one network round trip, and a transcode is CPU-bound work
 //! nobody can usefully interleave.
 
-use crate::{mp3, naming, youtube};
+use crate::{mp3, naming, tagging, youtube};
 use jni::objects::{JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
@@ -237,5 +237,80 @@ pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_transcodeMp3(
             &mut |_frames| true,
         )?;
         Ok(serde_json::json!({ "ok": true }).to_string())
+    })
+}
+
+/// What an MP3 says about itself (title, artist, whether this app made it,
+/// whether it was organised already), as JSON. Reads only.
+#[no_mangle]
+pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_readTags(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+) -> jstring {
+    let path = match text(&mut env, &path) {
+        Ok(value) => value,
+        Err(error) => return respond(&mut env, Err(error)),
+    };
+    guarded(&mut env, || {
+        let existing = tagging::read(std::path::Path::new(&path))?;
+        serde_json::to_string(&existing).map_err(|e| e.to_string())
+    })
+}
+
+/// Look the song up (description, iTunes, YouTube's own words), rewrite the
+/// file's tags with album, date, cover and length, and answer with the name
+/// and folder it should have. `hint` is a JSON `tagging::Hint`; `country` is
+/// the iTunes store to ask (the phone's own).
+///
+/// Blocking, and slow on purpose when called in a loop: iTunes requests are
+/// spaced three seconds apart (see `tagging::ITUNES_SPACING`).
+#[no_mangle]
+pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_tagMp3(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+    hint: JString,
+    country: JString,
+) -> jstring {
+    let path = match text(&mut env, &path) {
+        Ok(value) => value,
+        Err(error) => return respond(&mut env, Err(error)),
+    };
+    let hint = text(&mut env, &hint).unwrap_or_default();
+    let country = text(&mut env, &country).unwrap_or_default();
+    guarded(&mut env, || {
+        let hint: tagging::Hint = if hint.trim().is_empty() {
+            tagging::Hint::default()
+        } else {
+            serde_json::from_str(&hint).map_err(|e| format!("pista ilegible: {e}"))?
+        };
+        let country = if country.len() == 2 { country.to_uppercase() } else { "US".to_string() };
+        let outcome = tagging::tag_file(std::path::Path::new(&path), &hint, &country)?;
+        serde_json::to_string(&outcome).map_err(|e| e.to_string())
+    })
+}
+
+/// `readTags`, from a file descriptor the caller keeps owning (it is
+/// duplicated here). The organiser reads every file this way before deciding
+/// whether it is worth copying out at all.
+#[no_mangle]
+pub extern "system" fn Java_dev_lucasmoy_ytpocket_Native_readTagsFd(
+    mut env: JNIEnv,
+    _class: JClass,
+    fd: jni::sys::jint,
+) -> jstring {
+    guarded(&mut env, || {
+        use std::os::fd::BorrowedFd;
+        if fd < 0 {
+            return Err("descriptor no válido".to_string());
+        }
+        // Safety: the caller holds the descriptor open for the length of this
+        // call; it is only borrowed long enough to duplicate it.
+        let owned = unsafe { BorrowedFd::borrow_raw(fd) }
+            .try_clone_to_owned()
+            .map_err(|e| e.to_string())?;
+        let existing = tagging::read_from(std::fs::File::from(owned))?;
+        serde_json::to_string(&existing).map_err(|e| e.to_string())
     })
 }

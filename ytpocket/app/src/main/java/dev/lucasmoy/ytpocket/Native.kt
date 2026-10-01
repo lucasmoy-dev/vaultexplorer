@@ -56,6 +56,9 @@ object Native {
         title: String,
         artist: String,
     ): String?
+    private external fun readTags(path: String): String?
+    private external fun readTagsFd(fd: Int): String?
+    private external fun tagMp3(path: String, hint: String, country: String): String?
 
     /**
      * Point the native cache at a writable directory. Must happen before the
@@ -97,6 +100,8 @@ object Native {
         val title: String,
         val channel: String,
         val duration: Int?,
+        /** Read for metadata only: see `jni/src/tagging.rs`. */
+        val description: String,
         val audio: Stream?,
         val video: Stream?,
         /** Which YouTube client minted these URLs. */
@@ -154,6 +159,7 @@ object Native {
             title = obj.optString("title"),
             channel = obj.optString("channel"),
             duration = obj.optIntOrNull("duration"),
+            description = obj.optString("description"),
             audio = obj.optJSONObject("audio")?.toStream(),
             video = obj.optJSONObject("video")?.toStream(),
             client = obj.optString("client"),
@@ -207,6 +213,105 @@ object Native {
         val raw = transcodeMp3(source, destination, title, artist)
             ?: throw IllegalStateException("la conversión a MP3 no devolvió nada")
         raw.errorOrNull()?.let { throw IllegalStateException(it) }
+    }
+
+    /** What the caller knows about a song before it is looked up. */
+    data class Hint(
+        val videoId: String = "",
+        val title: String = "",
+        val channel: String = "",
+        val duration: Int? = null,
+        val description: String = "",
+        /** The current file name, the last resort for a file with no tags. */
+        val name: String = "",
+    ) {
+        fun toJson(): String = JSONObject().apply {
+            put("video_id", videoId)
+            put("title", title)
+            put("channel", channel)
+            if (duration != null) put("duration", duration)
+            put("description", description)
+            put("name", name)
+        }.toString()
+    }
+
+    /** What an MP3 already says about itself. */
+    data class Existing(
+        val title: String,
+        val artist: String,
+        val album: String,
+        /** Carries this app's mark: safe to rename and move. */
+        val madeByUs: Boolean,
+        /** Looked up already: the name and folder below are what it should have. */
+        val organised: Boolean,
+        val fileName: String,
+        val folder: String,
+    )
+
+    /** The outcome of tagging one MP3: what it is, and where it should live. */
+    data class Tagged(
+        val artist: String,
+        val title: String,
+        val album: String,
+        val date: String,
+        /** `itunes`, `youtube_music`, `youtube` (fallback) or `tags` (already done). */
+        val source: String,
+        val fileName: String,
+        val folder: String,
+        val cover: Boolean,
+        val rewritten: Boolean,
+    )
+
+    /**
+     * Read an MP3's tags, from a path or -- as `fd:N` -- from an open
+     * descriptor. The organiser reads through a descriptor so a file that
+     * needs nothing is never copied (and a path like `/proc/self/fd/N` is no
+     * substitute: Android refuses to reopen MediaProvider's descriptors).
+     */
+    fun tags(source: String): Existing {
+        requireLibrary()
+        val raw = (if (source.startsWith("fd:")) readTagsFd(source.removePrefix("fd:").toInt()) else readTags(source))
+            ?: throw IllegalStateException("no se pudieron leer las etiquetas")
+        raw.errorOrNull()?.let { throw IllegalStateException(it) }
+        val obj = JSONObject(raw)
+        return Existing(
+            title = obj.optString("title"),
+            artist = obj.optString("artist"),
+            album = obj.optString("album"),
+            madeByUs = obj.optBoolean("made_by_us"),
+            organised = obj.optBoolean("organised"),
+            fileName = obj.optString("file_name"),
+            folder = obj.optString("folder"),
+        )
+    }
+
+    /**
+     * Look the song up and rewrite the MP3's tags in place (album, date,
+     * cover, length...). `path` must be a real, writable file. Blocks for
+     * seconds: the store is asked at most once every three.
+     */
+    fun tag(path: String, hint: Hint, country: String): Tagged {
+        requireLibrary()
+        val raw = tagMp3(path, hint.toJson(), country)
+            ?: throw IllegalStateException("el etiquetado no devolvió nada")
+        raw.errorOrNull()?.let { throw IllegalStateException(it) }
+        return parseTagged(raw)
+    }
+
+    /** Split out so the JVM tests can check the JSON contract without the library. */
+    internal fun parseTagged(raw: String): Tagged {
+        val obj = JSONObject(raw)
+        return Tagged(
+            artist = obj.optString("artist"),
+            title = obj.optString("title"),
+            album = obj.optString("album"),
+            date = obj.optString("date"),
+            source = obj.optString("source"),
+            fileName = obj.optString("file_name"),
+            folder = obj.optString("folder"),
+            cover = obj.optBoolean("cover"),
+            rewritten = obj.optBoolean("rewritten"),
+        )
     }
 
     private fun JSONObject.toStream() = Stream(

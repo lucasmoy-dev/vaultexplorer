@@ -25,7 +25,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
@@ -42,6 +52,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,6 +100,8 @@ class MainActivity : ComponentActivity() {
         var searched by remember { mutableStateOf("") }
         var showTools by remember { mutableStateOf(false) }
         val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+        val snackbar = remember { SnackbarHostState() }
+        val scope = rememberCoroutineScope()
         val progress by DownloadService.current.collectAsState()
         val lastResult by DownloadService.last.collectAsState()
 
@@ -196,6 +209,7 @@ class MainActivity : ComponentActivity() {
 
         AppTheme {
             Surface(modifier = Modifier.fillMaxSize()) {
+              Box(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
@@ -211,8 +225,11 @@ class MainActivity : ComponentActivity() {
                         // file" lives behind this: the results list now pages
                         // forever, so the bottom of the screen belongs to
                         // results and nothing else.
-                        TextButton(onClick = { showTools = true }) {
-                            Text(stringResource(R.string.action_tools))
+                        IconButton(onClick = { showTools = true }) {
+                            Icon(
+                                Icons.Filled.Settings,
+                                contentDescription = stringResource(R.string.action_tools),
+                            )
                         }
                     }
 
@@ -284,8 +301,11 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     Column(Modifier.weight(1f)) {
                                         Text(
-                                            if (result.error == null) stringResource(R.string.download_done)
-                                            else stringResource(R.string.download_failed),
+                                            when {
+                                                result.organised -> stringResource(R.string.organise_done)
+                                                result.error == null -> stringResource(R.string.download_done)
+                                                else -> stringResource(R.string.download_failed)
+                                            },
                                             fontSize = 13.sp,
                                             fontWeight = FontWeight.SemiBold,
                                         )
@@ -301,7 +321,11 @@ class MainActivity : ComponentActivity() {
                                                 Intent(Intent.ACTION_VIEW).apply {
                                                     setDataAndType(
                                                         result.uri,
-                                                        if (result.name.endsWith(".mp3")) "audio/mpeg" else "video/mp4",
+                                                        // From the result, not the name: the
+                                                        // name carries details after the
+                                                        // extension, so `endsWith(".mp3")`
+                                                        // opened every MP3 as a video.
+                                                        if (result.audio) "audio/mpeg" else "video/mp4",
                                                     )
                                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                                 }
@@ -318,7 +342,20 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(results, key = { it.id }) { hit -> ResultRow(hit) }
+                        items(results, key = { it.id }) { hit ->
+                            ResultRow(hit) { kind ->
+                                val ahead = DownloadService.start(context, hit.id, hit.title, kind)
+                                val what = getString(if (kind == DownloadService.KIND_MP3) R.string.action_mp3 else R.string.action_mp4)
+                                val text = if (ahead == 0) getString(R.string.queued_now, what, hit.title)
+                                else getString(R.string.queued_after, what, hit.title, ahead)
+                                scope.launch {
+                                    // A new tap replaces the old message rather
+                                    // than queueing behind it.
+                                    snackbar.currentSnackbarData?.dismiss()
+                                    snackbar.showSnackbar(text, withDismissAction = true, duration = SnackbarDuration.Short)
+                                }
+                            }
+                        }
                         if (loadingMore) {
                             item {
                                 Row(
@@ -341,6 +378,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                SnackbarHost(
+                    hostState = snackbar,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
+                )
+
                 if (showTools) {
                     ToolsSheet(
                         report = report,
@@ -349,6 +391,7 @@ class MainActivity : ComponentActivity() {
                         onClose = { showTools = false },
                     )
                 }
+              }
             }
         }
     }
@@ -367,6 +410,9 @@ class MainActivity : ComponentActivity() {
         target: () -> String,
         onClose: () -> Unit,
     ) {
+        // Back closes the settings, as on every other Android screen, instead
+        // of leaving the app.
+        BackHandler(onBack = onClose)
         Surface(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
@@ -395,7 +441,10 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 10.dp),
                 )
-                    // Diagnostics: which YouTube client works from *this*
+                FoldersSection()
+                MusicSection()
+                HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                // Diagnostics: which YouTube client works from *this*
                 // network. A 403 depends on where the phone is, so this is
                 // the only way to tell what is actually happening on a
                 // device the author cannot reach.
@@ -453,69 +502,106 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Where MP3s and MP4s go, separately. The picker is the system's own
+     * folder chooser (Storage Access Framework), which is the only way to
+     * reach any folder -- an SD card included -- without "all files" access.
+     */
     @Composable
-    private fun ResultRow(hit: Native.Hit) {
+    private fun FoldersSection() {
         val context = LocalContext.current
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(10.dp)) {
-                Row(verticalAlignment = Alignment.Top) {
-                    AsyncImage(
-                        model = hit.thumbnail,
-                        contentDescription = null,
-                        modifier = Modifier
-                            .width(120.dp)
-                            .height(68.dp)
-                            .clip(RoundedCornerShape(6.dp)),
+        var mp3Label by remember { mutableStateOf(Settings.label(context, audio = true)) }
+        var mp4Label by remember { mutableStateOf(Settings.label(context, audio = false)) }
+        var error by remember { mutableStateOf("") }
+        var picking by remember { mutableStateOf(true) }
+        val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            runCatching { Settings.setTree(context, picking, uri) }
+                .onSuccess { error = "" }
+                .onFailure { error = getString(R.string.folder_failed, it.message ?: "") }
+            mp3Label = Settings.label(context, audio = true)
+            mp4Label = Settings.label(context, audio = false)
+        }
+
+        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+            Column(Modifier.padding(12.dp)) {
+                Text(stringResource(R.string.section_folders), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                for (audio in listOf(true, false)) {
+                    val label = if (audio) mp3Label else mp4Label
+                    Text(
+                        stringResource(if (audio) R.string.folder_mp3 else R.string.folder_mp4),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(top = 10.dp),
                     )
-                    Column(Modifier.padding(start = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            hit.title,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            listOfNotNull(
-                                hit.channel.takeIf { it.isNotEmpty() },
-                                formatDuration(hit.duration),
-                                formatViews(hit.views).takeIf { it.isNotEmpty() },
-                                hit.published,
-                            ).joinToString(" · "),
+                            label,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
+                            modifier = Modifier.weight(1f),
                         )
+                        if (Settings.tree(context, audio) != null) {
+                            TextButton(onClick = {
+                                Settings.setTree(context, audio, null)
+                                mp3Label = Settings.label(context, audio = true)
+                                mp4Label = Settings.label(context, audio = false)
+                            }) { Text(stringResource(R.string.action_default_folder)) }
+                        }
+                        OutlinedButton(onClick = {
+                            picking = audio
+                            picker.launch(Settings.tree(context, audio))
+                        }) { Text(stringResource(R.string.action_change_folder)) }
                     }
                 }
+                if (error.isNotEmpty()) {
+                    Text(error, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+
+    /** Tagging and filing MP3s: the switch for new ones, and the button for the rest. */
+    @Composable
+    private fun MusicSection() {
+        val context = LocalContext.current
+        var auto by remember { mutableStateOf(Settings.autoOrganise(context)) }
+        var status by remember { mutableStateOf("") }
+        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+            Column(Modifier.padding(12.dp)) {
+                Text(stringResource(R.string.section_music), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // A livestream has no file to download -- YouTube serves
-                    // it as a segment playlist, not a media file -- so the
-                    // buttons say so instead of failing later.
-                    Button(
-                        enabled = !hit.isLive,
-                        onClick = {
-                            DownloadService.start(context, hit.id, hit.title, DownloadService.KIND_MP3)
-                        },
-                    ) { Text(stringResource(R.string.action_mp3)) }
-                    OutlinedButton(
-                        enabled = !hit.isLive,
-                        onClick = {
-                            DownloadService.start(context, hit.id, hit.title, DownloadService.KIND_MP4)
-                        },
-                    ) { Text(stringResource(R.string.action_mp4)) }
-                    if (hit.isLive) {
-                        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                            Text(
-                                stringResource(R.string.live_not_downloadable),
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                    Column(Modifier.weight(1f)) {
+                        Text(stringResource(R.string.auto_organise), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            stringResource(R.string.auto_organise_hint),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
+                    Switch(checked = auto, onCheckedChange = {
+                        auto = it
+                        Settings.setAutoOrganise(context, it)
+                    })
+                }
+                Text(
+                    stringResource(R.string.organise_hint),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                Button(
+                    modifier = Modifier.padding(top = 8.dp),
+                    onClick = {
+                        DownloadService.organise(context)
+                        status = getString(R.string.organise_queued)
+                    },
+                ) { Text(stringResource(R.string.action_organise)) }
+                if (status.isNotEmpty()) {
+                    Text(status, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
                 }
             }
         }

@@ -52,4 +52,47 @@
     <string name="action_tools">Opciones</string>
     <string name="action_close">Cerrar</string>
     <string name="no_more_results">No hay más resultados</string>
+
+    <!-- Feedback when a download is queued -->
+    <string name="queued_short">En cola</string>
+    <string name="queued_now">%1$s en cola: %2$s · empieza ya</string>
+    <string name="queued_after">%1$s en cola: %2$s · va después de %3$d</string>
+
+    <!-- Tagging new MP3s -->
+    <string name="download_tagging">Buscando álbum y carátula: %1$s</string>
+    <string name="download_tagging_short">Buscando álbum y carátula…</string>
+    <string name="tags_from">etiquetas de %1$s</string>
+    <string name="tags_failed">sin etiquetas completas (%1$s)</string>
+    <string name="saved_default_instead">no se pudo usar la carpeta elegida, guardado en la de por defecto</string>
+
+    <!-- Settings: folders -->
+    <string name="section_folders">Carpetas de descarga</string>
+    <string name="folder_mp3">Carpeta para MP3</string>
+    <string name="folder_mp4">Carpeta para MP4</string>
+    <string name="folder_default_mp3">Música/YT Pocket (por defecto)</string>
+    <string name="folder_default_mp4">Películas/YT Pocket (por defecto)</string>
+    <string name="folder_internal">Memoria interna</string>
+    <string name="folder_sd">Tarjeta SD</string>
+    <string name="action_change_folder">Cambiar</string>
+    <string name="action_default_folder">Por defecto</string>
+    <string name="folder_failed">No se pudo usar esa carpeta: %1$s</string>
+
+    <!-- Settings: organising music -->
+    <string name="section_music">Ordenar música</string>
+    <string name="auto_organise">Etiquetar y ordenar cada MP3 nuevo</string>
+    <string name="auto_organise_hint">Busca artista, álbum, año y carátula, lo nombra «Artista - Álbum - Canción» y lo guarda en la carpeta del artista.</string>
+    <string name="action_organise">Ordenar mis MP3</string>
+    <string name="organise_hint">Hace lo mismo con todos los MP3 que ya tienes en la carpeta de MP3. Los datos salen de la descripción de YouTube Music o de iTunes (gratis, sin cuenta); si no encuentra la canción, usa el título del vídeo. Unos 3 segundos por canción la primera vez; volver a pasarlo solo toca lo que falte.</string>
+    <string name="organise_queued">Ordenando en segundo plano: el progreso sale en la pantalla principal y en la notificación.</string>
+    <string name="organise_running">Ordenando MP3</string>
+    <string name="organise_listing">Buscando tus MP3…</string>
+    <string name="organise_step">%1$d de %2$d · %3$s</string>
+    <string name="organise_done">MP3 ordenados</string>
+    <string name="organise_empty">No hay MP3 en la carpeta de MP3.</string>
+    <string name="organise_count">%1$d de %2$d ordenados</string>
+    <string name="organise_matched">%1$d con datos del álbum</string>
+    <string name="organise_from_title">%1$d solo con el título del vídeo</string>
+    <string name="organise_unchanged">%1$d ya estaban bien</string>
+    <string name="organise_foreign">%1$d no son de YT Pocket y no se tocaron</string>
+    <string name="organise_failed">%1$d fallaron (%2$s)</string>
 </resources>
