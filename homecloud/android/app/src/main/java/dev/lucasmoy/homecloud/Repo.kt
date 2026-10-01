@@ -10,8 +10,10 @@ import org.json.JSONObject
  */
 object Repo {
 
-    fun folders(): List<SharedFolder> =
-        (Native.request("folders") as JSONArray).map { SharedFolder.from(it) }
+    fun folders(): List<SharedFolder> = parseFolders(foldersJson())
+
+    /** The listing as the core sent it, so it can be kept for the next launch. */
+    fun foldersJson(): String = (Native.request("folders") as JSONArray).toString()
 
     fun invitations(): List<Invitation> =
         (Native.request("invitations") as JSONArray).map { Invitation.from(it) }

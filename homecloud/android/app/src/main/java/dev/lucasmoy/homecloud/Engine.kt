@@ -35,6 +35,7 @@ class Engine(private val context: Context) {
 
         if (!File(home, "config.xml").exists()) {
             generateIdentity()
+            Log.i("HomeCloudStartup", "identity generated at +${System.currentTimeMillis() - Startup.t0}ms")
         }
 
         val port = freePort()
@@ -55,9 +56,19 @@ class Engine(private val context: Context) {
         ).redirectErrorStream(true).start()
 
         drainOutput(process!!)
+        val spawned = System.currentTimeMillis()
         baseUrl = url
         Native.connect(url, apiKey)
         waitUntilReady()
+        val now = System.currentTimeMillis()
+        Log.i("HomeCloudStartup", "engine answered at +${now - Startup.t0}ms (${now - spawned}ms after spawn)")
+    }
+
+    /** Why the engine is no longer running, or null while it is. */
+    fun exitReason(): String? {
+        val p = process ?: return null
+        if (p.isAlive) return null
+        return "the sync engine stopped (exit ${p.exitValue()})"
     }
 
     /**
@@ -82,7 +93,7 @@ class Engine(private val context: Context) {
         while (System.currentTimeMillis() < deadline) {
             runCatching { Native.request("ping") }.onSuccess { return }
             if (process?.isAlive != true) error("the sync engine stopped while starting")
-            Thread.sleep(200)
+            Thread.sleep(100)
         }
         error("the sync engine started but never answered")
     }

@@ -7,7 +7,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    DeletionPolicy, FolderMode, FolderState, Invitation, OfferedFolder, Peer, Settings,
+    DeletionPolicy, FolderMode, FolderState, Invitation, OfferedFolder, Peer, Route, Settings,
     SharedFolder, ThisDevice,
 };
 use crate::trash::{self, DeletedFile};
@@ -57,7 +57,39 @@ pub struct Syncthing {
     /// desktop, which is the only place there is one; a phone leaves it unset
     /// and gets the hidden-copies policy instead.
     trash_command: Mutex<Option<String>>,
+    /// Conflict counts per folder, worked out off the poll. Walking a folder
+    /// is a full directory scan — on a phone, tens of thousands of entries
+    /// over Android's slow shared-storage layer — and it used to run inline
+    /// on every poll, which is what kept the first screen on "Arrancando…"
+    /// for seconds after the engine had already answered.
+    conflicts: Arc<Mutex<HashMap<String, ConflictCount>>>,
+    /// When the LAN addresses of connected peers were last written down.
+    routes_pinned_at: Mutex<Option<Instant>>,
 }
+
+/// One folder's conflict count, and whether a fresh one is being worked out.
+#[derive(Clone, Copy, Default)]
+struct ConflictCount {
+    at: Option<Instant>,
+    found: u64,
+    counting: bool,
+}
+
+/// How long a conflict count is trusted before it is redone in the background.
+const CONFLICT_RECOUNT_EVERY: Duration = Duration::from_secs(30);
+
+/// How often the LAN addresses of connected peers are re-checked.
+const PIN_ROUTES_EVERY: Duration = Duration::from_secs(30);
+
+/// LAN addresses kept per device besides `dynamic`.
+const MAX_PINNED: usize = 3;
+
+/// Syncthing's API server closes a keep-alive connection after 15 s idle
+/// (`ReadTimeout` in lib/api). Reusing one at that moment fails the request
+/// with "error sending request" even though the engine is perfectly fine —
+/// reproduced against a real engine at a 14.995 s gap. Pooled connections are
+/// therefore dropped well before the server would drop them.
+const POOL_IDLE: Duration = Duration::from_secs(5);
 
 /// One reading of a folder's download, and the speed derived from it.
 struct Progress {
@@ -106,12 +138,24 @@ const MAX_HINTS: usize = 2;
 /// every poll; the badge just says "some".
 const CONFLICT_SCAN_CAP: usize = 50_000;
 
+/// Pauses between attempts at a request that failed in transport.
+const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(400)];
+
 impl Syncthing {
     pub fn new(base: impl Into<String>, api_key: impl Into<String>) -> Self {
         Syncthing {
             base: base.into(),
             api_key: api_key.into(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .pool_idle_timeout(POOL_IDLE)
+                // It is on this machine: anything slower than this to connect
+                // is an engine that is not there, not one that is busy.
+                .connect_timeout(Duration::from_secs(3))
+                // A wedged engine must surface as an error, not as a poll that
+                // never returns and freezes whatever screen awaits it.
+                .timeout(Duration::from_secs(60))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             auto_accept_root: Mutex::new(None),
             preferences_path: Mutex::new(None),
             progress: Mutex::new(HashMap::new()),
@@ -121,6 +165,8 @@ impl Syncthing {
             sizes_saved: Mutex::new(None),
             names_cursor: Mutex::new(0),
             trash_command: Mutex::new(None),
+            conflicts: Arc::new(Mutex::new(HashMap::new())),
+            routes_pinned_at: Mutex::new(None),
         }
     }
 
@@ -250,10 +296,30 @@ impl Syncthing {
 
 
     async fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
+        // Transport failures to an engine on this same machine are transient
+        // by nature — a keep-alive connection closed under us, the engine
+        // still binding its port — so they get a short second and third try
+        // before anyone is told. Only where repeating cannot do something
+        // twice: reads and PATCHes always, anything else only when the
+        // request never reached the engine at all.
+        let idempotent = method == reqwest::Method::GET || method == reqwest::Method::PATCH;
+        let mut attempt = 0;
+        loop {
+            match self.request_once(method.clone(), path, body.as_ref()).await {
+                Err(Error::Http(e)) if attempt < RETRY_DELAYS.len() && (idempotent || e.is_connect()) => {
+                    tokio::time::sleep(RETRY_DELAYS[attempt]).await;
+                    attempt += 1;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn request_once(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value> {
         let url = format!("{}{}", self.base, path);
         let mut req = self.http.request(method, &url).header("X-API-Key", &self.api_key);
         if let Some(body) = body {
-            req = req.json(&body);
+            req = req.json(body);
         }
         let res = req.send().await?;
         let status = res.status();
@@ -285,8 +351,13 @@ impl Syncthing {
 
     /// Resolves once the engine answers, so callers can wait for a freshly
     /// spawned process without guessing at a sleep.
+    ///
+    /// One attempt, no retries: the caller is the one polling, and a retry
+    /// ladder here would only add latency to noticing the engine is up.
     pub async fn ping(&self) -> Result<()> {
-        self.get("/rest/system/ping").await.map(|_| ())
+        self.request_once(reqwest::Method::GET, "/rest/system/ping", None)
+            .await
+            .map(|_| ())
     }
 
     pub async fn this_device(&self) -> Result<ThisDevice> {
@@ -460,7 +531,7 @@ impl Syncthing {
         let devices: Vec<DeviceConfig> = serde_json::from_value(self.get("/rest/config/devices").await?)?;
         let names: HashMap<&str, &str> =
             devices.iter().map(|d| (d.device_id.as_str(), d.name.as_str())).collect();
-        let connected = self.connected_devices().await?;
+        let (connected, routes) = self.connected_devices().await?;
         let me = self.this_device().await?.id;
         // Read once for the whole listing: these live in HomeCloud's own
         // preferences, which the engine knows nothing about.
@@ -469,7 +540,14 @@ impl Syncthing {
 
         let mut out = Vec::with_capacity(configured.len());
         for folder in configured {
-            let status = self.get(&format!("/rest/db/status?folder={}", folder.id)).await?;
+            // The folder can vanish between the config listing above and this
+            // per-folder lookup (a concurrent "stop sharing" racing this poll):
+            // drop it from the result instead of failing the whole listing.
+            let status = match self.get(&format!("/rest/db/status?folder={}", folder.id)).await {
+                Ok(v) => v,
+                Err(Error::Api { status: 404, .. }) => continue,
+                Err(e) => return Err(e),
+            };
 
             let mut peers: Vec<Peer> = folder
                 .devices
@@ -484,6 +562,7 @@ impl Syncthing {
                         .unwrap_or_else(|| short_id(&d.device_id)),
                     connected: connected.contains(&d.device_id),
                     completion: None,
+                    route: routes.get(&d.device_id).copied(),
                 })
                 .collect();
             // What the other end still has to fetch. Asked for from here
@@ -519,7 +598,7 @@ impl Syncthing {
             };
             out.push(SharedFolder {
                 state,
-                conflicts: count_conflicts(Path::new(&folder.path)),
+                conflicts: self.conflicts_in(&folder.id, &folder.path),
                 bytes: size.bytes,
                 files: size.files,
                 // Only while something is actually moving: a rate left on
@@ -546,6 +625,32 @@ impl Syncthing {
             });
         }
         Ok(out)
+    }
+
+    /// The last conflict count for a folder, recounted in the background when
+    /// it is stale. Never blocks the poll on a directory walk; a folder seen
+    /// for the first time reads 0 until its first count lands a moment later.
+    fn conflicts_in(&self, folder_id: &str, path: &str) -> u64 {
+        let Ok(mut counts) = self.conflicts.lock() else { return 0 };
+        let entry = counts.entry(folder_id.to_string()).or_default();
+        let stale = entry.at.is_none_or(|at| at.elapsed() >= CONFLICT_RECOUNT_EVERY);
+        if stale && !entry.counting {
+            entry.counting = true;
+            let counts = Arc::clone(&self.conflicts);
+            let (id, root) = (folder_id.to_string(), PathBuf::from(path));
+            let job = move || {
+                let found = count_conflicts(&root);
+                if let Ok(mut counts) = counts.lock() {
+                    counts.insert(id, ConflictCount { at: Some(Instant::now()), found, counting: false });
+                }
+            };
+            // Off the async threads: this is blocking file-system work.
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => drop(handle.spawn_blocking(job)),
+                Err(_) => drop(std::thread::spawn(job)),
+            }
+        }
+        entry.found
     }
 
     /// How much of `folder_id` the device `peer` already has, 0-100.
@@ -987,25 +1092,92 @@ impl Syncthing {
             .ok_or_else(|| Error::Engine("esa carpeta ya no está".into()))
     }
 
-    async fn connected_devices(&self) -> Result<Vec<String>> {
+    /// Who is connected (through the grace period), and by which route.
+    async fn connected_devices(&self) -> Result<(Vec<String>, HashMap<String, Route>)> {
         let value = self.get("/rest/system/connections").await?;
+        let mut routes = HashMap::new();
         let now: Vec<String> = value["connections"]
             .as_object()
             .map(|m| {
                 m.iter()
                     .filter(|(_, v)| v["connected"].as_bool().unwrap_or(false))
-                    .map(|(k, _)| k.clone())
+                    .map(|(k, v)| {
+                        if let Some(route) = route_of(v) {
+                            routes.insert(k.clone(), route);
+                        }
+                        k.clone()
+                    })
                     .collect()
             })
             .unwrap_or_default();
 
-        let Ok(mut seen) = self.last_seen.lock() else { return Ok(now) };
+        // Rides along with the poll, a couple of times a minute at most.
+        let due = self
+            .routes_pinned_at
+            .lock()
+            .map(|mut at| {
+                let due = at.is_none_or(|t| t.elapsed() >= PIN_ROUTES_EVERY);
+                if due {
+                    *at = Some(Instant::now());
+                }
+                due
+            })
+            .unwrap_or(false);
+        if due {
+            let _ = self.pin_lan_routes(&value).await;
+        }
+
+        let Ok(mut seen) = self.last_seen.lock() else { return Ok((now, routes)) };
         let at = Instant::now();
         for device in &now {
             seen.insert(device.clone(), at);
         }
         seen.retain(|_, when| when.elapsed() < CONNECTION_GRACE);
-        Ok(seen.keys().cloned().collect())
+        Ok((seen.keys().cloned().collect(), routes))
+    }
+
+    /// Writes down the LAN address each connected peer was reached at, next
+    /// to `dynamic` in its device entry.
+    ///
+    /// Finding a peer on the local network otherwise depends on hearing its
+    /// broadcasts, or on the internet discovery servers echoing its LAN
+    /// address back. A phone hears no broadcasts unless it holds a multicast
+    /// lock, and the discovery servers are neither instant nor always
+    /// reachable — so after a dropped connection the first route found again
+    /// was often a relay, and a relay is where the sync then stayed for tens
+    /// of minutes (seen in the desktop's own connection history). A pinned
+    /// address is dialled straight away on every reconnect, whatever
+    /// discovery knows; `dynamic` stays first so a peer that moved is still
+    /// found the usual way.
+    async fn pin_lan_routes(&self, connections: &Value) -> Result<()> {
+        let Some(peers) = connections["connections"].as_object() else { return Ok(()) };
+        let discovered = self.get("/rest/system/discovery").await.unwrap_or(Value::Null);
+        for (device_id, entry) in peers {
+            if !entry["connected"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            let heard: Vec<String> = discovered[device_id.as_str()]["addresses"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let fresh = lan_addresses_of(entry, &heard);
+            if fresh.is_empty() {
+                continue;
+            }
+            let Ok(config) = self.get(&format!("/rest/config/devices/{device_id}")).await else {
+                continue;
+            };
+            let current: Vec<String> = config["addresses"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            if let Some(wanted) = with_pinned(&current, &fresh) {
+                let _ = self
+                    .patch(&format!("/rest/config/devices/{device_id}"), json!({ "addresses": wanted }))
+                    .await;
+            }
+        }
+        Ok(())
     }
 
     /// Adopts the name a peer announced when it last connected.
@@ -1582,6 +1754,110 @@ fn folder_state(
     FolderState::UpToDate
 }
 
+/// How a connected peer is reached, from its `/rest/system/connections`
+/// entry: the best of its connections, since v2 keeps several at once.
+fn route_of(entry: &Value) -> Option<Route> {
+    let mut all = vec![&entry["primary"]];
+    if let Some(more) = entry["secondary"].as_array() {
+        all.extend(more.iter());
+    }
+    // Older engines have no primary block, only the top-level fields.
+    if entry["primary"].is_null() {
+        all = vec![entry];
+    }
+    let mut best: Option<Route> = None;
+    for conn in all {
+        let kind = conn["type"].as_str().unwrap_or("");
+        if kind.is_empty() {
+            continue;
+        }
+        let route = if kind.starts_with("relay") {
+            Route::Relay
+        } else if conn["isLocal"].as_bool().unwrap_or(false) {
+            Route::Lan
+        } else {
+            Route::Internet
+        };
+        let rank = |r: Route| match r {
+            Route::Lan => 0,
+            Route::Internet => 1,
+            Route::Relay => 2,
+        };
+        if best.is_none_or(|b| rank(route) < rank(b)) {
+            best = Some(route);
+        }
+    }
+    best
+}
+
+/// The dialable LAN addresses of a connected peer.
+///
+/// A connection we dialled carries the peer's listening address; one it
+/// dialled in carries a throwaway source port, so for those the listening
+/// address is taken from what discovery heard at the same IP. IPv4 private
+/// ranges only: IPv6 addresses on a home network rotate daily, and
+/// link-local ones need a zone that differs per machine.
+fn lan_addresses_of(entry: &Value, discovered: &[String]) -> Vec<String> {
+    let mut conns = vec![&entry["primary"]];
+    if let Some(more) = entry["secondary"].as_array() {
+        conns.extend(more.iter());
+    }
+    if entry["primary"].is_null() {
+        conns = vec![entry];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |a: String| {
+        if !out.contains(&a) {
+            out.push(a);
+        }
+    };
+    for conn in conns {
+        let kind = conn["type"].as_str().unwrap_or("");
+        if kind.starts_with("relay") || !conn["isLocal"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let Some(address) = conn["address"].as_str() else { continue };
+        let Ok(socket) = address.parse::<std::net::SocketAddr>() else { continue };
+        let std::net::IpAddr::V4(ip) = socket.ip() else { continue };
+        if !ip.is_private() {
+            continue;
+        }
+        let proto = kind.split('-').next().unwrap_or("tcp");
+        if kind.ends_with("-client") {
+            push(format!("{proto}://{socket}"));
+        } else {
+            for heard in discovered {
+                let host = heard.split("://").nth(1).and_then(|r| r.rsplit_once(':')).map(|(h, _)| h);
+                if host == Some(&ip.to_string()) && (heard.starts_with("tcp://") || heard.starts_with("quic://")) {
+                    push(heard.clone());
+                }
+            }
+        }
+    }
+    // TCP first: it is the one Syncthing ranks best on a LAN.
+    out.sort_by_key(|a| if a.starts_with("tcp://") { 0 } else { 1 });
+    out
+}
+
+/// A device's address list with `fresh` LAN addresses pinned after
+/// `dynamic`, or `None` when nothing would change. Leaves alone a device
+/// someone configured without `dynamic`: that list was chosen by hand.
+fn with_pinned(current: &[String], fresh: &[String]) -> Option<Vec<String>> {
+    if !current.iter().any(|a| a == "dynamic") {
+        return None;
+    }
+    let mut explicit: Vec<String> = fresh.to_vec();
+    for old in current.iter().filter(|a| *a != "dynamic") {
+        if !explicit.contains(old) {
+            explicit.push(old.clone());
+        }
+    }
+    explicit.truncate(MAX_PINNED);
+    let mut wanted = vec!["dynamic".to_string()];
+    wanted.extend(explicit);
+    (wanted != current).then_some(wanted)
+}
+
 /// The few addresses worth putting in a pairing code.
 ///
 /// Every address makes the QR denser, and a dense QR read off one screen by
@@ -1826,6 +2102,70 @@ mod tests {
     /// The message this replaced blamed permissions for everything, including
     /// this — the commonest cause, and the one where being sent to look at
     /// permissions wastes the most time.
+    /// Shaped like the desktop's real `/rest/system/connections` entry for
+    /// the phone on 2026-10-01: one connection we dialled, one it dialled in.
+    fn phone_on_the_lan() -> Value {
+        json!({
+            "connected": true, "type": "tcp-client", "address": "192.168.1.147:22000", "isLocal": true,
+            "primary": { "type": "tcp-client", "address": "192.168.1.147:22000", "isLocal": true },
+            "secondary": [
+                { "type": "tcp-server", "address": "192.168.1.138:48128", "isLocal": true },
+                { "type": "tcp-client", "address": "[2a0c:5a85:9102:b500::1]:22000", "isLocal": true }
+            ]
+        })
+    }
+
+    #[test]
+    fn the_best_of_several_connections_is_the_route_shown() {
+        assert_eq!(route_of(&phone_on_the_lan()), Some(Route::Lan));
+        let relayed = json!({ "connected": true,
+            "primary": { "type": "relay-client", "address": "93.176.169.53:22067", "isLocal": false },
+            "secondary": [] });
+        assert_eq!(route_of(&relayed), Some(Route::Relay));
+        let mixed = json!({ "connected": true,
+            "primary": { "type": "relay-client", "address": "93.176.169.53:22067", "isLocal": false },
+            "secondary": [{ "type": "tcp-client", "address": "79.117.213.199:22000", "isLocal": false }] });
+        assert_eq!(route_of(&mixed), Some(Route::Internet));
+        assert_eq!(route_of(&json!({ "connected": false, "primary": { "type": "" } })), None);
+    }
+
+    #[test]
+    fn lan_addresses_come_from_the_connections_and_discovery_fills_the_port() {
+        let heard = vec![
+            "tcp://192.168.1.138:22000".to_string(),
+            "quic://192.168.1.138:22000".to_string(),
+            "tcp://10.56.123.150:22000".to_string(),
+            "relay://103.214.6.110:22067/?id=X".to_string(),
+        ];
+        let got = lan_addresses_of(&phone_on_the_lan(), &heard);
+        assert_eq!(
+            got,
+            vec!["tcp://192.168.1.147:22000", "tcp://192.168.1.138:22000", "quic://192.168.1.138:22000"],
+            "the dialled address as is, the dialled-in one by its discovered port, never IPv6 or the ephemeral port"
+        );
+        let relayed = json!({ "primary": { "type": "relay-client", "address": "192.168.1.5:22067", "isLocal": true } });
+        assert!(lan_addresses_of(&relayed, &heard).is_empty(), "a relay is never a LAN route");
+    }
+
+    #[test]
+    fn pinned_addresses_go_after_dynamic_and_only_change_what_needs_to() {
+        let fresh = vec!["tcp://192.168.1.147:22000".to_string()];
+        assert_eq!(
+            with_pinned(&["dynamic".into()], &fresh),
+            Some(vec!["dynamic".to_string(), "tcp://192.168.1.147:22000".to_string()])
+        );
+        // Already there: no write, so no ConfigSaved every half minute.
+        assert_eq!(with_pinned(&["dynamic".into(), "tcp://192.168.1.147:22000".into()], &fresh), None);
+        // The newest goes first and the list stays short.
+        let old: Vec<String> = ["dynamic", "tcp://192.168.1.2:22000", "tcp://192.168.1.3:22000", "tcp://192.168.1.4:22000"]
+            .iter().map(|s| s.to_string()).collect();
+        let next = with_pinned(&old, &fresh).unwrap();
+        assert_eq!(next.len(), 1 + MAX_PINNED);
+        assert_eq!(next[1], "tcp://192.168.1.147:22000");
+        // A hand-written address list is not ours to rewrite.
+        assert_eq!(with_pinned(&["tcp://nas.local:22000".into()], &fresh), None);
+    }
+
     #[test]
     fn a_full_disk_is_named_as_a_full_disk() {
         let said = "syncing: insufficient space in folder \"DCIM\" (dcim-17f2tg) \

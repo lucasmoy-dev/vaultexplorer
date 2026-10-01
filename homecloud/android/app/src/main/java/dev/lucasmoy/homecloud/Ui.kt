@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
@@ -53,10 +54,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.util.Log
 import java.io.File
 
 /** Fast enough that a sync looks live, slow enough not to hammer the engine. */
 private const val POLL_MS = 1500L
+
+/** Until the engine first answers, asked this often: on a cold start the
+ * one-and-a-half-second poll alone could add most of that to the wait after
+ * the engine was already up. */
+private const val STARTUP_POLL_MS = 250L
+
+/** The saved folder list is rewritten at most this often while things move. */
+private const val CACHE_EVERY_MS = 10_000L
+
+/** Mirrors [Engine.STARTUP_TIMEOUT_MS]: past this with no successful poll, the
+ * engine is stuck rather than merely slow, and the spinner is not the truth
+ * anymore. */
+private const val STARTUP_TIMEOUT_MS = 40_000L
 
 @Composable
 fun StoragePermissionScreen(onGrant: () -> Unit) {
@@ -83,10 +98,22 @@ fun StoragePermissionScreen(onGrant: () -> Unit) {
 @Composable
 fun HomeScreen() {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var folders by remember { mutableStateOf<List<SharedFolder>>(emptyList()) }
     var invitations by remember { mutableStateOf<List<Invitation>>(emptyList()) }
     var ready by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var pollError by remember { mutableStateOf<String?>(null) }
+    // Flips once startup has gone on well past what a real launch ever takes,
+    // so a stuck or failed engine gets an error and a retry instead of a
+    // spinner that never resolves either way.
+    var startupStuck by remember { mutableStateOf(false) }
+    var startupDeadline by remember { mutableStateOf(System.currentTimeMillis() + STARTUP_TIMEOUT_MS) }
+    // True while the list on screen is the one saved last time, not yet
+    // confirmed by the engine: shown at once instead of a blank "Arrancando…".
+    var fromCache by remember { mutableStateOf(false) }
+    val cache = remember { FolderCache(File(context.filesDir, "last-folders.json")) }
+    var cachedAt by remember { mutableStateOf(0L) }
 
     var showSettings by remember { mutableStateOf(false) }
     var showJoin by remember { mutableStateOf(false) }
@@ -96,24 +123,56 @@ fun HomeScreen() {
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
         runCatching {
-            val f = Repo.folders()
+            val json = Repo.foldersJson()
+            val f = parseFolders(json)
             val i = Repo.invitations()
+            val now = System.currentTimeMillis()
+            if (!ready || f.size != folders.size || now - cachedAt >= CACHE_EVERY_MS) {
+                cache.write(json)
+                cachedAt = now
+            }
             withContext(Dispatchers.Main) {
+                if (!ready) Log.i("HomeCloudStartup", "first live listing at +${now - Startup.t0}ms")
                 folders = f
                 invitations = i
                 ready = true
+                fromCache = false
+                // Only the poll's own failures clear themselves: one blip
+                // used to leave its banner up until someone tapped it away.
+                if (error == pollError) error = null
+                pollError = null
+                startupStuck = false
                 openFolder = openFolder?.let { open -> f.find { it.id == open.id } }
             }
         }.onFailure {
-            // Before the engine answers, failures are just "not up yet".
-            if (ready) withContext(Dispatchers.Main) { error = it.message }
+            if (!ready) Log.i("HomeCloudStartup", "poll failed at +${System.currentTimeMillis() - Startup.t0}ms: ${it.message}")
+            // Before the engine answers, failures are just "not up yet" —
+            // unless startup has run well past the point that is still true.
+            if (ready) {
+                withContext(Dispatchers.Main) {
+                    pollError = it.message
+                    error = it.message
+                }
+            } else if (System.currentTimeMillis() >= startupDeadline) {
+                withContext(Dispatchers.Main) {
+                    error = it.message
+                    startupStuck = true
+                }
+            }
         }
     }
 
     LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { cache.read() }?.let { saved ->
+            if (!ready) {
+                folders = saved
+                fromCache = true
+                Log.i("HomeCloudStartup", "saved list on screen at +${System.currentTimeMillis() - Startup.t0}ms")
+            }
+        }
         while (true) {
             refresh()
-            delay(POLL_MS)
+            delay(if (ready) POLL_MS else STARTUP_POLL_MS)
         }
     }
 
@@ -127,9 +186,12 @@ fun HomeScreen() {
             }
             Spacer(Modifier.height(8.dp))
 
-            error?.let {
+            // While startup is stuck the same message is already the centerpiece
+            // of the screen below, next to the retry button — showing it twice
+            // would just be noise.
+            if (error != null && !startupStuck) {
                 Banner(tone = MaterialTheme.colorScheme.error) {
-                    Text(it, Modifier.clickable { error = null })
+                    Text(error!!, Modifier.clickable { error = null })
                 }
                 Spacer(Modifier.height(8.dp))
             }
@@ -156,12 +218,36 @@ fun HomeScreen() {
                 Spacer(Modifier.height(8.dp))
             }
 
-            if (!ready) {
+            if (fromCache && !ready && !startupStuck) {
+                Text(
+                    "Conectando con el motor…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+
+            if (!ready && !(fromCache && !startupStuck)) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
-                        Spacer(Modifier.height(12.dp))
-                        Text("Arrancando…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (startupStuck) {
+                            Text(
+                                error ?: "El motor de sincronización está tardando demasiado en arrancar.",
+                                color = MaterialTheme.colorScheme.error,
+                                textAlign = TextAlign.Center,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Button(onClick = {
+                                error = null
+                                startupStuck = false
+                                startupDeadline = System.currentTimeMillis() + STARTUP_TIMEOUT_MS
+                                SyncService.restart(context)
+                            }) { Text("Reintentar") }
+                        } else {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(12.dp))
+                            Text("Arrancando…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             } else if (folders.isEmpty()) {
@@ -727,6 +813,11 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
     // Read-only, the device list and the wifi rule are settings: looked at once
     // when a folder is set up and never again. The actions come first.
     var advancedOpen by remember { mutableStateOf(false) }
+    // Guards the stop-sharing request: without it a tap that looks like it did
+    // nothing (waiting on the delete plus a full folder-list refresh) gets
+    // tapped again, and the second one lands on a folder the engine already
+    // removed.
+    var stopBusy by remember { mutableStateOf(false) }
     val paused = folder.state == FolderState.Paused
     // What the user just asked for, until the next poll confirms it. These
     // used to close the whole sheet and then take a second and a half to show
@@ -832,6 +923,27 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                         Spacer(Modifier.width(6.dp))
                         Text(if (paused) "Reanudar" else "Pausar")
                     }
+                }
+
+                Spacer(Modifier.height(6.dp))
+                // Deliberately not behind "Avanzado": stopping a sync is the one
+                // action here a user comes looking for on purpose, and burying
+                // it behind a disclosure most people never open is why it went
+                // unnoticed.
+                TextButton(
+                    onClick = {
+                        stopBusy = true
+                        // The files stay on the phone. Only the syncing stops.
+                        scope.engineCall(
+                            onError = { stopBusy = false; onError(it) },
+                            onDone = onDismiss,
+                        ) { Repo.stopSharing(folder.id) }
+                    },
+                    enabled = !stopBusy,
+                ) {
+                    Icon(Icons.Filled.LinkOff, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (stopBusy) "Dejando de sincronizar…" else "Dejar de sincronizar")
                 }
 
                 Spacer(Modifier.height(6.dp))
@@ -951,6 +1063,14 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                                 )
                             }
                         }
+                        // Which way the bytes travel. The engine always
+                        // prefers the local network; this is how to see it.
+                        Text(
+                            if (peer.connected) "conectado${routeWords(peer.route)}" else "sin conexión",
+                            Modifier.padding(start = 16.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
 
                     Spacer(Modifier.height(10.dp))
@@ -963,16 +1083,6 @@ private fun FolderDialog(folder: SharedFolder, onDismiss: () -> Unit, onError: (
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-
-                    Spacer(Modifier.height(4.dp))
-                    TextButton(onClick = {
-                        // The files stay on the phone. Only the syncing stops.
-                        scope.engineCall(onError, onDismiss) { Repo.stopSharing(folder.id) }
-                    }) {
-                        Icon(Icons.Filled.LinkOff, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Dejar de sincronizar")
-                    }
                 }
             }
         },

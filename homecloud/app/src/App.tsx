@@ -15,6 +15,7 @@ import {
   type Destination,
   type Invitation,
   type LinkStatus,
+  type Peer,
   type Readiness,
   type SharedFolder,
 } from "./api";
@@ -46,6 +47,10 @@ import {
 
 /** Slow enough not to hammer the engine, fast enough that a sync looks live. */
 const POLL_MS = 1500;
+/** While the engine is still starting, ready is the only thing anyone is
+ * waiting on — polled faster so "Arrancando…" does not linger after the
+ * engine has actually answered. */
+const STARTUP_POLL_MS = 300;
 
 type Screen =
   | { name: "list" }
@@ -54,21 +59,42 @@ type Screen =
   | { name: "settings" }
   | { name: "folder"; folder: SharedFolder };
 
+/** Which way a connected peer is reached, in words. The engine always
+ * prefers the local network; this is how to see that it did. */
+function routeWords(route: Peer["route"]): string {
+  switch (route) {
+    case "lan":
+      return " · en tu red";
+    case "internet":
+      return " · por internet";
+    case "relay":
+      return " · por repetidor (lento)";
+    default:
+      return "";
+  }
+}
+
 export default function App() {
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [folders, setFolders] = useState<SharedFolder[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [screen, setScreen] = useState<Screen>({ name: "list" });
   const [error, setError] = useState<string | null>(null);
+  // The poll's own failure, kept apart from errors of things the user did:
+  // it clears itself on the next poll that works. One transient failure used
+  // to leave its banner up until someone clicked it away, long after the
+  // engine was answering again.
+  const [pollError, setPollError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const status = await api.readiness();
     setReadiness(status);
-    if (!status.ready) return;
+    if (!status.ready) return status;
     try {
       const [f, i] = await Promise.all([api.listFolders(), api.listInvitations()]);
       setFolders(f);
       setInvitations(i);
+      setPollError(null);
       // Keep an open folder sheet in step with what the engine now reports.
       setScreen((current) =>
         current.name === "folder"
@@ -79,14 +105,24 @@ export default function App() {
           : current,
       );
     } catch (e) {
-      setError(String(e));
+      setPollError(String(e));
     }
+    return status;
   }, []);
 
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(timer);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      const status = await refresh();
+      if (cancelled) return;
+      timer = setTimeout(() => void tick(), status?.ready ? POLL_MS : STARTUP_POLL_MS);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [refresh]);
 
   // Applied once, as soon as the engine is up, so the very first screen a
@@ -156,9 +192,9 @@ export default function App() {
         </button>
       </header>
 
-      {error && (
+      {(error ?? pollError) && (
         <div className="banner banner-bad" onClick={() => setError(null)}>
-          {error}
+          {error ?? pollError}
         </div>
       )}
 
@@ -570,6 +606,11 @@ function FolderSheet({
 }) {
   const [code, setCode] = useState<string | null>(null);
   const [confirmingStop, setConfirmingStop] = useState(false);
+  // Guards the stop-sharing request: without it, a click that looks like it
+  // did nothing (waiting on the delete plus a full folder-list refresh) gets
+  // clicked again, and the second one lands on a folder the engine already
+  // removed.
+  const [stopBusy, setStopBusy] = useState(false);
   // Read-only and the device list are settings, not things you reach for: they
   // are looked at once when a folder is set up and never again. Out of the way
   // by default so the actions you actually use are the ones on screen.
@@ -663,6 +704,43 @@ function FolderSheet({
         </button>
       </div>
 
+      {/* Deliberately not behind "Avanzado": stopping a sync is the one
+          action in this sheet a user comes looking for on purpose, and
+          burying it behind a disclosure most people never open is why it
+          went unnoticed. */}
+      {confirmingStop ? (
+        <div className="stop-confirm">
+          <button
+            className="btn btn-danger"
+            disabled={stopBusy}
+            onClick={async () => {
+              setStopBusy(true);
+              try {
+                await api.stopSharing(folder.id);
+                onClosed();
+                onChanged();
+              } catch (e) {
+                onError(String(e));
+              } finally {
+                setStopBusy(false);
+              }
+            }}
+          >
+            <TrashIcon />
+            {stopBusy ? "Dejando de sincronizar…" : "Sí, dejar de sincronizar"}
+          </button>
+          <p className="muted small">
+            Los ficheros que ya están en este ordenador se quedan donde están. Solo se deja de
+            sincronizar.
+          </p>
+        </div>
+      ) : (
+        <button className="btn btn-quiet" onClick={() => setConfirmingStop(true)}>
+          <TrashIcon />
+          Dejar de sincronizar
+        </button>
+      )}
+
       <button
         className="btn btn-quiet disclosure"
         onClick={() => setAdvancedOpen((open) => !open)}
@@ -747,7 +825,9 @@ function FolderSheet({
                       {peer.completion >= 100 ? "al día" : `${peer.completion}%`}
                     </span>
                   )}
-                  <span className="muted">{peer.connected ? "conectado" : "sin conexión"}</span>
+                  <span className="muted">
+                    {peer.connected ? `conectado${routeWords(peer.route)}` : "sin conexión"}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -756,35 +836,6 @@ function FolderSheet({
           <DeletedFiles folder={folder} onError={onError} />
 
           <p className="path-line mono">{folder.path}</p>
-
-          {confirmingStop ? (
-            <>
-              <button
-                className="btn btn-danger"
-                onClick={async () => {
-                  try {
-                    await api.stopSharing(folder.id);
-                    onClosed();
-                    onChanged();
-                  } catch (e) {
-                    onError(String(e));
-                  }
-                }}
-              >
-                <TrashIcon />
-                Sí, dejar de sincronizar
-              </button>
-              <p className="muted small">
-                Los ficheros que ya están en este ordenador se quedan donde están. Solo se deja de
-                sincronizar.
-              </p>
-            </>
-          ) : (
-            <button className="btn btn-quiet" onClick={() => setConfirmingStop(true)}>
-              <TrashIcon />
-              Dejar de sincronizar
-            </button>
-          )}
         </div>
       )}
     </div>

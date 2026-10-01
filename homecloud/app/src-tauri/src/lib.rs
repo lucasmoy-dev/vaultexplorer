@@ -107,6 +107,14 @@ async fn launch_engine(state: &AppState) {
 
     match Engine::start(&binary, &state.engine_home).await {
         Ok(engine) => {
+            // The window is waiting on `readiness` the moment the engine answers a
+            // ping; the housekeeping below is one-time setup that would otherwise
+            // hold the spinner up for several more round trips for no benefit to
+            // the user.
+            *state.engine.write().await = Some(engine);
+            let guard = state.engine.read().await;
+            let engine = guard.as_ref().expect("just stored above");
+
             // A device with no name shows up on other people's screens as a
             // meaningless ID, so give it one on first run.
             let _ = engine.client.ensure_device_name(&default_device_name()).await;
@@ -119,9 +127,45 @@ async fn launch_engine(state: &AppState) {
                 engine.client.set_trash_command(command);
             }
             let _ = engine.client.ensure_deletion_policy().await;
-            *state.engine.write().await = Some(engine);
         }
         Err(e) => *state.startup_problem.write().await = Some(plain(e)),
+    }
+}
+
+/// Brings the engine back if it dies.
+///
+/// It runs with `--no-restart`, so a crash used to leave the window polling a
+/// port nobody listened on, every request answered with "could not reach the
+/// sync engine" until the whole app was restarted by hand. A new engine gets a
+/// new port; nothing else needs telling, because every command reaches the
+/// engine through this state rather than a remembered address. Gives up —
+/// and says why, with the retry button — if it keeps dying, rather than
+/// restarting something broken in a loop for ever.
+async fn watch_engine(state: &AppState) {
+    let mut recent: Vec<std::time::Instant> = Vec::new();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let died = {
+            let mut guard = state.engine.write().await;
+            match guard.as_mut().and_then(|engine| engine.exit_reason()) {
+                Some(reason) => {
+                    if let Some(mut dead) = guard.take() {
+                        let _ = dead.stop().await;
+                    }
+                    Some(reason)
+                }
+                None => None,
+            }
+        };
+        let Some(reason) = died else { continue };
+        eprintln!("homecloud: {reason}; starting it again");
+        recent.retain(|at| at.elapsed() < std::time::Duration::from_secs(120));
+        recent.push(std::time::Instant::now());
+        if recent.len() > 3 {
+            *state.startup_problem.write().await = Some(reason);
+            continue;
+        }
+        launch_engine(state).await;
     }
 }
 
@@ -713,7 +757,9 @@ pub fn run() {
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                launch_engine(&handle.state::<AppState>()).await;
+                let state = handle.state::<AppState>();
+                launch_engine(&state).await;
+                watch_engine(&state).await;
             });
             Ok(())
         })

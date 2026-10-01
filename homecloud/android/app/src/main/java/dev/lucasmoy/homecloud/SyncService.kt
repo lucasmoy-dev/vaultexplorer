@@ -10,7 +10,8 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
+import android.net.wifi.WifiManager
+import android.util.Log
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -34,26 +35,50 @@ class SyncService : Service() {
      * Moving between wifi and mobile data leaves sockets that one side still
      * believes in and the other has given up on — the desktop saying
      * "connected" while the phone says "disconnected". Nothing recovers from
-     * that on its own quickly, so every change dials again.
+     * that on its own quickly, so a change dials again.
      *
-     * Android fires `onCapabilitiesChanged` on its own every few seconds on
-     * cellular — signal strength and bandwidth estimates update constantly,
-     * with no connectivity change behind them. Reconnecting on every one of
-     * those was tearing a real connection down almost as soon as it came up
-     * (seen live as ~5s connections, over and over): the fix meant to notice
-     * a real network change was itself the thing breaking the connection.
-     * [lastMetered] makes only an actual flip of "metered" count as one;
-     * `onAvailable`/`onLost` already are one.
+     * Only the *default* network counts. This used to listen to every network
+     * with internet, so mobile data coming up or dropping in the background —
+     * which a phone sitting on home wifi does constantly — tore down a
+     * perfectly good LAN connection each time, and registering the callback
+     * at startup did it once more for each network already up. Android
+     * reports the current default once on registration; that first report is
+     * where we are, not a change. [lastMetered] still makes a flip of
+     * "metered" on the same network count, for the wifi-only folders.
      */
     private var lastMetered: Boolean? = null
+    private var lastDefault: Network? = null
+    private var sawFirstDefault = false
+    private var lostDefault = false
 
     /** Cleared on the way out, so the notification loop stops with the service. */
     @Volatile
     private var watching = true
 
+    /**
+     * Without this the phone never hears the other devices' "I'm here"
+     * broadcasts: Android drops multicast and broadcast packets for apps that
+     * do not hold one, to save battery. The permission was declared and the
+     * lock never taken, so the phone could only find the computer on the
+     * same wifi through the internet discovery servers — and when those
+     * came back late, a relay got there first.
+     */
+    private var multicastLock: WifiManager.MulticastLock? = null
+
     private val networkWatcher = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = onNetworkChanged(force = true)
-        override fun onLost(network: Network) = onNetworkChanged(force = true)
+        override fun onAvailable(network: Network) {
+            val first = !sawFirstDefault
+            sawFirstDefault = true
+            val changed = lostDefault || lastDefault != network
+            lastDefault = network
+            lostDefault = false
+            onNetworkChanged(force = !first && changed)
+        }
+        override fun onLost(network: Network) {
+            if (network != lastDefault) return
+            lostDefault = true
+            onNetworkChanged(force = true)
+        }
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) =
             onNetworkChanged(force = false)
     }
@@ -62,6 +87,8 @@ class SyncService : Service() {
         super.onCreate()
         createChannel()
         startForeground(NOTIFICATION_ID, buildNotification(Progress("HomeCloud", "Arrancando…", null)))
+        Log.i("HomeCloudStartup", "service created at +${System.currentTimeMillis() - Startup.t0}ms")
+        hearTheLocalNetwork()
         Thread {
             engine.start()
                 .onSuccess {
@@ -70,9 +97,52 @@ class SyncService : Service() {
                     watchTheNetwork()
                     keepDeletionsRecoverable()
                     watchProgress()
+                    watchTheEngine()
                 }
                 .onFailure { notify(it.message ?: "El motor de sincronización no arrancó") }
         }.start()
+    }
+
+    private fun hearTheLocalNetwork() {
+        runCatching {
+            val wifi = applicationContext.getSystemService(WifiManager::class.java) ?: return
+            multicastLock = wifi.createMulticastLock("homecloud-discovery").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }.onFailure { Log.w("HomeCloud", "no multicast lock: ${it.message}") }
+    }
+
+    /**
+     * Starts the engine again if it dies.
+     *
+     * It runs with `--no-restart`, so nothing else would: the service stayed
+     * up, the notification said all was well, and every screen answered
+     * "could not reach the sync engine" until the app was force-closed. A
+     * new engine gets a new port and [Engine.start] hands it to the core, so
+     * nothing above notices beyond a moment of "Conectando". Gives up after a
+     * few deaths in a row instead of looping on something broken.
+     */
+    private fun watchTheEngine() {
+        Thread {
+            val recent = ArrayDeque<Long>()
+            while (watching) {
+                Thread.sleep(ENGINE_CHECK_MS)
+                if (!watching) break
+                val reason = engine.exitReason() ?: continue
+                Log.w("HomeCloud", "$reason; starting it again")
+                val now = System.currentTimeMillis()
+                while (recent.isNotEmpty() && now - recent.first() > 120_000) recent.removeFirst()
+                recent.addLast(now)
+                if (recent.size > 3) {
+                    notify("El motor de sincronización se detiene una y otra vez. Abre HomeCloud y pulsa Reintentar.")
+                    break
+                }
+                engine.start()
+                    .onSuccess { tellCoreWhereThingsGo() }
+                    .onFailure { notify(it.message ?: "El motor de sincronización no arrancó") }
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -89,11 +159,26 @@ class SyncService : Service() {
 
     override fun onDestroy() {
         watching = false
+        runCatching { multicastLock?.release() }
         runCatching {
             getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkWatcher)
         }
         engine.stop()
         super.onDestroy()
+    }
+
+    /**
+     * Android 15+ caps a `dataSync` foreground service at roughly six hours of
+     * execution in a rolling day and calls this once that budget runs out,
+     * expecting [stopSelf] soon after — a service that ignores it has its
+     * foreground status revoked outright, which is indistinguishable from a
+     * crash. This app is meant to run for as long as the phone is on, so
+     * instead of actually stopping, a fresh instance is asked to take over
+     * immediately: the restart Android's own docs describe for this limit.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopSelf(startId)
+        start(applicationContext)
     }
 
     /**
@@ -113,10 +198,14 @@ class SyncService : Service() {
                 val metered = capabilities?.hasCapability(
                     NetworkCapabilities.NET_CAPABILITY_NOT_METERED
                 ) != true
-                if (!force && metered == lastMetered) return@runCatching
+                val before = lastMetered
+                if (!force && metered == before) return@runCatching
                 lastMetered = metered
                 Repo.applyMeteredPolicy(metered)
-                Repo.reconnectAll()
+                // The first reading is where we already are: the engine has
+                // just dialled everyone, and tearing that down would only make
+                // startup slower.
+                if (force || before != null) Repo.reconnectAll()
             }
         }.start()
     }
@@ -168,11 +257,8 @@ class SyncService : Service() {
 
     private fun watchTheNetwork() {
         runCatching {
-            val request = NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build()
             getSystemService(ConnectivityManager::class.java)
-                .registerNetworkCallback(request, networkWatcher)
+                .registerDefaultNetworkCallback(networkWatcher)
         }
     }
 
@@ -268,6 +354,8 @@ class SyncService : Service() {
         private const val BUSY_TICK_MS = 2_000L
         /** And while nothing is, where the battery matters more than the wait. */
         private const val SLOW_TICK_MS = 10_000L
+        /** How often the engine is checked for having died. */
+        private const val ENGINE_CHECK_MS = 3_000L
 
         private const val CHANNEL_ID = "sync"
         private const val NOTIFICATION_ID = 1
@@ -280,6 +368,18 @@ class SyncService : Service() {
             } else {
                 context.startService(intent)
             }
+        }
+
+        /**
+         * Stops whatever instance is running and starts a fresh one, so a stuck
+         * or failed engine start gets a real second attempt instead of the user
+         * having to force-close the app. A plain [start] on an instance that is
+         * already alive does not do this: `onCreate`, where the engine actually
+         * launches, only ever runs once per instance.
+         */
+        fun restart(context: Context) {
+            context.stopService(Intent(context, SyncService::class.java))
+            start(context)
         }
     }
 }

@@ -54,7 +54,7 @@ impl Engine {
         // up still holds this home directory, and the new one then cannot start.
         // The user is told the app "could not start" and has no window to close,
         // because the thing in the way has no window. So it is cleared here.
-        reap_previous_engine(home);
+        reap_previous_engine(home).await;
 
         // First run only: mint the device certificate and identity.
         if !home.join("config.xml").exists() {
@@ -173,6 +173,21 @@ impl Engine {
         }
     }
 
+    /// Why the engine is no longer running, or `None` while it is.
+    ///
+    /// The engine runs with `--no-restart`, so if it dies nothing brings it
+    /// back: every later request fails with "could not reach the sync
+    /// engine" on a port nobody listens on any more. The platform asks this
+    /// on a timer and starts a new one — on a new port, which is why callers
+    /// always go through the engine they currently hold, never a saved URL.
+    pub fn exit_reason(&mut self) -> Option<String> {
+        let child = self.child.as_mut()?;
+        match child.try_wait() {
+            Ok(Some(status)) => Some(self.explain(&format!("the sync engine stopped ({status})"))),
+            _ => None,
+        }
+    }
+
     /// Asks the engine to exit, then makes sure it did.
     pub async fn stop(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
@@ -198,7 +213,7 @@ fn pid_file(home: &Path) -> PathBuf {
 ///
 /// Best effort by design — being unable to clean up must not stop a launch that
 /// might well succeed anyway.
-fn reap_previous_engine(home: &Path) {
+async fn reap_previous_engine(home: &Path) {
     let path = pid_file(home);
     let recorded = std::fs::read_to_string(&path)
         .ok()
@@ -226,7 +241,7 @@ fn reap_previous_engine(home: &Path) {
         if doomed.is_empty() {
             return;
         }
-        std::thread::sleep(Duration::from_millis(200));
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
     for pid in &doomed {
         signal(*pid, "KILL");
@@ -469,6 +484,38 @@ mod tests {
         std::fs::write(&engine, b"not really an engine").unwrap();
         assert_eq!(engine_binary(Some(&dir)).unwrap(), engine);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The real engine, when this checkout has fetched it: a death is noticed,
+    /// which is what lets the platform start a new one instead of leaving
+    /// every request failing against a dead port.
+    #[tokio::test]
+    async fn an_engine_that_dies_is_noticed() {
+        let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/src-tauri/resources/syncthing");
+        if !binary.exists() {
+            eprintln!("skipped: no engine at {}", binary.display());
+            return;
+        }
+        let home = std::env::temp_dir().join(format!("homecloud-die-{}", std::process::id()));
+        let started = std::time::Instant::now();
+        let mut engine = Engine::start(&binary, &home).await.expect("the engine starts");
+        eprintln!("engine answered after {:?}", started.elapsed());
+        assert!(engine.exit_reason().is_none(), "a running engine is not reported dead");
+        let pid = engine.child.as_ref().and_then(|c| c.id()).expect("a pid");
+        signal(pid, "KILL");
+        let mut reason = None;
+        for _ in 0..50 {
+            reason = engine.exit_reason();
+            if reason.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let reason = reason.expect("a killed engine must be noticed");
+        assert!(reason.contains("stopped"), "{reason}");
+        let _ = engine.stop().await;
+        reap_previous_engine(&home).await;
+        std::fs::remove_dir_all(&home).ok();
     }
 
     #[tokio::test]

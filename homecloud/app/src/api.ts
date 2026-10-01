@@ -17,6 +17,8 @@ export interface Peer {
    * out can see whether the other end has finished.
    */
   completion: number | null;
+  /** How the bytes travel while connected: same network, internet, or a relay. */
+  route?: "lan" | "internet" | "relay" | null;
 }
 
 /** What one device does with a folder it shares. */

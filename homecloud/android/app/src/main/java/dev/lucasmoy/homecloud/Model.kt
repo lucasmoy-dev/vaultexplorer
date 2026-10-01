@@ -33,6 +33,8 @@ data class Peer(
     val connected: Boolean,
     /** How much of the folder that device has, 0-100, or null if unknown. */
     val completion: Int?,
+    /** "lan", "internet" or "relay" while connected; null otherwise. */
+    val route: String? = null,
 ) {
     companion object {
         fun from(json: JSONObject) = Peer(
@@ -40,6 +42,7 @@ data class Peer(
             name = json.getString("name"),
             connected = json.getBoolean("connected"),
             completion = if (json.isNull("completion")) null else json.optInt("completion"),
+            route = if (json.isNull("route")) null else json.optString("route").ifEmpty { null },
         )
     }
 }
@@ -384,3 +387,14 @@ fun stateLabel(state: FolderState): String = when (state) {
     FolderState.Disconnected -> "Sin conexión"
     is FolderState.Problem -> state.detail
 }
+
+/** Which way a connected device is reached, in words; empty when unknown. */
+fun routeWords(route: String?): String = when (route) {
+    "lan" -> " · en tu red"
+    "internet" -> " · por internet"
+    "relay" -> " · por repetidor (lento)"
+    else -> ""
+}
+
+/** Reads a folder listing as the core sends it, or as it was last saved. */
+fun parseFolders(text: String): List<SharedFolder> = JSONArray(text).map { SharedFolder.from(it) }

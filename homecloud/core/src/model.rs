@@ -22,6 +22,25 @@ pub struct Peer {
     /// device that handed the folder out, which otherwise only ever sees its
     /// own copy and reports itself up to date while the other end is at 4%.
     pub completion: Option<u8>,
+    /// Which way the bytes are travelling while connected. `None` when not
+    /// connected right now.
+    ///
+    /// Shown because "it seems to always go over the internet" is otherwise
+    /// a guess from how slow it feels: this is the engine's own answer.
+    #[serde(default)]
+    pub route: Option<Route>,
+}
+
+/// How a connected peer is being reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Route {
+    /// Directly, on the same network. The fast path.
+    Lan,
+    /// Directly, but across the internet.
+    Internet,
+    /// Through a community relay: works anywhere, and is the slowest.
+    Relay,
 }
 
 /// What a folder is doing right now, in the terms the one status dot uses.
