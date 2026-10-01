@@ -156,6 +156,42 @@ fn search_matches_names_and_text_content() {
 }
 
 #[test]
+fn streaming_search_stops_when_asked_and_matches_names_not_paths() {
+    let dir = tmpdir();
+    let root = dir.path().join("v");
+    let vault = Vault::create(&root, b"pw").unwrap();
+    vault.create_dir("reports").unwrap();
+    for i in 0..20 {
+        vault.write_file(format!("reports/r{i}.bin"), b"x").unwrap();
+    }
+    vault.write_file("reports/report-final.bin", b"x").unwrap();
+
+    // A folder name matching doesn't drag every file inside it along.
+    let mut all = Vec::new();
+    vault
+        .search_streaming("report", &mut |rel, is_dir| {
+            all.push((rel.to_string_lossy().to_string(), is_dir));
+            true
+        })
+        .unwrap();
+    all.sort();
+    assert_eq!(
+        all,
+        vec![("reports".to_string(), true), ("reports/report-final.bin".to_string(), false)]
+    );
+
+    // Returning false stops the walk at once.
+    let mut seen = 0;
+    vault
+        .search_streaming("r", &mut |_, _| {
+            seen += 1;
+            false
+        })
+        .unwrap();
+    assert_eq!(seen, 1);
+}
+
+#[test]
 fn sensitive_files_need_the_password_again() {
     let dir = tmpdir();
     let root = dir.path().join("v");

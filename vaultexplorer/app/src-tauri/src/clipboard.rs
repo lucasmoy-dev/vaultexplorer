@@ -67,6 +67,15 @@ pub async fn clipboard_has_image(app: tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+/// The clipboard's text, for `copyText` (api.ts) to confirm a write
+/// really landed. Blocking pool for the same deadlock reason as above.
+#[tauri::command]
+pub async fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || app.clipboard().read_text().str_err())
+        .await
+        .str_err()?
+}
+
 /// Returned as a raw IPC response (an `ArrayBuffer` on the JS side) rather
 /// than a serialised `Vec<u8>`: a pasted screenshot is megabytes, and as
 /// JSON that would be one number-per-byte array to build and parse.

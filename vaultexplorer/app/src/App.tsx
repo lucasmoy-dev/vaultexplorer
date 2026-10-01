@@ -8,6 +8,7 @@ import { open as pickPath } from "@tauri-apps/plugin-dialog";
 import {
   api,
   Entry,
+  SearchBatch,
   ProgressEvent,
   joinPath,
   parentPath,
@@ -17,6 +18,7 @@ import {
   TAG_COLORS,
   ENCRYPTED_FILE_EXT,
   osOpen,
+  copyText,
 } from "./api";
 import { TitleBar, TrafficLights } from "./TitleBar";
 import { ContextMenu, MenuState, MenuItem } from "./ContextMenu";
@@ -91,6 +93,7 @@ import {
 import { GetInfoSheet, MultiInfoSheet } from "./components/sheets/info-sheets";
 import { OpenWithSheet } from "./components/sheets/open-with-sheet";
 import { readText as clipboardReadText } from "@tauri-apps/plugin-clipboard-manager";
+import { writeShared, useSharedStorage, broadcast, useBroadcast } from "./sharedState";
 import "./App.css";
 
 // Expands {date}/{time}/{datetime} tokens in a user-configured default
@@ -108,9 +111,98 @@ function formatNameTemplate(template: string): string {
     .replace(/\{time\}/g, time);
 }
 
+// The search box keeps its own keystroke-by-keystroke text and hands the
+// explorer only the settled query, 200ms after typing stops. Holding the
+// draft up in Explorer meant every keystroke re-rendered the whole
+// window -- every tile of a big folder included -- which is a good part of
+// why typing into search stuttered.
+function SearchField({
+  value,
+  inputRef,
+  placeholder,
+  onCommit,
+  onSubmit,
+  onEmptyBlur,
+  onClear,
+}: {
+  value: string;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  placeholder: string;
+  onCommit: (q: string) => void;
+  onSubmit: (q: string) => void;
+  onEmptyBlur: () => void;
+  onClear: () => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  // Only an *outside* change (a navigation clearing the query, type-ahead
+  // seeding it) is copied in -- the echo of our own commit isn't, or a
+  // keystroke typed while that echo was in flight would be thrown away.
+  const committed = useRef(value);
+  useEffect(() => {
+    if (value !== committed.current) {
+      committed.current = value;
+      setDraft(value);
+    }
+  }, [value]);
+  useEffect(() => {
+    if (draft === committed.current) return;
+    const t = setTimeout(
+      () => {
+        committed.current = draft;
+        onCommit(draft);
+      },
+      draft.trim() === "" ? 0 : 200
+    );
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
+  return (
+    <div className="search-field">
+      <SearchGlyph />
+      <input
+        ref={inputRef}
+        autoFocus
+        placeholder={placeholder}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          if (draft !== committed.current) {
+            committed.current = draft;
+            onCommit(draft);
+          } else {
+            onSubmit(draft);
+          }
+        }}
+        onBlur={() => {
+          if (draft.trim() === "") onEmptyBlur();
+        }}
+      />
+      {draft && (
+        <button
+          className="search-clear"
+          aria-label="Clear search"
+          onClick={() => {
+            committed.current = "";
+            setDraft("");
+            onClear();
+          }}
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ---------- main explorer ----------
 
 const ARCHIVE_EXT_RE = /\.(zip|tar\.gz|tgz)$/i;
+type SortKey = "name" | "date" | "size" | "kind" | "created";
+// Explorer/Finder convention: text columns start A-Z, but a first click on a
+// numeric/date column starts at the biggest/newest value, not the smallest --
+// sorting a fresh "Size" click ascending reads as backwards.
+const SORT_DEFAULT_DIR: Record<SortKey, 1 | -1> = { name: 1, kind: 1, date: -1, created: -1, size: -1 };
 function startPath(home: string): string {
   const chosen = localStorage.getItem(DEFAULT_START_KEY);
   if (chosen) return chosen;
@@ -345,8 +437,9 @@ function Explorer({ home }: { home: string }) {
     return defaults;
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:app-settings", JSON.stringify(appSettings));
+    writeShared("vaultexplorer:app-settings", JSON.stringify(appSettings));
   }, [appSettings]);
+  useSharedStorage("vaultexplorer:app-settings", (raw) => setAppSettings(JSON.parse(raw)));
   // A tap on a pinned home-screen folder shortcut arrives as a
   // `vaultexplorer://open-folder` deep link: `getCurrent` covers being
   // *launched* by one (Linux/Windows spawn a fresh instance with the URL
@@ -440,7 +533,7 @@ function Explorer({ home }: { home: string }) {
     setShareStatus({ label: entry.name, state: "working" });
     try {
       const url = inVault ? await api.vaultShareFile(full) : await api.fsShareFile(full);
-      await navigator.clipboard.writeText(url);
+      await copyText(url);
       setShareStatus({ label: entry.name, state: "done", message: url });
       setTimeout(() => setShareStatus((s) => (s?.label === entry.name ? null : s)), 5000);
     } catch (e) {
@@ -458,8 +551,9 @@ function Explorer({ home }: { home: string }) {
     return {};
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:vault-settings", JSON.stringify(vaultSettings));
+    writeShared("vaultexplorer:vault-settings", JSON.stringify(vaultSettings));
   }, [vaultSettings]);
+  useSharedStorage("vaultexplorer:vault-settings", (raw) => setVaultSettings(JSON.parse(raw)));
   // "Vault Settings…" (any vault folder's context menu) -- editing the
   // same options NewVaultSheet's Advanced section sets at creation time,
   // for a vault that already exists. `canAutoUnlock` false for a nested
@@ -769,8 +863,25 @@ function Explorer({ home }: { home: string }) {
   ];
 
   const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
-  const [sortKey, setSortKey] = useState<"name" | "date" | "size" | "kind" | "created">("name");
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
+  // One global sort, same "follows you from folder to folder" convention as
+  // the view mode above -- and, like it, persisted and synced across windows
+  // rather than reset to the Name/ascending literal on every fresh mount.
+  const [sortKey, setSortKey] = useState<SortKey>(() => {
+    const raw = localStorage.getItem("vaultexplorer:sort-key");
+    return raw && raw in SORT_DEFAULT_DIR ? (raw as SortKey) : "name";
+  });
+  const [sortDir, setSortDir] = useState<1 | -1>(() => {
+    const raw = Number(localStorage.getItem("vaultexplorer:sort-dir"));
+    return raw === 1 || raw === -1 ? raw : 1;
+  });
+  useEffect(() => {
+    writeShared("vaultexplorer:sort-key", sortKey);
+  }, [sortKey]);
+  useEffect(() => {
+    writeShared("vaultexplorer:sort-dir", String(sortDir));
+  }, [sortDir]);
+  useSharedStorage("vaultexplorer:sort-key", (raw) => setSortKey(raw as SortKey));
+  useSharedStorage("vaultexplorer:sort-dir", (raw) => setSortDir(Number(raw) === -1 ? -1 : 1));
   const selection = useSelection();
   const { selected, setSelected, lastClicked, setLastClicked, selectOnly, toggle, selectRange: selectRangeByNames } =
     selection;
@@ -784,9 +895,22 @@ function Explorer({ home }: { home: string }) {
   // range (set once when a shift-arrow sequence begins), `arrowFocusRef`
   // is the end that moves with each press -- same anchor+focus model
   // shift-click already uses, just driven by keys instead of a click.
-  // Any plain click resets both, so the next shift-arrow starts fresh.
+  //
+  // The mouse has to hand both ends over, because a shift-arrow almost
+  // always *continues* a selection the mouse started. These used to be
+  // reset to null on every click instead: after shift-clicking A..C, the
+  // next Shift+Down had no focus to move from, fell back to the anchor
+  // (A), stepped one down and replaced the whole selection with A..B --
+  // the range collapsed to two items and restarted from the top rather
+  // than growing by one. See `rememberClickAnchor`.
   const arrowAnchorRef = useRef<string | null>(null);
   const arrowFocusRef = useRef<string | null>(null);
+  // What was selected *outside* the anchor..focus range when that range
+  // began -- e.g. the earlier ctrl-clicked items. Shift+Arrow re-selects
+  // base + range on every press, so extending the range never throws away
+  // the rest of a multi-selection (it used to replace the whole selection
+  // with just the range).
+  const arrowBaseRef = useRef<Set<string>>(new Set());
   const [view, setView] = useState<View>("icon");
   // Icon-grid column count, computed from the live content width instead of
   // CSS `auto-fill`. auto-fill floors the column count and leaves any
@@ -795,7 +919,19 @@ function Explorer({ home }: { home: string }) {
   // lets the tracks stretch to fill, so a window that "looks like it has
   // room for one more column" actually gets it. 0 = not measured yet.
   const [gridCols, setGridCols] = useState(0);
-  const [clipboard, setClipboard] = useState<Clipboard>(null);
+  const [clipboard, setClipboardLocal] = useState<Clipboard>(null);
+  // Cut/copy is shared by every window: a folder copied in one window has
+  // to be pasteable in whichever window the user switches to. Copying from
+  // an external drive and pasting in a second window did nothing at all
+  // before this -- the other window's `clipboard` was still null, and
+  // Paste with an empty clipboard is silently a no-op, so there wasn't
+  // even an error to explain it. Wrapping the setter rather than touching
+  // each call site means every copy, cut and clear travels automatically.
+  const setClipboard = useCallback((next: Clipboard) => {
+    setClipboardLocal(next);
+    broadcast("clipboard", next);
+  }, []);
+  useBroadcast<Clipboard>("clipboard", setClipboardLocal);
   // Whether the *system* clipboard is holding an image right now, which is
   // what enables Paste with nothing cut/copied in-app. Polled on focus
   // rather than continuously: the clipboard only realistically changes
@@ -811,6 +947,12 @@ function Explorer({ home }: { home: string }) {
   const [searchExpanded, setSearchExpanded] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchResults, setSearchResults] = useState<string[] | null>(null);
+  // The query the shown results belong to (the box may already hold a
+  // newer one that's still running), whether that search is still going,
+  // and whether it stopped at the result cap.
+  const [searchShownQuery, setSearchShownQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchTruncated, setSearchTruncated] = useState(false);
   // Highlighted hit in the results list. Search rows are ordinary rows now
   // (click selects, double-click opens), but they live outside `curDir`, so
   // they can't use the folder's own `selected` name set.
@@ -842,8 +984,9 @@ function Explorer({ home }: { home: string }) {
     return new Set();
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:text-editor-exts", JSON.stringify([...textEditorExts]));
+    writeShared("vaultexplorer:text-editor-exts", JSON.stringify([...textEditorExts]));
   }, [textEditorExts]);
+  useSharedStorage("vaultexplorer:text-editor-exts", (raw) => setTextEditorExts(new Set(JSON.parse(raw))));
   function setExtOpensInEditor(ext: string, on: boolean) {
     const key = ext.toLowerCase();
     if (!key) return;
@@ -991,8 +1134,9 @@ function Explorer({ home }: { home: string }) {
     return {};
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:custom-icons", JSON.stringify(customIcons));
+    writeShared("vaultexplorer:custom-icons", JSON.stringify(customIcons));
   }, [customIcons]);
+  useSharedStorage("vaultexplorer:custom-icons", (raw) => setCustomIcons(JSON.parse(raw)));
 
   // "Use as Template" stashes a copy of the file under templatesDir() and
   // keeps only this small metadata list client-side -- the stash means
@@ -1007,8 +1151,9 @@ function Explorer({ home }: { home: string }) {
     return [];
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:templates", JSON.stringify(templates));
+    writeShared("vaultexplorer:templates", JSON.stringify(templates));
   }, [templates]);
+  useSharedStorage("vaultexplorer:templates", (raw) => setTemplates(JSON.parse(raw)));
 
   const [manageTemplatesOpen, setManageTemplatesOpen] = useState(false);
 
@@ -1042,7 +1187,7 @@ function Explorer({ home }: { home: string }) {
   const [errorCopied, setErrorCopied] = useState(false);
   async function copyError() {
     try {
-      await navigator.clipboard.writeText(error);
+      await copyText(error);
       setErrorCopied(true);
       setTimeout(() => setErrorCopied(false), 1200);
     } catch {
@@ -1129,12 +1274,25 @@ function Explorer({ home }: { home: string }) {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const applyReveal = ({ path, select }: { path: string; select: string | null }) => {
-      go({ kind: "fs", path });
+      const here = locRef.current;
+      const already = here.kind === "fs" && here.path === path;
       pendingRevealSelectRef.current = select ? { dir: path, name: select } : null;
+      go({ kind: "fs", path });
+      // Already in that folder (the backend picked this window *because*
+      // it shows it): `go` to the same path doesn't reload the listing,
+      // and the file being revealed -- a screenshot taken a second ago --
+      // may not be in it yet. Reload, and the reveal is applied as it lands.
+      if (already) refreshRef.current?.();
     };
-    listen<{ path: string; select: string | null }>("show-in-folder", (event) =>
-      applyReveal(event.payload)
-    )
+    // This window's own events only: the backend now targets one window
+    // (see filemanager1::reveal) instead of moving every open window.
+    getCurrentWebviewWindow()
+      .listen<{ path: string; select: string | null }>("show-in-folder", (event) => {
+        // It's also parked for a window that hasn't mounted yet; this one
+        // handled it, so the next new window mustn't replay it.
+        api.takePendingReveal().catch(() => {});
+        applyReveal(event.payload);
+      })
       .then((fn) => {
         unlisten = fn;
       })
@@ -1261,11 +1419,13 @@ function Explorer({ home }: { home: string }) {
     return {};
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:view-default", JSON.stringify(defaultViewPrefs));
+    writeShared("vaultexplorer:view-default", JSON.stringify(defaultViewPrefs));
   }, [defaultViewPrefs]);
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:view-pins", JSON.stringify(pinnedViewPrefs));
+    writeShared("vaultexplorer:view-pins", JSON.stringify(pinnedViewPrefs));
   }, [pinnedViewPrefs]);
+  useSharedStorage("vaultexplorer:view-default", (raw) => setDefaultViewPrefs(JSON.parse(raw)));
+  useSharedStorage("vaultexplorer:view-pins", (raw) => setPinnedViewPrefs(JSON.parse(raw)));
   const viewPrefsRef = useRef({ def: defaultViewPrefs, pinned: pinnedViewPrefs });
   useEffect(() => {
     viewPrefsRef.current = { def: defaultViewPrefs, pinned: pinnedViewPrefs };
@@ -1447,6 +1607,7 @@ function Explorer({ home }: { home: string }) {
         selectOnly(target);
         arrowAnchorRef.current = target;
         arrowFocusRef.current = target;
+        arrowBaseRef.current = new Set();
         // The preview column follows the keyboard the same way it follows a
         // click; a folder isn't previewed (it opens as its own column).
         const targetEntry = sortedEntries.find((x) => x.name === target);
@@ -1481,6 +1642,7 @@ function Explorer({ home }: { home: string }) {
         selectOnly(target);
         arrowAnchorRef.current = target;
         arrowFocusRef.current = target;
+        arrowBaseRef.current = new Set();
         return;
       }
       if (
@@ -1500,6 +1662,10 @@ function Explorer({ home }: { home: string }) {
             lastClicked && names.includes(lastClicked)
               ? lastClicked
               : [...selected].find((n) => names.includes(n)) ?? names[0];
+          arrowFocusRef.current = arrowAnchorRef.current;
+          const base = new Set(selected);
+          base.delete(arrowAnchorRef.current);
+          arrowBaseRef.current = base;
         }
         const currentFocus =
           arrowFocusRef.current && names.includes(arrowFocusRef.current) ? arrowFocusRef.current : arrowAnchorRef.current;
@@ -1509,7 +1675,8 @@ function Explorer({ home }: { home: string }) {
         const anchorIdx = names.indexOf(arrowAnchorRef.current);
         const targetIdx = names.indexOf(target);
         const [lo, hi] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
-        setSelected(new Set(names.slice(lo, hi + 1)));
+        const base = [...arrowBaseRef.current].filter((n) => names.includes(n));
+        setSelected(new Set([...base, ...names.slice(lo, hi + 1)]));
         setLastClicked(target);
         return;
       }
@@ -1584,40 +1751,49 @@ function Explorer({ home }: { home: string }) {
     [appSettings.showHiddenFiles]
   );
 
+  // Filesystem hits arrive with their metadata (search.rs); only vault
+  // hits, which come as bare paths, still need their parent folders
+  // listed -- each folder once per search, not once per streamed batch.
+  const searchListedDirsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (searchResults === null || searchResults.length === 0) {
-      setSearchEntries({});
+      searchListedDirsRef.current = new Set();
+      if (searchResults === null) setSearchEntries({});
       return;
     }
+    const byDir = new Map<string, string[]>();
+    for (const p of searchResults) {
+      if (searchEntries[p]) continue;
+      const dir = parentPath(p);
+      if (searchListedDirsRef.current.has(dir)) continue;
+      const names = byDir.get(dir);
+      if (names) names.push(baseName(p));
+      else byDir.set(dir, [baseName(p)]);
+    }
+    if (byDir.size === 0) return;
+    for (const dir of byDir.keys()) searchListedDirsRef.current.add(dir);
     let cancelled = false;
     (async () => {
-      const byDir = new Map<string, string[]>();
-      for (const p of searchResults) {
-        const dir = parentPath(p);
-        const names = byDir.get(dir);
-        if (names) names.push(baseName(p));
-        else byDir.set(dir, [baseName(p)]);
-      }
-      const resolved: Record<string, Entry> = {};
       for (const [dir, names] of byDir) {
         try {
           const list = await listDir(dir, loc.kind);
           if (cancelled) return;
           const wanted = new Set(names);
+          const resolved: Record<string, Entry> = {};
           for (const en of list) {
             if (wanted.has(en.name)) resolved[joinPath(dir, en.name)] = en;
           }
+          // Published per folder so a long list fills in progressively.
+          setSearchEntries((prev) => ({ ...prev, ...resolved }));
         } catch {
           /* unreadable folder -- those rows keep the fallback icon */
         }
-        // Publish as each folder lands so a long result list fills in
-        // progressively instead of staying iconless until the last listing.
-        if (!cancelled) setSearchEntries({ ...resolved });
       }
     })();
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchResults, loc.kind, listDir]);
 
   const refresh = useCallback(async () => {
@@ -1670,6 +1846,15 @@ function Explorer({ home }: { home: string }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  // Tells the backend which folder this window shows, so an outside "Show
+  // in Files" for a file in it reuses this window instead of opening yet
+  // another one (filemanager1::reveal).
+  useEffect(() => {
+    if (mobile) return;
+    api.reportWindowLocation(loc.kind === "fs" ? loc.path : null).catch(() => {});
+  }, [loc, mobile]);
 
   // Pull-to-refresh: only starts tracking a drag when the list is already
   // scrolled to the very top (scrollTop <= 0) -- otherwise this is just a
@@ -1750,8 +1935,7 @@ function Explorer({ home }: { home: string }) {
   // writing to it) instead of waiting for the 20s poll above -- that poll
   // stays as a safety net for setups where the underlying watch mechanism
   // doesn't work (some network mounts). Only one folder is ever watched
-  // (whatever's currently browsed); vault browsing doesn't need this since
-  // nothing writes into a vault's encrypted storage except this app.
+  // (whatever's currently browsed).
   const curDirRef = useRef(curDir);
   curDirRef.current = curDir;
   useEffect(() => {
@@ -1772,6 +1956,30 @@ function Explorer({ home }: { home: string }) {
     api.fsWatchSet(loc.kind === "fs" ? curDir : null).catch(() => {});
   }, [loc.kind, curDir]);
 
+  // A vault file handed to an external app (see activate()'s
+  // vaultDecryptToTemp hand-off, used precisely because a sandboxed app
+  // can't see the FUSE mount) genuinely can get edited and saved out
+  // there. Desktop's watcher behind that hand-off re-encrypts the save
+  // back into the vault and fires this, so the listing -- and, via
+  // `entry.mtime`, the preview pane -- catches up without a manual refresh.
+  const locRef = useRef(loc);
+  locRef.current = loc;
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<{ root: string; dir: string }>("vault-changed", (event) => {
+      const l = locRef.current;
+      if (l.kind === "vault" && l.root === event.payload.root && l.rel === event.payload.dir) refresh();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [refresh]);
+
   // ---- navigation (handles crossing the fs/vault boundary) ----
   function commitLoc(target: Loc, push: boolean) {
     if (push) {
@@ -1786,6 +1994,8 @@ function Explorer({ home }: { home: string }) {
     // Invalidate any search still in flight before clearing -- otherwise it
     // lands after this and repaints the old results over the new folder.
     searchRunRef.current++;
+    api.searchCancel().catch(() => {});
+    setSearching(false);
     setSearchResults(null);
     setSearchSelected(null);
     setSearchQuery("");
@@ -2110,23 +2320,44 @@ function Explorer({ home }: { home: string }) {
       renameClickTimer.current = null;
     }
   }
+  // Hands the mouse's two range ends to Shift+Arrow, so a key press picks
+  // up where the click left off instead of starting over.
+  //
+  // `extending` is a shift-click: the fixed end stays wherever the range
+  // already started (`selectRange` deliberately leaves `lastClicked`
+  // alone precisely so repeated shift-clicks pivot around it), and the
+  // item just clicked becomes the moving end. Any other click -- plain or
+  // ctrl/cmd-toggle -- is both ends at once: it is a brand new anchor.
+  //
+  // `toggling` is a ctrl/cmd-click: everything else that stays selected
+  // becomes the base a later Shift+Arrow range is added to, instead of
+  // being dropped by it.
+  function rememberClickAnchor(name: string, extending: boolean, toggling = false) {
+    arrowAnchorRef.current = extending ? lastClicked ?? name : name;
+    arrowFocusRef.current = name;
+    const base = toggling ? new Set(selected) : new Set<string>();
+    base.delete(name);
+    arrowBaseRef.current = base;
+  }
+
   function onEntryClick(e: React.MouseEvent, entry: Entry) {
     e.stopPropagation();
-    arrowAnchorRef.current = null;
-    arrowFocusRef.current = null;
     if (e.metaKey || e.ctrlKey) {
       cancelPendingRenameClick();
       toggle(entry.name);
+      rememberClickAnchor(entry.name, false, true);
       return;
     }
     if (e.shiftKey) {
       cancelPendingRenameClick();
       selectRange(entry.name);
+      rememberClickAnchor(entry.name, true);
       return;
     }
     const wasSoleSelected = selected.size === 1 && selected.has(entry.name);
     cancelPendingRenameClick();
     selectOnly(entry.name);
+    rememberClickAnchor(entry.name, false);
     if (wasSoleSelected) {
       renameClickTimer.current = setTimeout(() => {
         renameClickTimer.current = null;
@@ -2156,8 +2387,9 @@ function Explorer({ home }: { home: string }) {
     return Number.isFinite(saved) && saved >= LIST_PANE_MIN ? saved : LIST_PANE_DEFAULT;
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:list-pane-width", String(listPaneWidth));
+    writeShared("vaultexplorer:list-pane-width", String(listPaneWidth));
   }, [listPaneWidth]);
+  useSharedStorage("vaultexplorer:list-pane-width", (raw) => setListPaneWidth(Number(raw)));
   const [draggingSplit, setDraggingSplit] = useState(false);
   const splitDragRef = useRef<{ startX: number; startWidth: number; max: number } | null>(null);
   function onSplitMouseDown(e: React.MouseEvent) {
@@ -2241,6 +2473,9 @@ function Explorer({ home }: { home: string }) {
   }
 
   // ---- marquee ----
+  // What the in-progress rubber band currently covers, so mouseup can turn
+  // it into a Shift+Arrow anchor without re-running the hit test.
+  const lastMarqueeHit = useRef<Set<string>>(new Set());
   function onContentMouseDown(e: React.MouseEvent) {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest(".entry")) return;
@@ -2253,6 +2488,10 @@ function Explorer({ home }: { home: string }) {
     if ((e.target as HTMLElement).closest(".preview-pane, .preview-column")) return;
     if (view === "column") return;
     if (!(e.metaKey || e.ctrlKey || e.shiftKey)) setSelected(new Set());
+    // Cleared per drag: a click on empty space that never moves still ends
+    // in `up`, and a leftover hit set from the previous drag would revive
+    // anchors for entries this click just deselected.
+    lastMarqueeHit.current = new Set();
     setMarquee({ x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY });
   }
   useEffect(() => {
@@ -2280,8 +2519,22 @@ function Explorer({ home }: { home: string }) {
         if (name && r.left < right && r.right > left && r.top < bottom && r.bottom > top) hit.add(name);
       }
       setSelected(hit);
+      lastMarqueeHit.current = hit;
     };
-    const up = () => setMarquee(null);
+    const up = () => {
+      setMarquee(null);
+      // Hand the rubber band's two ends to Shift+Arrow the same way a
+      // click does. Without this the refs still held whatever the last
+      // click set, so a Shift+Down after a drag extended from an entry
+      // the drag never touched. Ordered by the view's own sort, not by
+      // the direction the mouse happened to travel, so the anchor is the
+      // top of the band and the focus its bottom.
+      const names = sortedEntries.map((en) => en.name);
+      const inBand = names.filter((n) => lastMarqueeHit.current.has(n));
+      arrowAnchorRef.current = inBand[0] ?? null;
+      arrowFocusRef.current = inBand[inBand.length - 1] ?? null;
+      arrowBaseRef.current = new Set();
+    };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
     return () => {
@@ -2518,9 +2771,14 @@ function Explorer({ home }: { home: string }) {
             return;
           }
           try {
-            // No FUSE mount on Android -- open a throwaway decrypted copy
-            // instead of the in-place virtual-filesystem path desktop uses.
-            const abs = mobile ? await api.vaultDecryptToTemp(full) : await api.openPath(full);
+            // The OS opener's default app for this file might be a
+            // sandboxed one (a snap or flatpak -- VLC among them), which
+            // can't see the FUSE mountpoint (it lives outside $HOME, the
+            // one interface such an app is normally granted). A throwaway
+            // decrypted copy under $HOME works everywhere; on desktop
+            // `vault_decrypt_to_temp` also watches it and writes an edit
+            // saved out there back into the vault.
+            const abs = await api.vaultDecryptToTemp(full);
             await osOpen(abs);
           } catch (e) {
             setError(String(e));
@@ -2578,23 +2836,56 @@ function Explorer({ home }: { home: string }) {
     }
   }
 
-  async function runSearch(q: string) {
+  // Streams hits in as the backend finds them (search.rs) instead of
+  // waiting for the whole walk: the first matches show within ~100ms even
+  // when the tree is huge, and starting a newer search -- every debounced
+  // keystroke does -- stops the older one in the backend rather than
+  // letting it run on behind it.
+  function runSearch(q: string) {
     const run = ++searchRunRef.current;
     if (q.trim() === "") {
+      api.searchCancel().catch(() => {});
+      setSearching(false);
       setSearchResults(null);
       return;
     }
-    try {
-      const hits = inVault ? await api.search(q) : await api.fsSearch(loc.path, q);
-      // Dropped if anything happened since this query was fired (a newer
-      // query, or a navigation -- commitLoc bumps the same counter).
+    const channel = new Channel<SearchBatch>();
+    let acc: string[] = [];
+    let first = true;
+    setSearching(true);
+    channel.onmessage = (batch) => {
       if (run !== searchRunRef.current) return;
-      setSearchResults(hits);
-      setSearchSelected(null);
-    } catch (e) {
+      const known: Record<string, Entry> = {};
+      for (const h of batch.hits) {
+        if (h.has_meta)
+          known[h.path] = { name: h.name, is_dir: h.is_dir, is_vault: h.is_vault, size: h.size, mtime: h.mtime };
+      }
+      acc = acc.concat(batch.hits.map((h) => h.path));
+      // The previous query's results stay up until this one has something
+      // to show (or is done with nothing) -- no flash of an empty list on
+      // every keystroke.
+      if (batch.hits.length || batch.done || !first) {
+        if (first) {
+          setSearchSelected(null);
+          setSearchShownQuery(q);
+          searchListedDirsRef.current = new Set();
+          setSearchEntries(known);
+          first = false;
+        } else if (Object.keys(known).length) {
+          setSearchEntries((prev) => ({ ...prev, ...known }));
+        }
+        setSearchResults(acc);
+      }
+      if (batch.done) {
+        setSearching(false);
+        setSearchTruncated(batch.truncated);
+      }
+    };
+    api.searchStart(inVault ? "vault" : "fs", loc.kind === "fs" ? loc.path : "", q, channel).catch((e) => {
       if (run !== searchRunRef.current) return;
+      setSearching(false);
       setError(String(e));
-    }
+    });
   }
 
   // Opening a hit is exactly `activate`, the same call an ordinary row
@@ -2624,10 +2915,16 @@ function Explorer({ home }: { home: string }) {
 
   // Live search-as-you-type, debounced so we don't fire a query per
   // keystroke.
+  // The debounce itself lives in SearchField (only the settled query ever
+  // reaches this component), so this runs at once.
   useEffect(() => {
-    if (searchQuery.trim() === "") return;
-    const t = setTimeout(() => runSearch(searchQuery), 250);
-    return () => clearTimeout(t);
+    if (searchQuery.trim() === "") {
+      searchRunRef.current++;
+      api.searchCancel().catch(() => {});
+      setSearching(false);
+      return;
+    }
+    runSearch(searchQuery);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery, curDir, inVault]);
 
@@ -2728,9 +3025,13 @@ function Explorer({ home }: { home: string }) {
     }
     // Cut/copy across the vault boundary -- clipboard.kind is whichever
     // space the files were cut/copied *from*, loc.kind is where they're
-    // now being pasted. Files only (not folders): importFile/exportFile
-    // are both single-file encrypt/decrypt, not recursive.
+    // now being pasted. import_file/export_file each recurse for a folder,
+    // same as a same-space paste would.
     if (clipboard.kind !== loc.kind) {
+      // Per item, not one try around the whole loop: a folder that hits a
+      // permission error (or anything else mid-tree) used to throw out of
+      // the loop and silently drop every item still queued behind it.
+      const failed: string[] = [];
       try {
         if (clipboard.kind === "vault" && clipboard.root) {
           // Same "active vault tracks navigation, not clipboard" issue as
@@ -2739,16 +3040,21 @@ function Explorer({ home }: { home: string }) {
         }
         for (const src of clipboard.paths) {
           const dest = joinPath(curDir, baseName(src));
-          if (clipboard.kind === "fs" && inVault) {
-            await api.importFile(src, dest);
-            if (clipboard.mode === "cut") await api.fsDelete(src);
-          } else if (clipboard.kind === "vault" && !inVault) {
-            await api.exportFile(src, dest);
-            if (clipboard.mode === "cut") await api.deleteFile(src);
+          try {
+            if (clipboard.kind === "fs" && inVault) {
+              await api.importFile(src, dest);
+              if (clipboard.mode === "cut") await api.fsDelete(src);
+            } else if (clipboard.kind === "vault" && !inVault) {
+              await api.exportFile(src, dest);
+              if (clipboard.mode === "cut") await api.deleteFile(src);
+            }
+          } catch {
+            failed.push(baseName(src));
           }
         }
         setClipboard(null);
         refresh();
+        if (failed.length) setError(`Couldn't paste: ${failed.join(", ")}`);
       } catch (e) {
         setError(String(e));
       }
@@ -2769,7 +3075,7 @@ function Explorer({ home }: { home: string }) {
         }
         if (clipboard.mode === "copy") {
           inVault
-            ? await api.copyEntry(src, dest)
+            ? await api.copyEntry(src, dest, beginProgress(`Copying "${name}"`))
             : await api.fsCopy(src, dest, beginProgress(`Copying "${name}"`));
         } else {
           inVault ? await api.moveEntry(src, dest) : await api.fsRename(src, dest);
@@ -3085,7 +3391,7 @@ function Explorer({ home }: { home: string }) {
 
   async function exportConfigToClipboard() {
     try {
-      await navigator.clipboard.writeText(buildConfigExportBlob());
+      await copyText(buildConfigExportBlob());
       setInfoMsg("Config copied to clipboard");
     } catch (e) {
       setError(String(e));
@@ -3131,7 +3437,10 @@ function Explorer({ home }: { home: string }) {
         if (remappedValue !== value) remapped++;
         value = remappedValue;
       }
-      localStorage.setItem(key, value);
+      // Shared, not a plain setItem: only *this* window reloads below, so
+      // the other windows would otherwise keep the settings they had and
+      // write them back over the import on their next change.
+      writeShared(key, value);
     }
     // Every setting above is read once at mount (`useState(() => ...
     // localStorage...)`) -- reapplying all of it live would mean
@@ -3153,7 +3462,7 @@ function Explorer({ home }: { home: string }) {
         : `${entry.name} copy`;
     try {
       inVault
-        ? await api.copyEntry(src, joinPath(curDir, copyName))
+        ? await api.copyEntry(src, joinPath(curDir, copyName), beginProgress(`Copying "${entry.name}"`))
         : await api.fsCopy(src, joinPath(curDir, copyName), beginProgress(`Copying "${entry.name}"`));
       refresh();
     } catch (e) {
@@ -3166,10 +3475,11 @@ function Explorer({ home }: { home: string }) {
   // the usual HTML5 one -- HTML5's own `dataTransfer` never carries real
   // file bytes another process could read, so without this, dropping
   // onto an external app (a browser tab, another native app) silently
-  // does nothing no matter what's in `dataTransfer`. Vault entries are
-  // deliberately excluded: their plaintext only ever exists decrypted in
-  // memory, and there's no decrypted-on-disk file path to hand another
-  // process anyway.
+  // does nothing no matter what's in `dataTransfer`. Vault entries on
+  // desktop get the same native drag, resolved through the FUSE mount
+  // (api.openPath, same call activate() uses to open a vault file) --
+  // there's a real on-disk path there. Mobile has no FUSE mount, so vault
+  // entries there fall back to the in-webview HTML5 drag, same as before.
   function beginDrag(e: React.DragEvent, entry: Entry) {
     const names = selected.has(entry.name) && selected.size ? [...selected] : [entry.name];
     if (!selected.has(entry.name)) selectOnly(entry.name);
@@ -3186,6 +3496,13 @@ function Explorer({ home }: { home: string }) {
       // coming back" and routes it the same way `onDrop` used to.
       e.preventDefault();
       api.startFileDrag(dragPaths.current, buildDragImage(entry, names.length)).catch(() => {});
+      return;
+    }
+    if (!mobile) {
+      e.preventDefault();
+      Promise.all(dragPaths.current.map((p) => api.openPath(p)))
+        .then((absPaths) => api.startFileDrag(absPaths, buildDragImage(entry, names.length)))
+        .catch(() => {});
       return;
     }
     e.dataTransfer.effectAllowed = "move";
@@ -3664,11 +3981,19 @@ function Explorer({ home }: { home: string }) {
   // app" is the reference here).
   // `p` is a vault-relative path in a vault, an absolute one outside.
   function buildOpenWithItem(p: string): MenuItem {
+    // "Open With" hands the file to some OTHER app, possibly a sandboxed
+    // one (a snap or flatpak) that can't see the FUSE mountpoint -- same
+    // fix as the default-open path in activate(). Listing candidates only
+    // needs a path with the right extension (the FUSE path already has
+    // that), so that lookup still goes through api.openPath; only the
+    // actual launch resolves a real, watched-for-writeback temp copy, and
+    // only once an app is actually picked, not on every menu open.
+    const launchPath = () => (inVault ? api.vaultDecryptToTemp(p) : Promise.resolve(p));
     const otherItem = {
       label: "Other Application…",
       onClick: async () => {
         try {
-          setOpenWithTarget(inVault ? await api.openPath(p) : p);
+          setOpenWithTarget(await launchPath());
         } catch (e) {
           setError(String(e));
         }
@@ -3679,15 +4004,19 @@ function Explorer({ home }: { home: string }) {
       label: "Open With…",
       loadItems: async () => {
         try {
-          const abs = inVault ? await api.openPath(p) : p;
-          const apps = await api.listAppsForPath(abs);
+          const mimePath = inVault ? await api.openPath(p) : p;
+          const apps = await api.listAppsForPath(mimePath);
           const appItems: MenuItem[] =
             apps.length === 0
               ? [{ label: "No registered apps", disabled: true, onClick: () => {} }]
               : apps.map((a) => ({
                   label: a.is_default ? `${a.name} (Default)` : a.name,
-                  onClick: () => {
-                    api.openWith(abs, a.id).catch((e) => setError(String(e)));
+                  onClick: async () => {
+                    try {
+                      await api.openWith(await launchPath(), a.id);
+                    } catch (e) {
+                      setError(String(e));
+                    }
                   },
                 }));
           return [...appItems, { type: "separator" }, otherItem];
@@ -3784,7 +4113,8 @@ function Explorer({ home }: { home: string }) {
         label: "Copy Absolute Path",
         onClick: async () => {
           try {
-            await navigator.clipboard.writeText(abs);
+            await copyText(abs);
+            setInfoMsg("Path copied");
           } catch (err) {
             setError(String(err));
           }
@@ -4357,7 +4687,7 @@ function Explorer({ home }: { home: string }) {
         type: "submenu",
         label: "Sort By",
         items: sortOptions.map((opt) => ({
-          label: `${opt.label}${sortKey === opt.key ? " ✓" : ""}`,
+          label: `${opt.label}${sortKey === opt.key ? (sortDir === 1 ? " ✓ ▲" : " ✓ ▼") : ""}`,
           onClick: () => toggleSort(opt.key),
         })),
       });
@@ -4566,26 +4896,27 @@ function Explorer({ home }: { home: string }) {
   function renderListBody() {
     return (
       <div className={`entries-wrap ${entryView}`}>
-        {/* Sort arrow points the way the values run *down* the list: A→Z (and
-            oldest→newest, smallest→largest) is ▼, since reading downward is
-            reading forward through the order. It was ▲ for ascending, which
-            read as "the list runs upward" -- backwards from what you see. */}
+        {/* ▲ = ascending (A→Z, oldest→newest, smallest→largest), ▼ =
+            descending: the convention of Finder, Explorer and Nautilus, and
+            what people read the arrow as. It had been flipped to ▼ for
+            ascending ("the values grow downward"), and that read as the
+            arrow pointing opposite to the actual order. */}
         {(view === "list" || view === "listPreview") && entries.length > 0 && (
           <div className={`list-header ${view === "listPreview" ? "compact" : ""}`}>
             <span className="lh-spacer" />
             <span className={`lh-name ${sortKey === "name" ? "on" : ""}`} onClick={() => toggleSort("name")}>
-              Name {sortKey === "name" && (sortDir === 1 ? "▼" : "▲")}
+              Name {sortKey === "name" && sortArrow()}
             </span>
             {view !== "listPreview" && (
               <>
                 <span className={`lh-date ${sortKey === "date" ? "on" : ""}`} onClick={() => toggleSort("date")}>
-                  Date Modified {sortKey === "date" && (sortDir === 1 ? "▼" : "▲")}
+                  Date Modified {sortKey === "date" && sortArrow()}
                 </span>
                 <span className={`lh-size ${sortKey === "size" ? "on" : ""}`} onClick={() => toggleSort("size")}>
-                  Size {sortKey === "size" && (sortDir === 1 ? "▼" : "▲")}
+                  Size {sortKey === "size" && sortArrow()}
                 </span>
                 <span className={`lh-kind ${sortKey === "kind" ? "on" : ""}`} onClick={() => toggleSort("kind")}>
-                  Type {sortKey === "kind" && (sortDir === 1 ? "▼" : "▲")}
+                  Type {sortKey === "kind" && sortArrow()}
                 </span>
               </>
             )}
@@ -4696,11 +5027,18 @@ function Explorer({ home }: { home: string }) {
     );
   }
 
-  function toggleSort(key: typeof sortKey) {
+  function sortArrow() {
+    return (
+      <span className="sort-arrow" title={sortDir === 1 ? "Ascending" : "Descending"}>
+        {sortDir === 1 ? "▲" : "▼"}
+      </span>
+    );
+  }
+  function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === 1 ? -1 : 1));
     else {
       setSortKey(key);
-      setSortDir(1);
+      setSortDir(SORT_DEFAULT_DIR[key]);
     }
   }
 
@@ -4722,7 +5060,7 @@ function Explorer({ home }: { home: string }) {
   }
   async function copyPath() {
     try {
-      await navigator.clipboard.writeText(fullPath);
+      await copyText(fullPath);
       setPathCopied(true);
       setTimeout(() => setPathCopied(false), 1200);
     } catch (e) {
@@ -4736,7 +5074,8 @@ function Explorer({ home }: { home: string }) {
       return inVault && loc.kind === "vault" ? joinPath(loc.root, rel) : rel;
     });
     try {
-      await navigator.clipboard.writeText(paths.join("\n"));
+      await copyText(paths.join("\n"));
+      setInfoMsg(paths.length === 1 ? "Path copied" : `${paths.length} paths copied`);
     } catch (e) {
       setError(String(e));
     }
@@ -5198,36 +5537,22 @@ function Explorer({ home }: { home: string }) {
             </button>
           )}
           {searchExpanded || searchQuery ? (
-            <div className="search-field">
-              <SearchGlyph />
-              <input
-                ref={searchInputRef}
-                autoFocus
-                placeholder={inVault ? "Search in vault" : "Search this folder"}
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  if (e.target.value.trim() === "") setSearchResults(null);
-                }}
-                onKeyDown={(e) => e.key === "Enter" && runSearch(searchQuery)}
-                onBlur={() => {
-                  if (searchQuery.trim() === "") setSearchExpanded(false);
-                }}
-              />
-              {searchQuery && (
-                <button
-                  className="search-clear"
-                  aria-label="Clear search"
-                  onClick={() => {
-                    setSearchQuery("");
-                    setSearchResults(null);
-                    setSearchExpanded(false);
-                  }}
-                >
-                  ✕
-                </button>
-              )}
-            </div>
+            <SearchField
+              value={searchQuery}
+              inputRef={searchInputRef}
+              placeholder={inVault ? "Search in vault" : "Search this folder"}
+              onCommit={(q) => {
+                setSearchQuery(q);
+                if (q.trim() === "") setSearchResults(null);
+              }}
+              onSubmit={(q) => runSearch(q)}
+              onEmptyBlur={() => setSearchExpanded(false)}
+              onClear={() => {
+                setSearchQuery("");
+                setSearchResults(null);
+                setSearchExpanded(false);
+              }}
+            />
           ) : (
             // Trigger moved to the bottom tab bar on mobile -- the expanded
             // field above still renders there when `searchExpanded` is set
@@ -5320,7 +5645,9 @@ function Explorer({ home }: { home: string }) {
             />
           ) : searchResults !== null ? (
             <SearchResults
-              query={searchQuery}
+              query={searchShownQuery || searchQuery}
+              searching={searching}
+              truncated={searchTruncated}
               results={searchResults}
               entries={searchEntries}
               inVault={inVault}
@@ -5368,6 +5695,14 @@ function Explorer({ home }: { home: string }) {
                   if (ev.ctrlKey || ev.metaKey) toggle(entry.name);
                   else if (ev.shiftKey) selectRange(entry.name);
                   else selectOnly(entry.name);
+                  // Column view is in the Shift+Arrow handler's view list
+                  // too, so its clicks owe the keyboard the same anchor
+                  // the icon/list views hand over.
+                  rememberClickAnchor(
+                    entry.name,
+                    ev.shiftKey && !ev.ctrlKey && !ev.metaKey,
+                    ev.ctrlKey || ev.metaKey
+                  );
                 })
               }
               cutPaths={clipboard?.mode === "cut" && clipboard.kind === loc.kind ? clipboard.paths : undefined}

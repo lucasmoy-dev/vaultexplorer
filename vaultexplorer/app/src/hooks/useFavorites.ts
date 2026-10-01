@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, baseName, joinPath, parentPath } from "../api";
 import { DEFAULT_START_KEY, PHONE_STORAGE_PATH } from "../constants";
+import { writeShared, useSharedStorage } from "../sharedState";
 
 // Favorites-sidebar state: the pinned path list itself, its persisted tag
 // colors, the pinned-files-sort-first set, and the configurable "opens on
@@ -28,8 +29,13 @@ export function useFavorites(home: string, mobile: boolean) {
     ];
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:favorites", JSON.stringify(favPaths));
+    writeShared("vaultexplorer:favorites", JSON.stringify(favPaths));
   }, [favPaths]);
+  // The sidebar is the same sidebar in every window. Without this, adding
+  // a favorite in one window left the others showing the old list, and the
+  // next change made in one of *those* wrote its stale list back over the
+  // new favorite -- losing it with no sign anything had happened.
+  useSharedStorage("vaultexplorer:favorites", (raw) => setFavPaths(JSON.parse(raw)));
   // The desktop defaults above are real folders on a normal Linux $HOME,
   // but on Android there's no /usr/share/applications and no
   // ~/Pictures/Downloads/Desktop -- Android sandboxes each app to its own
@@ -84,9 +90,10 @@ export function useFavorites(home: string, mobile: boolean) {
   );
   function setDefaultStartPath(path: string | null) {
     setDefaultStartPathState(path);
-    if (path) localStorage.setItem(DEFAULT_START_KEY, path);
+    if (path) writeShared(DEFAULT_START_KEY, path);
     else localStorage.removeItem(DEFAULT_START_KEY);
   }
+  useSharedStorage(DEFAULT_START_KEY, (raw) => setDefaultStartPathState(raw));
 
   // Pinned files/folders (full path, works across both fs and vault
   // locations) always sort first within whatever folder they're in.
@@ -100,8 +107,9 @@ export function useFavorites(home: string, mobile: boolean) {
     return new Set();
   });
   useEffect(() => {
-    localStorage.setItem("vaultexplorer:pinned", JSON.stringify([...pinnedPaths]));
+    writeShared("vaultexplorer:pinned", JSON.stringify([...pinnedPaths]));
   }, [pinnedPaths]);
+  useSharedStorage("vaultexplorer:pinned", (raw) => setPinnedPaths(new Set(JSON.parse(raw))));
   function togglePin(path: string) {
     setPinnedPaths((prev) => {
       const next = new Set(prev);

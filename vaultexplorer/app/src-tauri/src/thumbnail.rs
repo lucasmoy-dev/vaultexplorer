@@ -215,8 +215,64 @@ fn make_thumbnail(bytes: &[u8], max_size: u32) -> Result<Vec<u8>, String> {
     if let Some(jpeg) = thumbnail_from_exif(bytes, max_size) {
         return Ok(jpeg);
     }
-    let img = image::load_from_memory(bytes).str_err()?;
+    let img = decode_scaled(bytes, max_size)?;
     encode_thumbnail(&img, max_size)
+}
+
+/// The EXIF orientation (1-8) of a JPEG, read from its APP1 block only --
+/// `bytes` may be just the head of the file.
+fn jpeg_orientation(bytes: &[u8]) -> Option<image::metadata::Orientation> {
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(bytes))
+        .ok()?;
+    let field = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?;
+    let value = field.value.get_uint(0)?;
+    image::metadata::Orientation::from_exif(value as u8)
+}
+
+/// Decode an image at (roughly) the size a thumbnail needs, not the size
+/// it was shot at.
+///
+/// A JPEG is decoded in the DCT domain at 1/2, 1/4 or 1/8 scale, whichever
+/// still covers `target` px: a 24MP photo then costs ~1MB of pixels and
+/// ~40ms instead of ~72MB and ~110ms (measured on this machine), and the
+/// 72MB-per-photo spike was what made a folder of photos swap. Anything
+/// else -- or a JPEG flavour `jpeg-decoder` refuses (CMYK, 16-bit) -- falls
+/// back to the full decode. Orientation is applied either way, so a phone
+/// photo shot in portrait isn't shown lying on its side.
+fn decode_scaled(bytes: &[u8], target: u32) -> Result<image::DynamicImage, String> {
+    let is_jpeg = bytes.starts_with(&[0xFF, 0xD8]);
+    let mut img = None;
+    if is_jpeg {
+        let mut dec = jpeg_decoder::Decoder::new(std::io::Cursor::new(bytes));
+        let scaled = dec.read_info().ok().and_then(|_| {
+            let t = target.min(u16::MAX as u32) as u16;
+            dec.scale(t, t).ok()?;
+            let pixels = dec.decode().ok()?;
+            let info = dec.info()?;
+            let (w, h) = (info.width as u32, info.height as u32);
+            match info.pixel_format {
+                jpeg_decoder::PixelFormat::RGB24 => {
+                    image::RgbImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageRgb8)
+                }
+                jpeg_decoder::PixelFormat::L8 => {
+                    image::GrayImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageLuma8)
+                }
+                _ => None,
+            }
+        });
+        img = scaled;
+    }
+    let mut img = match img {
+        Some(img) => img,
+        None => image::load_from_memory(bytes).str_err()?,
+    };
+    if is_jpeg {
+        if let Some(o) = jpeg_orientation(bytes) {
+            img.apply_orientation(o);
+        }
+    }
+    Ok(img)
 }
 
 fn to_data_uri(jpeg_bytes: &[u8]) -> String {
@@ -410,7 +466,242 @@ pub fn thumbnail_for_pdf(app: &tauri::AppHandle, path: &str, max_size: u32) -> R
     pdf_page_image(app, path, 1, max_size)
 }
 
+// ---- shared-cache thumbnails (thumbcache.rs) ----
+
+/// Why a render didn't produce a picture. Only `Permanent` is remembered
+/// as a failure: a missing ffmpeg or a render that ran out of time can
+/// succeed later and must not be written off for good.
+enum RenderError {
+    Permanent(String),
+    Transient(String),
+}
+
+fn is_video_ext(ext: &str) -> bool {
+    matches!(ext, "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "3gp" | "mts" | "m2ts" | "wmv" | "flv" | "mpg" | "mpeg" | "ts" | "ogv")
+}
+
+fn lower_ext(path: &Path) -> String {
+    path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()
+}
+
+/// Fit within `px` x `px`, never upscaling.
+fn shrink(img: image::DynamicImage, px: u32) -> image::DynamicImage {
+    if img.width() > px || img.height() > px {
+        img.thumbnail(px, px)
+    } else {
+        img
+    }
+}
+
+/// The first `n` bytes of a file (fewer if it is shorter).
+fn read_head(path: &Path, n: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = Vec::with_capacity(n.min(1 << 20));
+    f.by_ref().take(n as u64).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// Run a thumbnailer process, collecting stdout, killed after `timeout`.
+/// `Ok(None)` means it timed out. A single pathological video (a broken
+/// index, a network mount that stalls) must not hold a render slot -- and
+/// with it every tile queued behind it -- forever.
+fn run_with_timeout(mut cmd: Command, timeout: std::time::Duration) -> std::io::Result<Option<(bool, Vec<u8>)>> {
+    use std::io::Read;
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = cmd.spawn()?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        out
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Ok(None);
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(15)),
+        }
+    };
+    let out = reader.join().unwrap_or_default();
+    Ok(Some((status.success(), out)))
+}
+
+const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// One frame of a video, scaled by ffmpeg itself to fit `px` and handed
+/// back over a pipe (no temp file). `-ss` before `-i` is an input seek: the
+/// demuxer jumps to the keyframe before 1s instead of decoding everything
+/// up to it, which is what keeps a 4K HEVC file at well under a second.
+fn render_video(path: &Path, px: u32) -> Result<image::DynamicImage, RenderError> {
+    let grab = |seek: &str| -> Result<Option<Vec<u8>>, RenderError> {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", seek, "-i"])
+            .arg(path)
+            .args(["-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1", "-vf"])
+            .arg(format!("scale={px}:{px}:force_original_aspect_ratio=decrease"))
+            .args(["-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "3", "-"]);
+        match run_with_timeout(cmd, TOOL_TIMEOUT) {
+            Err(e) => Err(RenderError::Transient(format!("ffmpeg: {e}"))),
+            Ok(None) => Err(RenderError::Transient("ffmpeg timed out".into())),
+            Ok(Some((_, out))) if out.starts_with(&[0xFF, 0xD8]) => Ok(Some(out)),
+            Ok(Some(_)) => Ok(None),
+        }
+    };
+    // 1s in skips the black first frame most clips open on; a clip shorter
+    // than that has nothing there, so it falls back to the very first frame.
+    let jpeg = match grab("1")? {
+        Some(j) => j,
+        None => grab("0")?.ok_or_else(|| RenderError::Permanent("could not extract a video frame".into()))?,
+    };
+    image::load_from_memory(&jpeg).map_err(|e| RenderError::Permanent(e.to_string()))
+}
+
+/// Page 1 of a PDF, rasterized by poppler straight at the size asked for.
+fn render_pdf(path: &Path, px: u32) -> Result<image::DynamicImage, RenderError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let prefix = std::env::temp_dir().join(format!(
+        "vaultexplorer-pcover-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut cmd = Command::new("pdftoppm");
+    cmd.args(["-jpeg", "-singlefile", "-f", "1", "-l", "1", "-scale-to", &px.to_string()])
+        .arg(path)
+        .arg(&prefix);
+    let out = prefix.with_extension("jpg");
+    let result = match run_with_timeout(cmd, TOOL_TIMEOUT) {
+        Err(e) => Err(RenderError::Transient(format!("pdftoppm: {e}"))),
+        Ok(None) => Err(RenderError::Transient("pdftoppm timed out".into())),
+        Ok(Some(_)) => match std::fs::read(&out) {
+            Ok(bytes) => image::load_from_memory(&bytes).map_err(|e| RenderError::Permanent(e.to_string())),
+            Err(_) => Err(RenderError::Permanent("pdftoppm produced no page image".into())),
+        },
+    };
+    let _ = std::fs::remove_file(&out);
+    result
+}
+
+/// An image file at `px`. Returns whether the result really is `px`-sized
+/// (false only when a camera's embedded preview, big enough for the
+/// `min_px` actually displayed but smaller than the size class, was used).
+fn render_image(path: &Path, px: u32, min_px: u32) -> Result<(image::DynamicImage, bool), RenderError> {
+    const HEAD: usize = 512 * 1024;
+    let head = read_head(path, HEAD).map_err(|e| RenderError::Transient(e.to_string()))?;
+    // A camera/phone photo carries a ready-made preview in its EXIF block:
+    // using it means reading only the first few KB of a 10MB file and
+    // decoding a 160-512px JPEG instead of the photo.
+    if let Some(peek) = peek_jpeg(&head) {
+        if let Some(thumb) = peek.exif_thumb.as_deref().and_then(|b| image::load_from_memory(b).ok()) {
+            let (tw, th) = (thumb.width(), thumb.height());
+            let full_aspect = peek.width as f32 / peek.height as f32;
+            let aspect_ok = tw > 0 && th > 0 && ((tw as f32 / th as f32) - full_aspect).abs() <= full_aspect * 0.03;
+            if aspect_ok && tw.max(th) >= min_px {
+                let mut img = thumb;
+                if let Some(o) = jpeg_orientation(&head) {
+                    img.apply_orientation(o);
+                }
+                let full = tw.max(th) >= px || peek.width.max(peek.height) <= tw.max(th);
+                return Ok((shrink(img, px), full));
+            }
+        }
+    }
+    let bytes = if head.len() < HEAD {
+        head
+    } else {
+        std::fs::read(path).map_err(|e| RenderError::Transient(e.to_string()))?
+    };
+    let img = decode_scaled(&bytes, px).map_err(RenderError::Permanent)?;
+    Ok((shrink(img, px), true))
+}
+
+/// Render and store a thumbnail of the real file `path` for a display of
+/// `max_size` px, returning the cached PNG's path. Re-checks the cache
+/// first: two tiles (or two windows) can ask for the same file at once.
+pub fn fs_thumb_file(path: &str, max_size: u32) -> Result<String, String> {
+    use crate::thumbcache::{self, Lookup, BUCKETS};
+    let p = Path::new(path);
+    let b = thumbcache::bucket_for(max_size).ok_or("size too large for the shared cache")?;
+    let st = thumbcache::stamp(p).ok_or("can't read the file")?;
+    match thumbcache::lookup_with(&st, b) {
+        Lookup::Hit(hit) => return Ok(hit.to_string_lossy().into_owned()),
+        Lookup::Failed => return Err("no thumbnail for this file".into()),
+        Lookup::Miss => {}
+    }
+    let px = BUCKETS[b].1;
+    let ext = lower_ext(p);
+    let rendered = if is_video_ext(&ext) {
+        render_video(p, px).map(|img| (img, true))
+    } else if ext == "pdf" {
+        render_pdf(p, px).map(|img| (img, true))
+    } else {
+        render_image(p, px, max_size.min(px))
+    };
+    match rendered {
+        Ok((img, full)) => thumbcache::store(&st, b, &img, full).map(|p| p.to_string_lossy().into_owned()),
+        Err(RenderError::Permanent(e)) => {
+            thumbcache::store_failure(&st);
+            Err(e)
+        }
+        Err(RenderError::Transient(e)) => Err(e),
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct ThumbLookup {
+    /// The cached PNG to show, if there is a fresh one.
+    path: Option<String>,
+    /// True when this exact file version is already known not to render.
+    failed: bool,
+}
+
 // ---- Tauri commands ----
+
+/// Batch cache check for a whole screenful of tiles in one IPC round trip.
+/// This is what makes an already-thumbnailed folder (by this app *or* by
+/// Nautilus & co.) paint at once: a hit costs a stat and reading a PNG
+/// header, and never waits in the render queue behind a video.
+#[tauri::command]
+pub async fn thumb_lookup(paths: Vec<String>, max_size: u32) -> Vec<ThumbLookup> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if std::env::var_os("VX_THUMB_DEBUG").is_some() {
+            eprintln!("thumb_lookup {} paths", paths.len());
+        }
+        paths
+            .iter()
+            .map(|p| match crate::thumbcache::lookup(Path::new(p), max_size) {
+                crate::thumbcache::Lookup::Hit(hit) => ThumbLookup { path: Some(hit.to_string_lossy().into_owned()), failed: false },
+                crate::thumbcache::Lookup::Failed => ThumbLookup { path: None, failed: true },
+                crate::thumbcache::Lookup::Miss => ThumbLookup { path: None, failed: false },
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Render one thumbnail into the shared cache and return its path (the
+/// frontend shows it through the asset protocol -- no base64 over IPC).
+#[tauri::command]
+pub async fn fs_thumb(path: String, max_size: u32) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = std::time::Instant::now();
+        let r = fs_thumb_file(&path, max_size);
+        if std::env::var_os("VX_THUMB_DEBUG").is_some() {
+            eprintln!("fs_thumb {path} -> {:?} in {:?}", r.as_ref().map(|_| "ok"), t.elapsed());
+        }
+        r
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
 /// A small base64 JPEG data URI for a real image file, cached on disk by
 /// path+mtime. `async` + `spawn_blocking` so the decode/resize/ffmpeg work
@@ -447,10 +738,17 @@ pub async fn vault_thumbnail(
     rel_path: String,
     max_size: u32,
 ) -> Result<String, String> {
-    let bytes = crate::with_vault(&state, |v| v.decrypt_file(&rel_path))?;
-    tauri::async_runtime::spawn_blocking(move || thumbnail_for_bytes(&bytes, max_size))
-        .await
-        .map_err(|e| e.to_string())?
+    // Decrypted on the blocking pool from a clone of the vault handle, not
+    // inside `with_vault`: that holds the vault map's lock for the whole
+    // decrypt, so a screenful of photos used to serialize every other vault
+    // command (listing, opening, the next thumbnail) behind each one.
+    let vault = crate::active_vault(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = vault.decrypt_file(&rel_path).str_err()?;
+        thumbnail_for_bytes(&bytes, max_size)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// One rasterized page of a real on-disk PDF, for the preview pane's
@@ -578,5 +876,135 @@ mod tests {
         assert!(thumbnail_from_exif(&plain, 64).is_none());
         // Not a JPEG at all: the fast path must not claim it.
         assert!(thumbnail_from_exif(b"\x89PNG\r\n\x1a\n and then some", 64).is_none());
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// The 0.3.0 pipeline, verbatim in behaviour: whole-file read, EXIF
+    /// preview if big enough, else a full-resolution decode; ffmpeg to a
+    /// temp 480px JPEG for videos. Kept here only to measure against.
+    fn old_image(path: &str, max_size: u32) -> Result<Vec<u8>, String> {
+        let bytes = std::fs::read(path).str_err()?;
+        if let Some(jpeg) = thumbnail_from_exif(&bytes, max_size) {
+            return Ok(jpeg);
+        }
+        let img = image::load_from_memory(&bytes).str_err()?;
+        encode_thumbnail(&img, max_size)
+    }
+    fn old_video(path: &str, max_size: u32, n: usize) -> Result<Vec<u8>, String> {
+        let frame = std::env::temp_dir().join(format!("vx-bench-old-{}-{n}.jpg", std::process::id()));
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-ss", "00:00:01", "-i", path, "-frames:v", "1", "-vf", "scale=480:-1"])
+            .arg(&frame)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return Err("ffmpeg".into());
+        }
+        let bytes = std::fs::read(&frame).str_err()?;
+        let _ = std::fs::remove_file(&frame);
+        let img = image::load_from_memory(&bytes).str_err()?;
+        encode_thumbnail(&img, max_size)
+    }
+
+    fn files() -> Vec<String> {
+        let dir = std::env::var("VX_BENCH_DIR").expect("set VX_BENCH_DIR");
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn run_parallel(files: &[String], threads: usize, f: &(dyn Fn(usize, &str) -> bool + Sync)) -> (std::time::Duration, usize) {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let ok = std::sync::atomic::AtomicUsize::new(0);
+        let t = std::time::Instant::now();
+        std::thread::scope(|s| {
+            for _ in 0..threads {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= files.len() {
+                        break;
+                    }
+                    if f(i, &files[i]) {
+                        ok.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        (t.elapsed(), ok.into_inner())
+    }
+
+    /// `VX_BENCH_DIR=... cargo test --release --lib bench_folder -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_folder() {
+        let files = files();
+        let is_video = |p: &str| is_video_ext(&lower_ext(Path::new(p)));
+        let cache = std::env::temp_dir().join(format!("vx-bench-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        std::env::set_var("XDG_CACHE_HOME", &cache);
+        // Old: 6 in flight (0.3.0's MAX_INFLIGHT on this machine), one queue.
+        let (old_t, old_ok) = run_parallel(&files, 6, &|i, p| {
+            if is_video(p) { old_video(p, 160, i).is_ok() } else { old_image(p, 160).is_ok() }
+        });
+        eprintln!("OLD  {} files: {} ok in {:?}", files.len(), old_ok, old_t);
+        // New, cold cache: same total width split into lanes.
+        let (images, videos): (Vec<String>, Vec<String>) = files.iter().cloned().partition(|p| !is_video(p));
+        let t = std::time::Instant::now();
+        let (ri, rv) = std::thread::scope(|s| {
+            let a = s.spawn(|| run_parallel(&images, 8, &|_, p| fs_thumb_file(p, 160).is_ok()));
+            let b = s.spawn(|| run_parallel(&videos, 3, &|_, p| fs_thumb_file(p, 160).is_ok()));
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        eprintln!(
+            "NEW cold {} files: {} ok in {:?} (images {:?}, videos {:?})",
+            files.len(), ri.1 + rv.1, t.elapsed(), ri.0, rv.0
+        );
+        // New, warm: the batch lookup a revisit does.
+        let t = std::time::Instant::now();
+        let hits = files.iter().filter(|p| matches!(crate::thumbcache::lookup(Path::new(p.as_str()), 160), crate::thumbcache::Lookup::Hit(_))).count();
+        eprintln!("NEW warm lookup {} files: {} hits in {:?}", files.len(), hits, t.elapsed());
+        std::env::remove_var("XDG_CACHE_HOME");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// Vault photos: 0.3.0 decrypted under the vault map's lock and decoded
+    /// at full size; now the decrypt runs outside the lock and the decode is
+    /// scaled. `VX_BENCH_DIR` supplies the photos (first 48 .jpg).
+    #[test]
+    #[ignore]
+    fn bench_vault() {
+        let photos: Vec<String> = files().into_iter().filter(|p| p.ends_with(".jpg")).take(48).collect();
+        let root = std::env::temp_dir().join(format!("vx-bench-vault-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let vault = vaultcore::Vault::create(&root, b"pw").unwrap();
+        for (i, p) in photos.iter().enumerate() {
+            vault.write_file(format!("p{i}.jpg"), &std::fs::read(p).unwrap()).unwrap();
+        }
+        let names: Vec<String> = (0..photos.len()).map(|i| format!("p{i}.jpg")).collect();
+        let lock = std::sync::Mutex::new(vault.clone());
+        let (old_t, old_ok) = run_parallel(&names, 6, &|_, n| {
+            let bytes = { let v = lock.lock().unwrap(); v.decrypt_file(n).unwrap() };
+            let img = image::load_from_memory(&bytes).unwrap();
+            encode_thumbnail(&img, 160).is_ok()
+        });
+        eprintln!("OLD vault {} photos: {} ok in {:?}", names.len(), old_ok, old_t);
+        let (new_t, new_ok) = run_parallel(&names, 8, &|_, n| {
+            let v = vault.clone();
+            let bytes = v.decrypt_file(n).unwrap();
+            thumbnail_for_bytes(&bytes, 160).is_ok()
+        });
+        eprintln!("NEW vault {} photos: {} ok in {:?}", names.len(), new_ok, new_t);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

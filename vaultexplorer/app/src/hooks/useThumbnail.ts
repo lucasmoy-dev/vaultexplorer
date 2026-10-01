@@ -1,24 +1,31 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Entry, api } from "../api";
 import { kindOf } from "../icons";
+import { Job, Lane, enqueue, lookupThumb, observeVisibility, thumbUrl } from "./thumbQueue";
 
-// Fires off fs_thumbnail/vault_thumbnail for image-kind entries and
-// returns the resolved data-URI (or null while loading/not an image/on
-// error, in which case callers fall back to the generic FileIcon glyph).
-// `elRef`, when given, gates the actual thumbnail request behind the
-// element scrolling into view -- a folder with a few hundred images used
-// to fire that many concurrent decode/ffmpeg thumbnail requests the
-// instant it opened, all at once, regardless of how many tiles were
-// actually visible. Callers that always show exactly one thing (the
-// column-view preview pane) skip a ref and load eagerly.
+// Returns a thumbnail URL for `entry` (or null while loading / not
+// thumbnailable / on error, in which case callers show the generic
+// FileIcon glyph).
+//
+// `elRef`, when given, ties the work to the element's visibility: nothing
+// happens until it comes within the prefetch margin, it renders ahead of
+// off-screen tiles while it is actually on screen, and a render still
+// queued when it scrolls back out of the margin is dropped. Callers that
+// always show exactly one thing (the preview pane) skip the ref and load
+// eagerly. See thumbQueue.ts for the queue itself.
+//
+// Real files at up to 1024px go through the shared freedesktop cache
+// (thumbcache.rs): a hit is a PNG path the webview loads directly, so a
+// folder that this app -- or Nautilus -- has seen before paints at once.
+// Vault files never touch disk (see thumbnail.rs) and keep the in-memory
+// data-URI path, as do sizes past the cache's largest class.
 
-// Module-level, cross-component cache of resolved thumbnails, keyed by
-// path+mtime+size (same key the Rust disk cache uses). Survives tile
-// unmount/remount and folder navigation, so scrolling back to an
-// already-seen folder is instant with no IPC round-trip at all. Bounded so
-// it can't grow without limit over a long session.
+// Module-level, cross-component cache of resolved thumbnail URLs, keyed by
+// path+mtime+size. Survives tile unmount/remount and folder navigation, so
+// going back to an already-seen folder needs no IPC at all. Bounded so it
+// can't grow without limit over a long session.
 const memCache = new Map<string, string>();
-const MEM_CACHE_MAX = 1500;
+const MEM_CACHE_MAX = 3000;
 function cacheGet(key: string): string | undefined {
   return memCache.get(key);
 }
@@ -35,37 +42,12 @@ function cacheSet(key: string, uri: string) {
   memCache.set(key, uri);
 }
 
-// Client-side concurrency cap: even though the Rust side now decodes on a
-// blocking threadpool, firing hundreds of `invoke`s at once still floods
-// the IPC channel and the pool. A small semaphore keeps only a handful in
-// flight; the rest queue and drain as slots free.
-//
-// Tied to the core count rather than a flat 10, because the cost of a slot
-// isn't the IPC -- it's the decode behind it. An image with no usable
-// embedded preview has to be rasterized in full to be shrunk (a 24MP photo
-// is ~100MB of pixels), so ten at once meant a multi-hundred-megabyte
-// spike and a machine swapping instead of drawing thumbnails. Fewer, at
-// the width the CPU can actually work on, finishes the same folder without
-// the stall.
-const MAX_INFLIGHT = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
-let inflight = 0;
-const waiters: Array<() => void> = [];
-function acquire(): Promise<void> {
-  if (inflight < MAX_INFLIGHT) {
-    inflight++;
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => waiters.push(resolve));
-}
-function release() {
-  const next = waiters.shift();
-  if (next) {
-    // hand the slot straight to the next waiter (inflight stays the same)
-    next();
-  } else {
-    inflight--;
-  }
-}
+// Android keeps its thumbnails in the app's own cache dir through the
+// data-URI path; the freedesktop cache is a desktop-Linux convention.
+const SHARED_CACHE_OK = !/Android/i.test(navigator.userAgent);
+const SHARED_CACHE_MAX = 1024;
+
+type Vis = { near: boolean; inView: boolean; order: number };
 
 export function useThumbnail(
   entry: Entry,
@@ -79,33 +61,40 @@ export function useThumbnail(
   // path (see thumbnail.rs), so either kind inside a vault just keeps the
   // generic icon.
   const thumbable = kind === "image" || ((kind === "video" || kind === "pdf") && !inVault);
+  const shared = thumbable && !inVault && maxSize <= SHARED_CACHE_MAX && SHARED_CACHE_OK;
+  const lane: Lane = kind === "image" ? "fast" : "slow";
   const cacheKey = `${inVault ? "v" : "f"}|${fullPath}|${entry.mtime}|${maxSize}`;
   // Seed initial state straight from the cache so an already-resolved
   // thumbnail paints on first render with no flicker-to-null.
-  const [thumb, setThumb] = useState<string | null>(() =>
-    thumbable ? cacheGet(cacheKey) ?? null : null
+  const [thumb, setThumb] = useState<string | null>(() => (thumbable ? cacheGet(cacheKey) ?? null : null));
+  const [vis, setVis] = useState<Vis>(() =>
+    elRef ? { near: false, inView: false, order: 0 } : { near: true, inView: true, order: 0 }
   );
-  const [visible, setVisible] = useState(!elRef);
+  const visRef = useRef(vis);
+  const jobRef = useRef<Job | null>(null);
 
   useEffect(() => {
-    if (!elRef || visible) return;
+    if (!elRef) return;
     const el = elRef.current;
     if (!el) return;
-    // A generous prefetch margin -- thumbnails should already be decoded
-    // by the time a tile scrolls into view, not start decoding right as
-    // it crosses the viewport edge (visible pop-in while scrolling).
-    const obs = new IntersectionObserver(
-      (obsEntries) => {
-        if (obsEntries.some((e) => e.isIntersecting)) setVisible(true);
-      },
-      { rootMargin: "900px" }
+    return observeVisibility(el, (near, inView, order) =>
+      setVis((v) => (v.near === near && v.inView === inView ? v : { near, inView, order }))
     );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [elRef, visible]);
+  }, [elRef]);
+
+  // Re-prioritize a queued render in place when the tile scrolls on or
+  // off screen, without restarting it.
+  useEffect(() => {
+    visRef.current = vis;
+    const job = jobRef.current;
+    if (job) {
+      job.inView = vis.inView;
+      job.order = vis.order;
+    }
+  }, [vis]);
 
   useEffect(() => {
-    if (!thumbable || !visible) {
+    if (!thumbable) {
       setThumb(null);
       return;
     }
@@ -114,32 +103,79 @@ export function useThumbnail(
       setThumb(hit);
       return;
     }
+    // A new key with nothing cached: don't keep showing the previous
+    // file's (or previous version's) picture while this one loads.
     setThumb(null);
+    if (!vis.near) return;
+
     let cancelled = false;
-    // Every acquire() is paired with exactly one release(): either the
-    // early "cancelled before the slot was granted" branch, or the
-    // request's finally. The cleanup only flips `cancelled` -- it must not
-    // release, or a slot granted later (or the finally) would double-free.
-    acquire().then(() => {
-      if (cancelled) {
-        release();
-        return;
-      }
-      const req = inVault ? api.vaultThumbnail(fullPath, maxSize) : api.fsThumbnail(fullPath, maxSize);
-      req
-        .then((uri) => {
-          cacheSet(cacheKey, uri);
-          if (!cancelled) setThumb(uri);
-        })
-        .catch(() => {
-          /* fall back to the generic icon */
-        })
-        .finally(release);
-    });
+    let dequeue: (() => void) | null = null;
+    const done = (uri: string) => {
+      cacheSet(cacheKey, uri);
+      if (!cancelled) setThumb(uri);
+    };
+    const queueRender = (render: () => Promise<string>) => {
+      if (cancelled) return;
+      const job: Job = {
+        lane,
+        inView: visRef.current.inView,
+        order: visRef.current.order,
+        run: async () => {
+          if (cancelled) return;
+          try {
+            done(await render());
+          } catch {
+            /* fall back to the generic icon */
+          }
+        },
+      };
+      jobRef.current = job;
+      dequeue = enqueue(job);
+    };
+
+    // A cached PNG is shown only once the webview has actually loaded and
+    // decoded it (off the main thread): no half-painted tile, and a file
+    // the asset protocol refuses falls back to the icon instead of
+    // showing a broken-image glyph forever.
+    const showFile = (url: string) => {
+      const img = new Image();
+      img.src = url;
+      return img.decode().then(() => done(url));
+    };
+    if (shared) {
+      lookupThumb(fullPath, maxSize).then((r) => {
+        if (cancelled) return;
+        if (r.path) {
+          showFile(thumbUrl(r.path, entry.mtime)).catch(() => {});
+          return;
+        }
+        if (r.failed) return;
+        queueRender(async () => {
+          try {
+            const url = thumbUrl(await api.fsThumb(fullPath, maxSize), entry.mtime);
+            const img = new Image();
+            img.src = url;
+            await img.decode();
+            return url;
+          } catch (e) {
+            // A cache dir that can't be written (read-only $HOME, a full
+            // disk) shouldn't cost the user their thumbnails: the
+            // in-memory path still works. Images only -- for a video the
+            // second attempt would just re-run the same failing ffmpeg.
+            if (kind !== "image") throw e;
+            return api.fsThumbnail(fullPath, maxSize);
+          }
+        });
+      });
+    } else {
+      queueRender(() => (inVault ? api.vaultThumbnail(fullPath, maxSize) : api.fsThumbnail(fullPath, maxSize)));
+    }
     return () => {
       cancelled = true;
+      dequeue?.();
+      jobRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thumbable, visible, cacheKey]);
+  }, [thumbable, cacheKey, vis.near]);
   return thumb;
 }

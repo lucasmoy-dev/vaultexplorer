@@ -58,6 +58,8 @@ function SearchRow({
 
 export function SearchResults({
   query,
+  searching,
+  truncated,
   results,
   entries,
   inVault,
@@ -68,6 +70,9 @@ export function SearchResults({
   onMenu,
 }: {
   query: string;
+  // Still streaming in (search.rs), and whether it stopped at the cap.
+  searching?: boolean;
+  truncated?: boolean;
   results: string[];
   // Real entries by path, filled in asynchronously by the caller. A row
   // whose entry hasn't landed yet falls back to a name-only stand-in, which
@@ -85,7 +90,11 @@ export function SearchResults({
     <div className="search-results">
       <div className="search-header">
         <span>
-          {results.length} {results.length === 1 ? "result" : "results"} for “{query}”
+          {searching && results.length === 0
+            ? `Searching for “${query}”…`
+            : `${truncated ? "First " : ""}${results.length} ${results.length === 1 ? "result" : "results"} for “${query}”${
+                searching ? " — still searching…" : ""
+              }`}
         </span>
       </div>
       <ul>

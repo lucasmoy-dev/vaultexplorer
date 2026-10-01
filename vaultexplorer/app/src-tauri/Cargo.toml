@@ -1,6 +1,6 @@
 [package]
 name = "vaultexplorer"
-version = "0.3.0"
+version = "0.3.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -46,6 +46,14 @@ mp3lame-encoder = "0.2"
 libc = "0.2.186"
 argon2 = "0.5.3"
 kamadak-exif = "0.6.1"
+# Thumbnails: DCT-domain downscaled JPEG decode (a 24MP photo decoded at
+# 1/8 scale is ~1MB of pixels instead of ~72MB, and ~3x faster), and the
+# freedesktop thumbnail cache's naming (md5 of the file URI) + PNG text
+# chunks (Thumb::URI / Thumb::MTime) -- see thumbnail.rs. `png` is the same
+# version `image` already links.
+jpeg-decoder = { version = "0.3", default-features = false }
+md-5 = "0.10"
+png = "0.18"
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-deep-link = "2.4.9"
@@ -80,6 +88,10 @@ tauri-plugin-drag = "2"
 # Cargo.lock) -- pinning it as a direct dep just gives app_icon.rs a name
 # to `use gtk::...` under, not a second GTK copy.
 gtk = "0.18.2"
+# The X11 window id behind a GTK window, so a "Show in Files" from another
+# app can raise the window through _NET_ACTIVE_WINDOW (see raise.rs). Same
+# version tauri's runtime already links.
+gdkx11 = "0.18.2"
 # Reading the geometry of *another* app's window (portal.rs: which monitor
 # the app that asked for the file picker is on). GDK can't do that without
 # the gdk-x11 backend crate; this is the same pure-Rust X client the

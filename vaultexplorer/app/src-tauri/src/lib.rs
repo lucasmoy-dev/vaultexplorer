@@ -26,6 +26,8 @@ mod fs_watch_stub;
 #[cfg(not(desktop))]
 use fs_watch_stub as fs_watch;
 mod info;
+#[cfg(desktop)]
+mod open_scratch;
 mod largefiles;
 mod machine;
 mod metadata;
@@ -40,6 +42,10 @@ mod share;
 mod shred;
 mod terminal;
 mod mediaserver;
+#[cfg(desktop)]
+mod raise;
+mod search;
+mod thumbcache;
 mod thumbnail;
 
 use errmap::{LockExt, ToStringErr};
@@ -225,6 +231,36 @@ pub(crate) fn with_vault<T>(
     f(&session.vault).str_err()
 }
 
+/// A handle on the active vault that doesn't hold the vault map's lock --
+/// for slow work (decrypting a whole photo for a thumbnail, a search that
+/// decrypts every text file) that would otherwise stall every other vault
+/// command behind it for as long as it runs. `Vault` clones share the
+/// engine and the sensitive-files session, so nothing is duplicated.
+pub(crate) fn active_vault(state: &State<AppState>) -> Result<Vault, String> {
+    let root = state.active.lock_safe().clone().ok_or("no vault unlocked")?;
+    let map = state.vaults.lock_safe();
+    map.get(&root)
+        .map(|session| session.vault.clone())
+        .ok_or_else(|| "no vault unlocked".to_string())
+}
+
+/// Like `with_vault`, but for a specific root rather than whichever vault
+/// navigation last made "active" -- for a caller (the temp-file writeback
+/// watcher in `open_scratch`) that resolved its root once, up front, and
+/// must keep targeting that same vault even if the user has since
+/// navigated elsewhere. Errs the same way `with_vault` does when the root
+/// isn't unlocked (or no longer is, e.g. the vault got locked meanwhile).
+#[cfg(desktop)]
+pub(crate) fn with_vault_at<T>(
+    state: &State<AppState>,
+    root: &str,
+    f: impl FnOnce(&Vault) -> vaultcore::Result<T>,
+) -> Result<T, String> {
+    let map = state.vaults.lock_safe();
+    let session = map.get(root).ok_or("vault is locked")?;
+    f(&session.vault).str_err()
+}
+
 #[tauri::command]
 fn vault_exists(path: String) -> bool {
     vaultcore::vault_exists(path)
@@ -367,9 +403,21 @@ fn move_entry(state: State<AppState>, src: String, dest: String) -> Result<(), S
     with_vault(&state, |v| v.move_path(&src, &dest))
 }
 
+/// A copy inside a vault is a decrypt + re-encrypt per file, not the
+/// metadata-only rename `move_entry` gets away with -- reporting progress
+/// (like `fs_copy` already does) is what keeps a folder-sized copy from
+/// reading as the app having hung.
 #[tauri::command]
-fn copy_entry(state: State<AppState>, src: String, dest: String) -> Result<(), String> {
-    with_vault(&state, |v| v.copy_path(&src, &dest))
+fn copy_entry(state: State<AppState>, src: String, dest: String, channel: Channel<ProgressEvent>) -> Result<(), String> {
+    let total = with_vault(&state, |v| v.count_files(&src))?.max(1);
+    let reporter = ProgressReporter::new(channel, total);
+    let done = std::sync::atomic::AtomicU64::new(0);
+    with_vault(&state, |v| {
+        v.copy_path_with_progress(&src, &dest, &|| {
+            let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            reporter.report(n);
+        })
+    })
 }
 
 /// Copy a file between two *different* unlocked vaults directly (decrypt
@@ -435,18 +483,27 @@ fn new_file(state: State<AppState>, rel_path: String) -> Result<(), String> {
     with_vault(&state, |v| v.write_file(&rel_path, b""))
 }
 
+/// Import a real file or folder into the vault, for cut/copy+paste across
+/// the fs->vault boundary. A folder recurses (`encrypt_dir_at`); a plain
+/// file goes through the single-file `encrypt_file` as before.
 #[tauri::command]
 fn import_file(state: State<AppState>, src_path: String, dest_rel: String) -> Result<(), String> {
+    if Path::new(&src_path).is_dir() {
+        return with_vault(&state, |v| v.encrypt_dir_at(&src_path, &dest_rel));
+    }
     with_vault(&state, |v| v.encrypt_file(&src_path, &dest_rel))
 }
 
-/// The other direction of `import_file` -- decrypts a vault file out to a
-/// real filesystem path, for cut/copy+paste across the vault boundary
-/// (files only; a folder needs Encrypt.../Decrypt... from the context
-/// menu instead of plain paste, since that's a recursive operation this
-/// single-file command doesn't attempt).
+/// The other direction of `import_file` -- decrypts a vault file or folder
+/// out to a real filesystem path, for cut/copy+paste across the vault
+/// boundary. A folder recurses (`decrypt_dir`); a plain file is decrypted
+/// and written out directly as before.
 #[tauri::command]
 fn export_file(state: State<AppState>, rel_path: String, dest_fs_path: String) -> Result<(), String> {
+    let is_dir = with_vault(&state, |v| v.stat(&rel_path))?.is_dir;
+    if is_dir {
+        return with_vault(&state, |v| v.decrypt_dir(&rel_path, Path::new(&dest_fs_path)));
+    }
     let bytes = with_vault(&state, |v| v.decrypt_file(&rel_path))?;
     std::fs::write(&dest_fs_path, bytes).str_err()
 }
@@ -723,28 +780,27 @@ fn fs_encrypt_file(path: String, password: String) -> Result<String, String> {
     Ok(dest.to_string_lossy().to_string())
 }
 
-/// Where a decrypted-for-the-OS-opener file gets scratched to. On desktop
-/// this is `std::env::temp_dir()` (tmpfs on this app's other RAM-backed
-/// scratch dirs, see the FUSE mountpoint doc comment below) -- unchanged
-/// from before. On Android, `temp_dir()` (both the std one and Tauri's own
-/// `path().temp_dir()`, which just wraps it) resolves to `/tmp`, which
-/// doesn't exist in the app's sandboxed filesystem view: `create_dir_all`
-/// fails outright, so this whole decrypt-and-open flow was silently broken
-/// there. `app_cache_dir()` is the one path Android actually grants this app
-/// write access to *and* the one already declared as shareable in
-/// `file_paths.xml`'s `cache-path` entry -- required for the OS opener to
-/// receive a `content://` URI for it at all (a raw path outside that list
-/// is not grantable via `FileProvider`).
+/// Where a decrypted-for-the-OS-opener file gets scratched to.
+///
+/// Used to be `std::env::temp_dir()` on desktop (tmpfs, like this app's
+/// other RAM-backed scratch dirs -- see the FUSE mountpoint doc comment
+/// below), but that's `/run`/`/tmp`, outside the one interface
+/// ("home") almost every sandboxed app (a snap or flatpak -- VLC among
+/// them) is actually granted: handing such an app a path under there
+/// fails as if the file didn't exist, even though it's a perfectly real
+/// path for this process. `app_cache_dir()` resolves under `$HOME`
+/// (`~/.cache/<bundle id>`), which is inside that same "home" interface,
+/// at the cost of the plaintext briefly touching a real disk instead of
+/// RAM -- see `open_scratch::sweep_stale` for how that window is kept
+/// short. On Android, `temp_dir()` resolves to `/tmp`, which doesn't
+/// exist in the app's sandboxed filesystem view at all (`create_dir_all`
+/// fails outright); `app_cache_dir()` is the one path Android actually
+/// grants this app write access to *and* the one already declared as
+/// shareable in `file_paths.xml`'s `cache-path` entry -- required for the
+/// OS opener to receive a `content://` URI for it at all (a raw path
+/// outside that list is not grantable via `FileProvider`).
 fn scratch_open_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    #[cfg(mobile)]
-    {
-        Ok(app.path().app_cache_dir().str_err()?.join(format!("open-{}", std::process::id())))
-    }
-    #[cfg(not(mobile))]
-    {
-        let _ = app;
-        Ok(std::env::temp_dir().join(format!("vaultexplorer-open-{}", std::process::id())))
-    }
+    Ok(app.path().app_cache_dir().str_err()?.join(format!("open-{}", std::process::id())))
 }
 
 /// Decrypt the `.vlt` file at `path` with `password` into a scratch temp
@@ -811,27 +867,35 @@ fn decrypt_file_in_vault(
     })
 }
 
-/// Mobile-only alternative to `open_path`: decrypts a *regular* vault entry
-/// (not `.vlt`-wrapped -- see `decrypt_file_in_vault` for that layer) into
-/// the same scratch dir, keeping its original filename so the receiving
-/// app can infer its type from the extension. No FUSE/DocumentsProvider
-/// needed: the plaintext exists on disk only transiently, exactly like the
-/// `.vlt` standalone-decrypt flow this mirrors -- registered unconditionally
-/// (harmless on desktop, just unused there since `open_path` already covers
-/// it via FUSE without a throwaway copy).
+/// Decrypts a *regular* vault entry (not `.vlt`-wrapped -- see
+/// `decrypt_file_in_vault` for that layer) into the scratch dir, keeping
+/// its original filename so the receiving app can infer its type from the
+/// extension. Mobile's only way to hand a vault file to another app (no
+/// FUSE/DocumentsProvider there) -- and, on desktop, what the OS
+/// opener/"Open With" use instead of the FUSE mountpoint (`open_path`),
+/// since a sandboxed app (a snap or flatpak -- VLC among them) can't see a
+/// path outside `$HOME`. On desktop this also starts `open_scratch::watch`,
+/// so an edit made out there and saved finds its way back into the vault
+/// instead of silently only ever changing this throwaway copy.
 #[tauri::command]
 fn vault_decrypt_to_temp(app: tauri::AppHandle, state: State<AppState>, rel_path: String) -> Result<String, String> {
     let dir = scratch_open_dir(&app)?;
-    with_vault(&state, |v| v.decrypt_file(&rel_path)).and_then(|plaintext| {
-        let name = Path::new(&rel_path)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "file".to_string());
-        std::fs::create_dir_all(&dir).str_err()?;
-        let dest = dir.join(name);
-        std::fs::write(&dest, plaintext).str_err()?;
-        Ok(dest.to_string_lossy().to_string())
-    })
+    let root = state.active.lock_safe().clone().ok_or("no vault unlocked")?;
+    let plaintext = {
+        let map = state.vaults.lock_safe();
+        let session = map.get(&root).ok_or("no vault unlocked")?;
+        session.vault.decrypt_file(&rel_path).str_err()?
+    };
+    let name = Path::new(&rel_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    std::fs::create_dir_all(&dir).str_err()?;
+    let dest = dir.join(name);
+    std::fs::write(&dest, &plaintext).str_err()?;
+    #[cfg(desktop)]
+    open_scratch::watch(app.clone(), root, rel_path.clone(), dest.clone());
+    Ok(dest.to_string_lossy().to_string())
 }
 
 const TAGS_FILENAME: &str = ".ve-tags.json";
@@ -1351,17 +1415,19 @@ fn fs_create_shortcut(target: String, dest: String) -> Result<(), String> {
 /// A second launch of the binary, forwarded here by the single-instance
 /// plugin: open another Explorer window in this already-running process
 /// (near-instant) instead of letting a whole second app boot (seconds).
+/// Returns the label of the window that now shows the app (the revived
+/// hidden main window, or the new one), for a caller that needs to raise
+/// it once it is mapped.
 #[cfg(desktop)]
-fn open_extra_explorer_window(app: &tauri::AppHandle) {
+pub(crate) fn open_extra_explorer_window(app: &tauri::AppHandle) -> Option<String> {
     // If this primary instance was a portal-activated picker server, its
     // main window exists but was never shown (and no sync loops run) -- a
     // real launch forwarded here means the user wants the full app now.
     if let Some(main) = app.get_webview_window("main") {
         if !main.is_visible().unwrap_or(true) {
             let _ = main.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)));
-            let _ = main.show();
-            let _ = main.set_focus();
-            return;
+            raise::raise(&main);
+            return Some("main".to_string());
         }
     }
     // Anything but "main-*" here needs adding to capabilities/*.json too:
@@ -1386,8 +1452,12 @@ fn open_extra_explorer_window(app: &tauri::AppHandle) {
             // window (see setup()).
             let _ = w.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)));
             let _ = w.set_focus();
+            Some(label)
         }
-        Err(e) => eprintln!("single-instance: failed to open a new window: {e}"),
+        Err(e) => {
+            eprintln!("single-instance: failed to open a new window: {e}");
+            None
+        }
     }
 }
 
@@ -1438,10 +1508,19 @@ pub fn run() {
         // xdg-open → this binary as the inode/directory handler): open the
         // new window right there -- pending-reveal is drained by whichever
         // window mounts next, which is the one created just below.
-        if let Some(dir) = argv.iter().skip(1).find_map(|a| filemanager1::cli_dir_arg(a)) {
-            filemanager1::set_pending_reveal(dir, None);
+        //
+        // A *file* argument is a "show this file" request (GNOME's
+        // screenshot notification → "Show in Files" launches the
+        // inode/directory handler with the screenshot itself): it goes
+        // through the same reveal the FileManager1 D-Bus service uses --
+        // the window already on that folder if any, raised for real.
+        if let Some((dir, select)) = argv.iter().skip(1).find_map(|a| filemanager1::cli_target(a)) {
+            filemanager1::reveal(app, dir, select);
+            return;
         }
-        open_extra_explorer_window(app);
+        if let Some(label) = open_extra_explorer_window(app) {
+            raise::raise_when_mapped(app, label);
+        }
     }));
     let builder = builder
         .manage(AppState::default())
@@ -1475,8 +1554,8 @@ pub fn run() {
             // `vaultexplorer ~/some/dir`): queue it so the main window
             // opens there once the frontend mounts and drains the slot.
             #[cfg(desktop)]
-            if let Some(dir) = std::env::args().skip(1).find_map(|a| filemanager1::cli_dir_arg(&a)) {
-                filemanager1::set_pending_reveal(dir, None);
+            if let Some((dir, select)) = std::env::args().skip(1).find_map(|a| filemanager1::cli_target(&a)) {
+                filemanager1::set_pending_reveal(dir, select);
             }
             // Best-effort, idempotent housekeeping that nothing in this
             // launch depends on -- moved off the main thread because it
@@ -1491,6 +1570,9 @@ pub fn run() {
             // - stale-mountpoint sweep: only touches `vaultexplorer-mnt-
             //   <pid>-*` dirs of dead pids, so this process's own mounts
             //   (all created later, under its own live pid) can't race it.
+            // - stale open-scratch sweep: same idea for `open-<pid>` temp
+            //   copies (see `scratch_open_dir`/`open_scratch`) a previous,
+            //   ungracefully-ended run left decrypted on disk.
             // - portal/filemanager1 registration self-heal: only rewrites
             //   on drift, and its worst case (`pkexec` prompting for the
             //   admin password after a rebuild changed the binary path)
@@ -1503,6 +1585,7 @@ pub fn run() {
                         eprintln!("deep-link: failed to register vaultexplorer:// scheme: {e}");
                     }
                     sweep_stale_mountpoints();
+                    open_scratch::sweep_stale(&handle);
                     if portal::is_enabled() && !portal_activated {
                         if let Ok(exe) = std::env::current_exe() {
                             let exe = exe.to_string_lossy();
@@ -1617,6 +1700,38 @@ pub fn run() {
             }
             Ok(())
         })
+        // WebKitGTK sometimes repaints its webview back to an opaque
+        // background on a resize/maximize/restore -- the same quirk
+        // documented above on the initial set_background_color call -- which
+        // shows up as a window corner (the top-left most noticeably) turning
+        // into a sharp square instead of staying see-through around the
+        // CSS-rounded `.app-window`. Reasserting it on every resize is the
+        // only way found to make it stick. A monitor scale or theme change
+        // re-realizes the same surface, so those reassert it too, and so do
+        // the picker windows, which share the transparent rounded shell.
+        //
+        // Measured on GNOME/X11 against a solid backdrop: 0.3.0 showed a
+        // square (opaque) corner after some resizes; with this, 0 of the
+        // move/resize/top-left-drag rounds did.
+        .on_window_event(|window, event| {
+            let label = window.label();
+            let transparent_shell = label.starts_with("main") || label.starts_with("picker");
+            let repaints = matches!(
+                event,
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::ThemeChanged(_)
+            );
+            if transparent_shell && repaints {
+                let _ = window.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)));
+            }
+        })
+        // Cached thumbnails, loaded by the webview straight from disk (see
+        // thumbcache::serve for why this isn't the asset protocol).
+        .register_asynchronous_uri_scheme_protocol("vxthumb", |_ctx, request, responder| {
+            let path = request.uri().path().to_string();
+            tauri::async_runtime::spawn_blocking(move || responder.respond(thumbcache::serve(&path)));
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -1636,6 +1751,8 @@ pub fn run() {
             list_dir,
             vault_list_dir_at,
             search_vault,
+            search::search_start,
+            search::search_cancel,
             move_entry,
             copy_entry,
             vault_to_vault_copy,
@@ -1653,12 +1770,15 @@ pub fn run() {
             clipboard::fs_copy_image_to_clipboard,
             clipboard::vault_copy_image_to_clipboard,
             clipboard::clipboard_has_image,
+            clipboard::clipboard_read_text,
             clipboard::clipboard_read_image_png,
             #[cfg(desktop)]
             defaultapp::default_file_manager_enabled,
             #[cfg(desktop)]
             defaultapp::set_default_file_manager,
             thumbnail::fs_thumbnail,
+            thumbnail::fs_thumb,
+            thumbnail::thumb_lookup,
             thumbnail::vault_thumbnail,
             thumbnail::fs_pdf_page,
             thumbnail::fs_pdf_page_count,
@@ -1668,6 +1788,8 @@ pub fn run() {
             app_icon::list_apps_for_path,
             #[cfg(desktop)]
             filemanager1::take_pending_reveal,
+            #[cfg(desktop)]
+            filemanager1::report_window_location,
             #[cfg(desktop)]
             app_icon::list_all_apps,
             #[cfg(desktop)]

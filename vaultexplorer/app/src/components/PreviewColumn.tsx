@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Entry, api, joinPath, parentPath, formatSize, formatDate } from "../api";
+import { Entry, api, joinPath, parentPath, formatSize, formatDate, copyText } from "../api";
 import { Loc } from "../types";
 import { FileIcon, CopyGlyph, CheckGlyph, kindOf } from "../icons";
 import { kindLabel } from "../entryHelpers";
@@ -21,7 +21,7 @@ function CopyButton({ text, title }: { text: string; title: string }) {
       onClick={async (e) => {
         e.stopPropagation();
         try {
-          await navigator.clipboard.writeText(text);
+          await copyText(text);
           setCopied(true);
           setTimeout(() => setCopied(false), 1200);
         } catch {
@@ -219,7 +219,11 @@ export function PreviewColumn({
     setFileMeta([]);
     const call = kind === "vault" ? api.vaultFileInfo(fullPath) : api.fsFileInfo(fullPath);
     call.then(setFileMeta).catch(() => setFileMeta([]));
-  }, [fullPath, kind]);
+    // entry.mtime: refetch when the file's own content changed underneath
+    // an already-open preview (an external edit saved back in, whether via
+    // the real-fs watcher or a vault temp-copy writeback), not just when
+    // the user selects a different file.
+  }, [fullPath, kind, entry.mtime]);
 
   // Plain scroll (no modifier needed) zooms the previewed image in place;
   // once zoomed, holding a regular or middle click pans it around. Same
@@ -308,7 +312,7 @@ export function PreviewColumn({
     setPageSrc(null);
     setPageCount(0);
     setPdfError("");
-  }, [fullPath]);
+  }, [fullPath, entry.mtime]);
   useEffect(() => {
     if (!isPdf) return;
     let cancelled = false;
@@ -321,7 +325,7 @@ export function PreviewColumn({
     return () => {
       cancelled = true;
     };
-  }, [isPdf, fullPath]);
+  }, [isPdf, fullPath, entry.mtime]);
   // Rendered at the resolution the current zoom bucket asks for (same
   // three buckets the image thumbnail uses), scaled up because a page of
   // text needs far more pixels to stay readable than a photo does to look
@@ -342,7 +346,7 @@ export function PreviewColumn({
     return () => {
       cancelled = true;
     };
-  }, [isPdf, fullPath, page, pageSize]);
+  }, [isPdf, fullPath, page, pageSize, entry.mtime]);
   function stepPage(delta: number) {
     setPage((p) => {
       const last = pageCount || p + 1;

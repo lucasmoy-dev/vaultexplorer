@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Entry } from "../api";
 import { View } from "../types";
 import { formatSize, formatDate } from "../api";
@@ -85,6 +85,29 @@ export function EntryTile({
   // changed, not because the folder did.
   const thumb = useThumbnail(entry, fullPath, inVault, 160, tileRef);
 
+  // `draggable` only turns on once the pointer has actually moved past a
+  // small threshold with the button held -- not from mousedown alone. Left
+  // permanently draggable, a real double-click's second mousedown (which
+  // always has a couple px of jitter relative to the first) can be read by
+  // WebKitGTK as the start of an HTML5 drag instead of a second click,
+  // which silently eats the dblclick and makes opening a folder do nothing.
+  const [dragReady, setDragReady] = useState(false);
+  const pointerDownAt = useRef<{ x: number; y: number } | null>(null);
+
+  function onPointerDown(e: React.PointerEvent) {
+    if (e.button !== 0 || editing || mobile) return;
+    pointerDownAt.current = { x: e.clientX, y: e.clientY };
+  }
+  function onPointerMove(e: React.PointerEvent) {
+    const start = pointerDownAt.current;
+    if (!start || dragReady) return;
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) setDragReady(true);
+  }
+  function onPointerUp() {
+    pointerDownAt.current = null;
+    setDragReady(false);
+  }
+
   return (
     <div
       ref={tileRef}
@@ -100,7 +123,10 @@ export function EntryTile({
       // actively harmful: a `draggable` element can swallow the long-press
       // that's supposed to open the context menu instead. Off entirely on
       // mobile rather than just unused.
-      draggable={!editing && !mobile}
+      draggable={!editing && !mobile && dragReady}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
       onClick={editing ? undefined : onClick}
       onDoubleClick={editing ? undefined : onOpen}
       onContextMenu={editing ? undefined : onMenu}
@@ -111,7 +137,7 @@ export function EntryTile({
     >
       <span className="entry-icon">
         {thumb ? (
-          <img src={thumb} className="entry-thumb" alt="" draggable={false} />
+          <img src={thumb} className="entry-thumb" alt="" decoding="async" draggable={false} />
         ) : (
           <FileIcon entry={entry} tagHex={entry.is_dir ? tagHex : undefined} customIcon={customIcon} />
         )}

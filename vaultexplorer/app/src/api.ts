@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { openPath as pluginOpenPath, openUrl as pluginOpenUrl } from "@tauri-apps/plugin-opener";
+import { writeText as pluginWriteText } from "@tauri-apps/plugin-clipboard-manager";
 
 // Resolved once and cached -- every caller awaits the same promise instead
 // of re-invoking the command per call. A *failed* attempt is not cached:
@@ -55,6 +56,66 @@ export interface ProgressEvent {
   total: number;
 }
 
+// Puts text on the system clipboard, and makes sure it got there.
+//
+// "Copy Absolute Path" used `navigator.clipboard.writeText`, the webview's
+// DOM clipboard API, which WebKitGTK and Android's WebView only honour
+// while the page holds focus *and* the call is still inside a fresh user
+// gesture -- and which, when it doesn't honour it, may leave the clipboard
+// exactly as it was. Whatever the user had copied before (a code-review
+// comment, in the report) is then what gets pasted, with nothing in the
+// app saying the copy never happened.
+//
+// Now the write goes through the native clipboard (the Tauri plugin:
+// arboard on desktop, ClipboardManager on Android, neither of which cares
+// about gestures or focus), is read back to confirm it took, falls back to
+// the DOM API once if it didn't, and throws -- so the caller shows an
+// error -- if the clipboard still doesn't hold the text.
+export async function copyText(text: string): Promise<void> {
+  let nativeError: unknown = null;
+  try {
+    await pluginWriteText(text);
+  } catch (e) {
+    nativeError = e;
+  }
+  if (await clipboardHolds(text)) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    /* reported below */
+  }
+  if (await clipboardHolds(text)) return;
+  throw new Error(`Couldn't copy to the clipboard${nativeError ? `: ${nativeError}` : ""}`);
+}
+
+// Read back through the backend (off the main thread -- reading the
+// clipboard there while this process owns it can deadlock GTK). If the
+// read itself isn't possible, the write is trusted rather than reported as
+// a failure that may not have happened.
+async function clipboardHolds(text: string): Promise<boolean> {
+  try {
+    return (await invoke<string>("clipboard_read_text")) === text;
+  } catch {
+    return true;
+  }
+}
+
+export interface SearchHit {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  is_vault: boolean;
+  size: number;
+  mtime: number;
+  has_meta: boolean;
+}
+export interface SearchBatch {
+  id: number;
+  hits: SearchHit[];
+  done: boolean;
+  truncated: boolean;
+}
+
 export interface Entry {
   name: string;
   is_dir: boolean;
@@ -88,8 +149,15 @@ export const api = {
   vaultListDirAt: (root: string, relPath: string) =>
     invoke<Entry[]>("vault_list_dir_at", { root, relPath }),
   search: (query: string) => invoke<string[]>("search_vault", { query }),
+  // Streamed, cancellable search (search.rs): resolves with the search's
+  // id at once; hits arrive in batches on `channel`. Starting a new search
+  // stops the previous one.
+  searchStart: (kind: "fs" | "vault", root: string, query: string, channel: Channel<SearchBatch>) =>
+    invoke<number>("search_start", { kind, root, query, channel }),
+  searchCancel: () => invoke<void>("search_cancel"),
   moveEntry: (src: string, dest: string) => invoke<void>("move_entry", { src, dest }),
-  copyEntry: (src: string, dest: string) => invoke<void>("copy_entry", { src, dest }),
+  copyEntry: (src: string, dest: string, channel: Channel<ProgressEvent>) =>
+    invoke<void>("copy_entry", { src, dest, channel }),
   vaultToVaultCopy: (srcRoot: string, srcRel: string, destRoot: string, destRel: string) =>
     invoke<void>("vault_to_vault_copy", { srcRoot, srcRel, destRoot, destRel }),
   vaultToVaultMove: (srcRoot: string, srcRel: string, destRoot: string, destRel: string) =>
@@ -209,6 +277,7 @@ export const api = {
   // A "Show in folder" request that arrived before the UI existed (D-Bus
   // activation starting the app); null when the app was already running and
   // the `show-in-folder` event handled it. See filemanager1.rs.
+  reportWindowLocation: (path: string | null) => invoke<void>("report_window_location", { path }),
   takePendingReveal: () =>
     invoke<{ path: string; select: string | null } | null>("take_pending_reveal"),
   // Every installed app (not just this file's registered handlers), for the
@@ -266,6 +335,10 @@ export const api = {
   archiveAllMounts: () => invoke<string[]>("archive_all_mounts"),
   fsThumbnail: (path: string, maxSize: number) =>
     invoke<string>("fs_thumbnail", { path, maxSize }),
+  // Renders into the shared freedesktop cache and returns the PNG's path
+  // (see thumbcache.rs); `fsThumbnail` above is the data-URI path kept for
+  // sizes past the cache's largest class.
+  fsThumb: (path: string, maxSize: number) => invoke<string>("fs_thumb", { path, maxSize }),
   vaultThumbnail: (relPath: string, maxSize: number) =>
     invoke<string>("vault_thumbnail", { relPath, maxSize }),
   fsCopyImageToClipboard: (path: string) =>

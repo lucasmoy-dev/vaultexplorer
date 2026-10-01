@@ -1021,7 +1021,13 @@ select {
   height: 100%;
   object-fit: cover;
   border-radius: 6px;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.16));
+  /* box-shadow, never filter: drop-shadow. WebKitGTK renders a CSS filter
+     in software, element by element, on every repaint: in a folder of 850
+     screenshots scrolling stalled for tens of seconds (measured against the
+     same WebKitGTK 2.52 with the app's grid: never finished a frame in 60 s
+     with the filters, 54 fps without). A thumbnail is a rectangle, so a
+     box-shadow draws the same shadow at the cost of one rounded rect. */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
 }
 .entry.list .entry-thumb {
   border-radius: 3px;
@@ -1160,7 +1166,9 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.16));
+  /* No filter here either -- see .entry-thumb. This box wraps every tile
+     in the grid, so a drop-shadow on it cost a software filter pass per
+     tile, thumbnail or not. */
 }
 .entry.icon .entry-name {
   font-size: 12.5px;

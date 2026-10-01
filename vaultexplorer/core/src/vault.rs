@@ -211,6 +211,31 @@ impl Vault {
         self.read_raw(rel)
     }
 
+    /// The reverse of `encrypt_dir_at`: recursively decrypts everything
+    /// under the vault directory `src_rel` onto the real filesystem at
+    /// `dest_dir`, mirroring its structure -- what pasting a vault folder
+    /// out to a real location needs (`decrypt_file` alone only covers a
+    /// single file, the same restriction `export_file` had before this).
+    pub fn decrypt_dir(&self, src_rel: impl AsRef<Path>, dest_dir: impl AsRef<Path>) -> Result<()> {
+        let src_rel = src_rel.as_ref();
+        let dest_dir = dest_dir.as_ref();
+        fs::create_dir_all(dest_dir)?;
+        let start = parts(src_rel);
+        let dir = self.dir_for(&start)?;
+        for entry in dir.list_files().map_err(crypt_err)? {
+            let name = entry.name.to_string();
+            let child_rel = src_rel.join(&name);
+            let child_dest = dest_dir.join(&name);
+            if let CryptoEntryType::Directory { .. } = entry.entry_type {
+                self.decrypt_dir(&child_rel, &child_dest)?;
+            } else {
+                let bytes = self.decrypt_file(&child_rel)?;
+                fs::write(&child_dest, bytes)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Same, without the sensitive-files gate -- for vault machinery
     /// (the manifest itself) that must be readable to decide the gate.
     fn read_raw(&self, rel: &Path) -> Result<Vec<u8>> {
@@ -350,20 +375,44 @@ impl Vault {
     /// Case-insensitive search over names, plus the contents of files that
     /// are plausibly text. Returns plaintext-relative paths.
     pub fn search(&self, query: &str) -> Result<Vec<PathBuf>> {
+        let mut hits = Vec::new();
+        self.search_streaming(query, &mut |rel, _| {
+            hits.push(rel.to_path_buf());
+            true
+        })?;
+        Ok(hits)
+    }
+
+    /// [`search`](Self::search), reporting each hit as it is found instead
+    /// of all at the end. `on_hit(rel, is_dir)` returns `false` to stop the
+    /// search right there -- what a new keystroke does to the search the
+    /// previous one started. Name matches (the whole tree) come first, then
+    /// content matches, since a content match costs a full decrypt.
+    pub fn search_streaming(&self, query: &str, on_hit: &mut dyn FnMut(&Path, bool) -> bool) -> Result<()> {
         let needle = query.to_lowercase();
         if needle.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let mut hits = Vec::new();
+        const STOP: &str = "search stopped";
         let mut files = Vec::new();
-        self.walk(&[], &mut |rel, is_dir| {
-            if rel.to_lowercase().contains(&needle) {
-                hits.push(PathBuf::from(rel));
+        let walked = self.walk(&[], &mut |rel, is_dir| {
+            // Only the entry's own name, not its whole path: a query that
+            // matches a folder name would otherwise "match" every file
+            // under it.
+            let name = rel.rsplit('/').next().unwrap_or(rel);
+            if name.to_lowercase().contains(&needle) {
+                if !on_hit(Path::new(rel), is_dir) {
+                    return Err(VaultError::Crypt(STOP.into()));
+                }
             } else if !is_dir {
                 files.push(PathBuf::from(rel));
             }
             Ok(())
-        })?;
+        });
+        match walked {
+            Err(VaultError::Crypt(msg)) if msg == STOP => return Ok(()),
+            other => other?,
+        }
         for rel in files {
             if !is_searchable_text(&rel) {
                 continue;
@@ -374,12 +423,12 @@ impl Vault {
                 continue;
             };
             if let Ok(text) = String::from_utf8(bytes) {
-                if text.to_lowercase().contains(&needle) {
-                    hits.push(rel);
+                if text.to_lowercase().contains(&needle) && !on_hit(&rel, false) {
+                    return Ok(());
                 }
             }
         }
-        Ok(hits)
+        Ok(())
     }
 
     pub fn dir_size(&self, rel_path: impl AsRef<Path>) -> Result<u64> {
@@ -636,6 +685,56 @@ impl Vault {
         }
     }
 
+    /// How many files (not directories) `copy_path`/`copy_path_with_progress`
+    /// would touch for `rel_path` -- the total a progress bar needs before
+    /// the copy starts.
+    pub fn count_files(&self, rel_path: impl AsRef<Path>) -> Result<u64> {
+        let rel_path = rel_path.as_ref();
+        if !self.stat(rel_path)?.is_dir {
+            return Ok(1);
+        }
+        let mut n = 0u64;
+        self.walk(&parts(rel_path), &mut |_, is_dir| {
+            if !is_dir {
+                n += 1;
+            }
+            Ok(())
+        })?;
+        Ok(n)
+    }
+
+    /// Same as `copy_path`, but calls `on_file_done` after each file lands
+    /// -- copying a folder full of files with no feedback at all reads as
+    /// the app having hung, especially since every file here is a decrypt
+    /// + re-encrypt, not a cheap metadata op like `move_path`'s.
+    pub fn copy_path_with_progress(
+        &self,
+        src_rel: impl AsRef<Path>,
+        dest_rel: impl AsRef<Path>,
+        on_file_done: &dyn Fn(),
+    ) -> Result<()> {
+        let src = src_rel.as_ref();
+        let dest = dest_rel.as_ref();
+        match self.stat(src)? {
+            Stat { is_dir: false, .. } => {
+                let bytes = self.decrypt_file(src)?;
+                self.write_file(dest, &bytes)?;
+                on_file_done();
+                Ok(())
+            }
+            Stat { is_dir: true, .. } => {
+                self.create_dir(dest)?;
+                let start = parts(src);
+                let dir = self.dir_for(&start)?;
+                for entry in dir.list_files().map_err(crypt_err)? {
+                    let name = entry.name.to_string();
+                    self.copy_path_with_progress(src.join(&name), dest.join(&name), on_file_done)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Absorb an existing plaintext file/dir sitting at `src` (a real
     /// on-disk path) INTO this vault at plaintext `rel`, then remove the
     /// plaintext original. Used by "Convert to Vault" to encrypt a folder's
@@ -671,6 +770,15 @@ impl Vault {
             }
         }
         Ok(())
+    }
+
+    /// Like `encrypt_dir`, but the destination doesn't have to be the vault
+    /// root -- what pasting a real folder into a vault subdirectory needs
+    /// (`encrypt_dir` always lands at the top).
+    pub fn encrypt_dir_at(&self, plaintext_dir: impl AsRef<Path>, dest_rel: impl AsRef<Path>) -> Result<()> {
+        let dest_rel = dest_rel.as_ref();
+        self.create_dir(dest_rel)?;
+        self.encrypt_subdir(plaintext_dir.as_ref(), dest_rel)
     }
 
     fn encrypt_subdir(&self, dir: &Path, rel: &Path) -> Result<()> {

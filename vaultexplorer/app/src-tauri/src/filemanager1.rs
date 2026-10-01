@@ -71,13 +71,88 @@ pub fn set_pending_reveal(path: String, select: Option<String>) {
 /// VaultExplorer is the inode/directory default) rather than through the
 /// org.freedesktop.FileManager1 service above (Chrome-style "Show in
 /// folder", which only works while a VaultExplorer process owns the name).
-pub fn cli_dir_arg(arg: &str) -> Option<String> {
+///
+/// A *file* argument counts too, as "open its folder with it selected" --
+/// which is exactly how GNOME Shell's screenshot notification asks for
+/// "Show in Files": it launches the inode/directory handler with the
+/// screenshot's own URI, not its folder's. Only taking directories here
+/// is why that button did nothing.
+pub fn cli_target(arg: &str) -> Option<(String, Option<String>)> {
     if arg.starts_with('-') || (arg.contains("://") && !arg.starts_with("file://")) {
         return None;
     }
     let path = uri_to_path(arg).unwrap_or_else(|| arg.to_string());
-    std::path::Path::new(&path).is_dir().then_some(path)
+    let p = std::path::Path::new(&path);
+    if p.is_dir() {
+        return Some((path, None));
+    }
+    if p.is_file() {
+        let parent = p.parent()?.to_string_lossy().into_owned();
+        let name = p.file_name()?.to_string_lossy().into_owned();
+        return Some((parent, Some(name)));
+    }
+    None
 }
+
+/// Which folder each window is showing (label -> real-fs path), reported
+/// by the frontend as it navigates. Lets a reveal reuse the window that is
+/// already looking at that folder -- clicking "Show in Files" on five
+/// screenshots in a row should select five files, not open five windows.
+fn window_locations() -> &'static Mutex<std::collections::HashMap<String, String>> {
+    static LOCS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, String>>> = std::sync::OnceLock::new();
+    LOCS.get_or_init(Default::default)
+}
+
+#[tauri::command]
+pub fn report_window_location(window: tauri::WebviewWindow, path: Option<String>) {
+    if let Ok(mut map) = window_locations().lock() {
+        match path {
+            Some(p) => map.insert(window.label().to_string(), p),
+            None => map.remove(window.label()),
+        };
+    }
+}
+
+/// Show `dir` (selecting `select` in it, if given) in front of the user:
+/// in the window already showing that folder if there is one, else in the
+/// never-shown main window of a D-Bus-activated instance, else in a new
+/// window -- and in every case actually raised (see raise.rs).
+pub fn reveal(app: &AppHandle, dir: String, select: Option<String>) {
+    let payload = ShowInFolderPayload { path: dir.clone(), select };
+    let same_folder = window_locations().lock().ok().and_then(|map| {
+        map.iter()
+            .filter(|(_, path)| **path == dir)
+            .map(|(label, _)| label.clone())
+            .find(|label| {
+                app.get_webview_window(label)
+                    .map(|w| w.is_visible().unwrap_or(false))
+                    .unwrap_or(false)
+            })
+    });
+    if let Some(label) = same_folder {
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = app.emit_to(label.as_str(), "show-in-folder", payload);
+            crate::raise::raise(&w);
+            return;
+        }
+    }
+    // Parked for whichever window mounts next (a new one, or a main window
+    // whose frontend hasn't loaded yet), and also sent to a main window
+    // that is loaded but hidden (a portal/D-Bus-activated instance).
+    set_pending_reveal(payload.path.clone(), payload.select.clone());
+    if let Some(main) = app.get_webview_window("main") {
+        if !main.is_visible().unwrap_or(true) {
+            let _ = main.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)));
+            let _ = app.emit_to("main", "show-in-folder", payload);
+            crate::raise::raise(&main);
+            return;
+        }
+    }
+    if let Some(label) = crate::open_extra_explorer_window(app) {
+        crate::raise::raise_when_mapped(app, label);
+    }
+}
+
 
 /// Minimal percent-decoder for the `file://` URIs callers hand us (a
 /// filename with a space becomes `%20`, etc.) -- pulling in a whole crate
@@ -114,24 +189,12 @@ impl FileManager1Iface {
     /// plain `emit`, not a command return value -- nothing is waiting on
     /// this call's result) to navigate to `path`, optionally selecting
     /// `select` once the listing loads.
+    ///
+    /// This used to target the window labelled "main" and `emit` to all of
+    /// them: with a second window open, every window navigated, and with
+    /// "main" closed nothing was raised. See the free `reveal` above.
     fn reveal(&self, path: String, select: Option<String>) {
-        if let Some(main) = self.app.get_webview_window("main") {
-            let _ = main.show();
-            let _ = main.unminimize();
-            let _ = main.set_focus();
-            // Most WMs (KDE/GNOME, X11 or Wayland) refuse to hand focus to
-            // a window that wasn't already focused -- ICCCM/EWMH focus-
-            // stealing prevention, same restriction noted for the portal
-            // picker. set_focus() above is a no-op there. Urgency hint
-            // (taskbar/dock flash) isn't blocked the same way, so it's the
-            // fallback that actually gets noticed.
-            let _ = main.request_user_attention(Some(tauri::UserAttentionType::Critical));
-        }
-        let payload = ShowInFolderPayload { path, select };
-        if let Ok(mut slot) = pending_reveal().lock() {
-            *slot = Some(payload.clone());
-        }
-        let _ = self.app.emit("show-in-folder", payload);
+        reveal(&self.app, path, select);
     }
 }
 
