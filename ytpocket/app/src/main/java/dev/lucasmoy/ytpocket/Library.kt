@@ -125,6 +125,28 @@ object Library {
         override fun remove(item: Organizer.Item) {
             context.contentResolver.delete(Uri.parse(item.id), null, null)
         }
+
+        /**
+         * `MediaStore` deletes files, never folders, so an emptied artist
+         * folder stays on disk -- and shows up in every file manager. Only
+         * when `MediaStore` lists nothing of ours in it is the directory
+         * removed, and `File.delete` refuses a directory that still has
+         * anything in it (someone else's file this app cannot see included).
+         */
+        override fun removeIfEmpty(folder: String) {
+            if (folder.isEmpty()) return
+            val inside = context.contentResolver.query(
+                MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                arrayOf(MediaStore.MediaColumns._ID),
+                "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
+                arrayOf("$root$folder/"),
+                null,
+            )?.use { it.count } ?: 1
+            if (inside > 0) return
+            @Suppress("DEPRECATION")
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "${Downloads.ALBUM}/$folder")
+            if (dir.isDirectory) dir.delete()
+        }
     }
 
     /**
@@ -212,6 +234,12 @@ object Library {
 
         override fun remove(item: Organizer.Item) {
             DocumentsContract.deleteDocument(resolver, Uri.parse(item.id))
+        }
+
+        override fun removeIfEmpty(folder: String) {
+            if (folder.isEmpty()) return
+            val dir = children(rootId).firstOrNull { it.isDir && it.name == folder } ?: return
+            if (children(dir.id).isEmpty()) DocumentsContract.deleteDocument(resolver, documentUri(dir.id))
         }
     }
 }

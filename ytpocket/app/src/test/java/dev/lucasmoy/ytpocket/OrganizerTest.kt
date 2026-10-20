@@ -51,6 +51,9 @@ class OrganizerTest {
             files.remove(item.id)
             entries.remove(item)
         }
+        override fun removeIfEmpty(folder: String) {
+            if (entries.none { it.folder == folder }) log += "rmdir $folder"
+        }
     }
 
     /** Tags keyed by item id; "tagging" appends a marker to the temp file. */
@@ -95,6 +98,40 @@ class OrganizerTest {
         assertEquals(1, summary.organised)
         assertEquals(1, summary.matched)
         assertTrue("temp files left behind", work.listFiles().orEmpty().isEmpty())
+    }
+
+    /**
+     * What 0.2.0 did to "One Less Lonely Girl - Justin Bieber (Lyrics)" by a
+     * channel called "Pillow": a folder "Pillow". The file carries 0.2.0's
+     * unversioned marker, so it does not read as organised, is looked up
+     * again, moves to its artist, and the folder it leaves empty goes. A
+     * folder that still holds another song stays.
+     */
+    @Test
+    fun `a song filed under the wrong artist moves out, and the emptied folder goes`() {
+        val wrong = Organizer.Item("1", "Pillow - One Less Lonely Girl - Justin Bieber.mp3", "Pillow")
+        val other = Organizer.Item("2", target, "Queen")
+        val stray = Organizer.Item("3", "Justin Bieber 🎵.mp3", "Queen")
+        val bieber = "Justin Bieber - My Worlds - One Less Lonely Girl.mp3"
+        val shelf = FakeShelf(listOf(wrong, other, stray))
+        val tagger = FakeTagger(
+            mapOf(
+                "1" to existing(organised = false, name = wrong.name, folder = "Pillow"),
+                "2" to existing(organised = true, name = target, folder = "Queen"),
+                "3" to existing(organised = false),
+            ),
+            mapOf(
+                wrong.name.removeSuffix(".mp3") to tagged(bieber, "Justin Bieber"),
+                stray.name.removeSuffix(".mp3") to tagged(bieber, "Justin Bieber"),
+            ),
+        )
+        val summary = Organizer(shelf, tagger, work, onlyOurs = false).run()
+
+        assertEquals(2, summary.organised)
+        assertTrue(shelf.log.contains("add Justin Bieber/$bieber"))
+        assertTrue("the emptied folder is still there", shelf.log.contains("rmdir Pillow"))
+        assertFalse("a folder with a song in it was removed", shelf.log.contains("rmdir Queen"))
+        assertTrue(shelf.entries.none { it.folder == "Pillow" })
     }
 
     @Test

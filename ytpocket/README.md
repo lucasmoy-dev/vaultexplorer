@@ -161,9 +161,17 @@ keeps going. That is why everything else lives behind the gear, top right
   within 20s/20%; among the matches, the original album beats soundtracks,
   best-ofs, live takes and lullaby covers (all real iTunes answers, kept as
   fixtures in `jni/testdata`). Requests are spaced 3s apart (Apple asks for
-  ~20/min). Tags are written as **ID3v2.3**, because Android's own reader
+  ~20/min). A title is read **both ways round**: lyrics channels write
+  "Song - Artist" ("One Less Lonely Girl - Justin Bieber (Lyrics)" by a
+  channel called "Pillow"), so both orders are offered and the store picks
+  the one it knows; an artist counts only as a whole credited name ("Queen"
+  is not "Killer Queen"); and when the store lacks the song, the side it
+  knows as an artist is the artist. Tags are written as **ID3v2.3**, because Android's own reader
   ignores 2.4's date frame. Each file carries the app's mark (`TENC`), and
-  an organised one a comment, so a second run only checks names and folders;
+  an organised one a comment, so a second run only checks names and folders
+  (the comment is versioned: files 0.2.0 organised are looked up once more,
+  from the video they came from when the file knows it, and moved out of
+  wrong artist folders, which are removed once empty);
   in a folder you picked, files without the mark are never touched.
   Reorganising writes the new file before deleting the old one.
 - **Where files land.** `MediaStore` with `IS_PENDING`, which needs no

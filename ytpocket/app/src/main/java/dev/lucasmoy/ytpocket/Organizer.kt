@@ -20,6 +20,9 @@ import java.io.File
  *   way through leaves the original untouched, not a truncated song.
  * * **One file failing is one file failing.** It is counted and the run goes
  *   on; the first error is kept so the summary can say what it was.
+ * * **A folder a run empties goes.** A song filed under the wrong artist by
+ *   0.2.0 ("Pillow", "One Less Lonely Girl") is moved out, and the folder it
+ *   leaves behind is removed if nothing else is in it.
  */
 class Organizer(
     private val shelf: Shelf,
@@ -49,6 +52,8 @@ class Organizer(
         fun overwrite(item: Item, source: File)
         fun add(source: File, folder: String, name: String)
         fun remove(item: Item)
+        /** Delete the artist folder `folder` if it has nothing left in it; otherwise leave it. */
+        fun removeIfEmpty(folder: String) {}
     }
 
     interface Tagger {
@@ -74,10 +79,11 @@ class Organizer(
     fun run(onProgress: (done: Int, total: Int, name: String) -> Unit = { _, _, _ -> }): Summary {
         val items = shelf.list()
         var summary = Summary(total = items.size)
+        val vacated = mutableSetOf<String>()
         items.forEachIndexed { index, item ->
             onProgress(index, items.size, item.name)
             summary = try {
-                organise(item, summary)
+                organise(item, summary, vacated)
             } catch (error: Throwable) {
                 summary.copy(
                     failed = summary.failed + 1,
@@ -85,6 +91,7 @@ class Organizer(
                 )
             }
         }
+        vacated.forEach { folder -> runCatching { shelf.removeIfEmpty(folder) } }
         onProgress(items.size, items.size, "")
         return summary
     }
@@ -101,7 +108,7 @@ class Organizer(
         return Regex(Regex.escape(stem) + " \\(\\d+\\)\\." + Regex.escape(ext)).matches(actual)
     }
 
-    private fun organise(item: Item, summary: Summary): Summary {
+    private fun organise(item: Item, summary: Summary, vacated: MutableSet<String>): Summary {
         val temp = File(work, "organise-${System.nanoTime()}.mp3")
         var copied = false
         fun local(): String {
@@ -130,6 +137,7 @@ class Organizer(
             } else {
                 shelf.add(temp, tagged.folder, tagged.fileName)
                 shelf.remove(item)
+                if (item.folder.isNotEmpty() && item.folder != tagged.folder) vacated += item.folder
             }
             val fromStore = tagged.source == "itunes" || tagged.source == "youtube_music"
             return summary.copy(

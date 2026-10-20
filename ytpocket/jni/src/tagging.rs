@@ -40,10 +40,19 @@ use std::time::{Duration, Instant};
 /// organiser can tell its own files from the rest of a music folder.
 pub const MADE_BY: &str = "YT Pocket";
 
-/// The comment an organised file carries: `YT Pocket · itunes`. Its presence
-/// means "already looked up" -- a second run then only checks names and
-/// folders, with no network at all.
+/// The comment an organised file carries: `YT Pocket · itunes · v2`. Its
+/// presence means "already looked up" -- a second run then only checks names
+/// and folders, with no network at all.
 const ORGANISED_PREFIX: &str = "YT Pocket · ";
+/// Which version of the lookup organised the file. 0.2.0 wrote no version,
+/// and it read "Song - Artist" uploads backwards; a file it organised is not
+/// trusted, it is looked up again (once) and put right.
+const ORGANISED_VERSION: &str = " · v2";
+
+/// Whether a comment is the current organiser's mark.
+fn current_mark(comment: &str) -> bool {
+    comment.starts_with(ORGANISED_PREFIX) && comment.ends_with(ORGANISED_VERSION)
+}
 
 /// What the caller knows about the audio. For a fresh download that is the
 /// whole YouTube answer; for a file being organised it may be nothing, and
@@ -103,47 +112,136 @@ const NOISE: &[&str] = &[
 ];
 
 /// Split a video title into (artist, song), using the channel when the title
-/// alone does not say.
+/// alone does not say: the best guess when no store confirms anything.
 pub fn guess(title: &str, channel: &str) -> (String, String) {
+    readings(title, channel).into_iter().next().unwrap_or_default()
+}
+
+/// Every way of reading a title as (artist, song), most likely first.
+///
+/// "Artist - Song" is the convention, but plenty of uploads -- lyrics
+/// channels above all -- write "Song - Artist" ("One Less Lonely Girl -
+/// Justin Bieber (Lyrics)" by a channel called "Pillow"), and nothing in the
+/// text says which. So both orders are offered and the store decides
+/// ([`pick`]); only when it confirms neither does the first one stand, and
+/// the first one is "Artist - Song" unless the channel is the right-hand
+/// side. The channel is the artist only when the title has no dash at all.
+pub fn readings(title: &str, channel: &str) -> Vec<(String, String)> {
     let title = strip_noise(title);
-    for separator in [" - ", " – ", " — ", " ~ ", " || "] {
-        if let Some((left, right)) = title.split_once(separator) {
-            let (artist, song) = (left.trim(), right.trim());
-            if !artist.is_empty() && !song.is_empty() {
-                return (artist.to_string(), strip_noise(song));
+    let channel = clean_channel(channel);
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut push = |artist: &str, song: &str| {
+        let (artist, song) = (artist.trim().to_string(), strip_noise(song));
+        if !artist.is_empty() && !song.is_empty() && !out.contains(&(artist.clone(), song.clone())) {
+            out.push((artist, song));
+        }
+    };
+    let split = [" - ", " – ", " — ", " ‒ ", " ― ", " − ", " ~ ", " || "]
+        .iter()
+        .find_map(|separator| title.split_once(separator))
+        .filter(|(left, right)| !left.trim().is_empty() && !right.trim().is_empty());
+    match split {
+        Some((left, right)) => {
+            let channel_is_right = !channel.is_empty()
+                && artist_agrees(&channel, right)
+                && !artist_agrees(&channel, left);
+            if channel_is_right {
+                push(right, left);
+                push(left, right);
+            } else {
+                push(left, right);
+                push(right, left);
+            }
+            // "Bohemian Rhapsody - Remastered 2011" by Queen.
+            push(&channel, left);
+        }
+        None => {
+            push(&channel, &title);
+            // A file whose tags say artist "One Less Lonely Girl", title
+            // "Justin Bieber": what 0.2.0 wrote for the upload above. Read
+            // back as (title, channel), the swap is offered too.
+            push(&title, &channel);
+            // "Justin Bieber-One Less Lonely Girl": a dash with no spaces is
+            // too often part of a name ("Jay-Z") to be believed unconfirmed,
+            // so it comes last.
+            if let Some((left, right)) = title.split_once('-') {
+                if left.trim().chars().count() > 1 && right.trim().chars().count() > 1 {
+                    push(left, right);
+                    push(right, left);
+                }
             }
         }
     }
-    (clean_channel(channel), title)
+    out
 }
 
 /// Remove the upload's decorations: noise groups, trailing "| Official
 /// Video", stray quotes around the song.
 fn strip_noise(text: &str) -> String {
+    // Non-breaking and other odd spaces are spaces: one around a dash used to
+    // hide the dash, and the whole title was filed under the channel.
+    // Emoji and symbols ("🎵", "♪", "★") are decoration, never the name.
+    let text: String = text
+        .chars()
+        .filter_map(|c| {
+            if c.is_whitespace() {
+                Some(' ')
+            } else if c.is_alphanumeric() || c.is_ascii() || "–—‒―−‘’“”¡¿·«»´".contains(c) || is_mark(c) {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .collect();
     let mut out = String::new();
-    let mut rest = text;
+    let mut rest = text.as_str();
     while let Some(start) = rest.find(['(', '[']) {
         let close = if rest[start..].starts_with('(') { ')' } else { ']' };
         let Some(len) = rest[start..].find(close) else { break };
         let inner = rest[start + 1..start + len].to_lowercase();
         out.push_str(&rest[..start]);
-        if !NOISE.iter().any(|word| contains_word(&inner, word)) {
+        let noise = NOISE.iter().any(|word| contains_word(&inner, word));
+        if !noise {
             out.push_str(&rest[start..=start + len]);
         }
         rest = &rest[start + len + 1..];
+        // "(Audio/Estudio) 2022": the upload's year, part of the same noise.
+        if noise {
+            let after = rest.trim_start();
+            let year = after.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("");
+            if year.len() == 4 && (year.starts_with("19") || year.starts_with("20")) {
+                rest = &after[4..];
+            }
+        }
     }
     out.push_str(rest);
     // "Song | Official Video" -- whatever follows a bar is the uploader
     // talking, never part of the title.
-    let out = out.split(" | ").next().unwrap_or("").to_string();
-    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    let out = out.split(" | ").next().unwrap_or("");
+    let out = out.split(" // ").next().unwrap_or("").to_string();
+    let mut words: Vec<&str> = out.split_whitespace().collect();
+    // "One Less Lonely Girl Lyrics": the same noise, without its brackets.
+    while words.len() > 1
+        && ["lyrics", "lyric", "letra", "letras"].contains(&words[words.len() - 1].to_lowercase().as_str())
+    {
+        words.pop();
+    }
+    let out = words.join(" ");
     out.trim_matches(|c: char| c == '"' || c == '\'' || c == '“' || c == '”' || c.is_whitespace())
         .to_string()
 }
 
+/// Combining marks: part of a letter in some scripts, so they stay.
+fn is_mark(c: char) -> bool {
+    matches!(c as u32, 0x0300..=0x036F | 0x0900..=0x0DFF | 0x3099..=0x309A)
+}
+
 fn contains_word(haystack: &str, word: &str) -> bool {
+    // Split with and without the slash: "m/v" is one word, "Audio/Estudio"
+    // is two.
     haystack
         .split(|c: char| !(c.is_alphanumeric() || c == '/'))
+        .chain(haystack.split(|c: char| !c.is_alphanumeric()))
         .any(|piece| piece == word)
         || (word.contains(' ') && haystack.contains(word))
 }
@@ -272,34 +370,33 @@ fn core_title(title: &str) -> String {
     normalise(&out[..cut])
 }
 
-/// The first named artist, for comparing "Queen & Adam Lambert" with "Queen".
-fn first_artist(artist: &str) -> String {
-    let lower = artist.to_lowercase();
-    let cut = [" feat", " ft.", " ft ", " & ", ", ", " x ", " with "]
-        .iter()
-        .filter_map(|marker| lower.find(marker))
-        .min()
-        .unwrap_or(artist.len());
-    normalise(&artist[..cut])
-}
-
 fn tokens(text: &str) -> Vec<&str> {
     text.split(' ').filter(|t| !t.is_empty()).collect()
 }
 
-fn artist_agrees(asked: &str, found: &str) -> bool {
-    let asked_first = first_artist(asked);
-    let found_all = normalise(found);
-    let found_first = first_artist(found);
-    let asked_all = normalise(asked);
-    if asked_first.is_empty() || found_first.is_empty() {
-        return false;
+/// Every credited name: "Bad Bunny feat. ROSALÍA & Rauw" -> three.
+fn artist_names(artist: &str) -> Vec<String> {
+    let mut names = vec![artist.to_lowercase()];
+    for marker in [" feat. ", " feat ", " ft. ", " ft ", " featuring ", " & ", ", ", " x ", " with ", " y "] {
+        names = names.iter().flat_map(|n| n.split(marker).map(str::to_string).collect::<Vec<_>>()).collect();
     }
-    let contains = |hay: &str, needle: &str| {
-        let hay = tokens(hay);
-        tokens(needle).iter().all(|t| hay.contains(t))
-    };
-    contains(&found_all, &asked_first) || contains(&asked_all, &found_first)
+    names
+        .iter()
+        .map(|n| {
+            let n = normalise(n);
+            n.strip_prefix("the ").map(str::to_string).unwrap_or(n)
+        })
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// The same act when one of the names credited on one side is one of the
+/// names credited on the other, whole. Words are not enough: "Queen" is a
+/// word in "Killer Queen" (a member of a musical's cast, which iTunes offers
+/// for "Bohemian Rhapsody"), and "Queens of the Stone Age" is not Queen.
+fn artist_agrees(asked: &str, found: &str) -> bool {
+    let (asked, found) = (artist_names(asked), artist_names(found));
+    asked.iter().any(|a| found.contains(a))
 }
 
 fn title_agrees(asked: &str, found: &str) -> bool {
@@ -450,6 +547,13 @@ pub fn best_match(results: &[Value], artist: &str, title: &str, duration: Option
     })
 }
 
+/// The first reading of the title the store confirms, as a match.
+pub fn pick(results: &[Value], title: &str, channel: &str, duration: Option<u32>) -> Option<Meta> {
+    readings(title, channel)
+        .iter()
+        .find_map(|(artist, song)| best_match(results, artist, song, duration))
+}
+
 // ---- network ----------------------------------------------------------------
 
 /// Apple documents "approximately 20 calls per minute" for the search API and
@@ -540,28 +644,40 @@ fn cover_for(meta: &Meta, video_id: &str) -> Option<Vec<u8>> {
 /// source that was asked actually answered -- false means "try again later".
 pub fn lookup(hint: &Hint, country: &str) -> (Meta, bool) {
     let described = from_description(&hint.description);
-    let (artist, title) = match &described {
-        Some(meta) => (meta.artist.clone(), meta.title.clone()),
-        None => guess(&hint.title, &hint.channel),
+    // The label's own credits are one reading, and exact; a title is several.
+    let readings = match &described {
+        Some(meta) => vec![(meta.artist.clone(), meta.title.clone())],
+        None => readings(&hint.title, &hint.channel),
     };
-    // Artist and title first; then the title alone, because the store's
-    // search ranks by popularity and buries a big hit under the artist's
-    // other songs when both names are in the query (measured: "Bad Bunny
-    // Tití Me Preguntó" does not list the song, "Tití Me Preguntó" does).
-    let song = core_display(&title);
-    let mut terms = vec![format!("{} {song}", first_artist_display(&artist))];
-    if song.chars().count() >= 4 {
-        terms.push(song);
+    let (artist, title) = readings.first().cloned().unwrap_or_else(|| (String::new(), hint.name.clone()));
+    // Artist and title first -- in either order the search finds the same
+    // songs; then each candidate song alone, because the store's search ranks
+    // by popularity and buries a big hit under the artist's other songs when
+    // both names are in the query (measured: "Bad Bunny Tití Me Preguntó"
+    // does not list the song, "Tití Me Preguntó" does). At most three
+    // requests: they are three seconds apart.
+    let mut terms = vec![format!("{} {}", first_artist_display(&artist), core_display(&title))];
+    for (_, song) in readings.iter().take(2) {
+        let song = core_display(song);
+        if song.chars().count() >= 4 && !terms.contains(&song) {
+            terms.push(song);
+        }
     }
     let mut found = None;
     let mut answered = true;
-    for term in terms {
-        match itunes_search(&term, country) {
+    let mut artists_seen: Vec<String> = Vec::new();
+    for term in terms.iter().take(3) {
+        match itunes_search(term, country) {
             Ok(results) => {
-                found = best_match(&results, &artist, &title, hint.duration);
+                found = readings
+                    .iter()
+                    .find_map(|(artist, song)| best_match(&results, artist, song, hint.duration));
                 if found.is_some() {
                     break;
                 }
+                artists_seen.extend(
+                    results.iter().filter_map(|r| r.get("artistName").and_then(Value::as_str)).map(str::to_string),
+                );
             }
             Err(_) => {
                 answered = false;
@@ -590,13 +706,23 @@ pub fn lookup(hint: &Hint, country: &str) -> (Meta, bool) {
         }
         (Some(own), None) => own,
         (None, Some(store)) => store,
-        (None, None) => Meta {
-            album_artist: artist.clone(),
-            artist,
-            title,
-            source: "youtube".to_string(),
-            ..Meta::default()
-        },
+        // The store does not have the song, but it may well know the singer:
+        // "Titi Me Pregunto - Bad Bunny" finds no such track and plenty of
+        // Bad Bunny. The side the store knows as an artist is the artist.
+        (None, None) => {
+            let (artist, title) = readings
+                .iter()
+                .find(|(artist, _)| artists_seen.iter().any(|seen| artist_agrees(artist, seen)))
+                .cloned()
+                .unwrap_or((artist, title));
+            Meta {
+                album_artist: artist.clone(),
+                artist,
+                title,
+                source: "youtube".to_string(),
+                ..Meta::default()
+            }
+        }
     };
     (meta, answered)
 }
@@ -683,9 +809,7 @@ pub fn read_from(file: std::fs::File) -> Result<Existing, String> {
         existing.album_artist = text(ItemKey::AlbumArtist);
         existing.date = text(ItemKey::RecordingDate);
         existing.made_by_us = text(ItemKey::EncodedBy) == MADE_BY;
-        existing.organised = tag
-            .get_strings(ItemKey::Comment)
-            .any(|c| c.starts_with(ORGANISED_PREFIX));
+        existing.organised = tag.get_strings(ItemKey::Comment).any(current_mark);
         existing.video_id = tag
             .get(ItemKey::AudioSourceUrl)
             .and_then(|item| item.value().locator().or_else(|| item.value().text()))
@@ -746,7 +870,7 @@ pub fn write(path: &Path, meta: &Meta, cover: Option<&[u8]>, video_id: &str, org
     }
     tag.insert_text(ItemKey::EncodedBy, MADE_BY.to_string());
     if organised {
-        tag.insert_text(ItemKey::Comment, format!("{ORGANISED_PREFIX}{}", meta.source));
+        tag.insert_text(ItemKey::Comment, format!("{ORGANISED_PREFIX}{}{ORGANISED_VERSION}", meta.source));
     }
     if let Some(bytes) = cover {
         let mime = if bytes.starts_with(b"\x89PNG") { MimeType::Png } else { MimeType::Jpeg };
@@ -798,6 +922,20 @@ pub fn tag_file(path: &Path, hint: &Hint, country: &str) -> Result<Outcome, Stri
         (meta, false, false)
     } else {
         let mut hint = hint.clone();
+        if hint.title.is_empty() && !existing.video_id.is_empty() {
+            // Organising a file this app downloaded: the video it came from
+            // says what the song is better than tags an earlier run may have
+            // got wrong. One player request, no stream; offline, the tags.
+            let fetched = crate::innertube::player(crate::innertube::VISIONOS, &existing.video_id);
+            if let Ok(player) = fetched {
+                if !player.title.is_empty() {
+                    hint.title = player.title;
+                    hint.channel = player.channel;
+                    hint.description = player.description;
+                    hint.duration = hint.duration.or(player.duration);
+                }
+            }
+        }
         if hint.title.is_empty() {
             hint.title = if existing.title.is_empty() { hint.name.clone() } else { existing.title.clone() };
         }
@@ -940,6 +1078,82 @@ mod tests {
         assert!(!title_agrees("Love", "Love Story"));
     }
 
+
+    #[test]
+    fn a_song_dash_artist_title_is_found_the_other_way_round() {
+        // Real upload: "One Less Lonely Girl - Justin Bieber (Lyrics) 🎵" by a
+        // lyrics channel called "Pillow". Read left to right it says the
+        // artist is "One Less Lonely Girl"; the store says otherwise.
+        let results = fixture("itunes-bieber.json");
+        for (title, channel) in [
+            ("One Less Lonely Girl - Justin Bieber (Lyrics) 🎵", "Pillow"),
+            ("Justin Bieber - One Less Lonely Girl", "Justin Bieber"),
+            ("One Less Lonely Girl\u{a0}-\u{a0}Justin Bieber", "Pillow"),
+        ] {
+            let meta = pick(&results, title, channel, Some(229)).unwrap_or_else(|| panic!("no match for {title}"));
+            assert_eq!((meta.artist.as_str(), meta.title.as_str(), meta.album.as_str()),
+                ("Justin Bieber", "One Less Lonely Girl", "My Worlds"), "{title}");
+        }
+    }
+
+    #[test]
+    fn tags_with_artist_and_song_swapped_are_repaired() {
+        // What 0.2.0 wrote for that upload when the store did not confirm it:
+        // artist "One Less Lonely Girl", title "Justin Bieber 🎵". Organising
+        // again feeds those tags back in as title and channel.
+        let meta = pick(&fixture("itunes-bieber.json"), "Justin Bieber 🎵", "One Less Lonely Girl", Some(229)).expect("not repaired");
+        assert_eq!((meta.artist.as_str(), meta.title.as_str()), ("Justin Bieber", "One Less Lonely Girl"));
+    }
+
+    #[test]
+    fn a_lyrics_channel_is_not_an_artist() {
+        // Only the song in the title and a channel that is nobody's name: no
+        // store result may be taken for it, not even another singer's song
+        // with the same title (Nikki Ocean's is in the fixture).
+        assert!(pick(&fixture("itunes-bieber.json"), "One Less Lonely Girl (Lyrics)", "Pillow", Some(229)).is_none());
+    }
+
+    #[test]
+    fn the_fallback_never_files_a_song_under_the_uploader() {
+        // A non-breaking space around the dash used to hide the dash, and the
+        // whole title went under the channel: a folder called "Pillow".
+        let (artist, song) = guess("One Less Lonely Girl\u{a0}-\u{a0}Justin Bieber (Lyrics) 🎵", "Pillow");
+        assert_ne!(artist, "Pillow");
+        assert!(!song.contains('🎵') && !artist.contains('🎵'), "{artist} / {song}");
+        // When the channel is one side of the dash, that side is the artist.
+        assert_eq!(guess("Shape of You - Ed Sheeran", "Ed SheeranVEVO"), ("Ed Sheeran".into(), "Shape of You".into()));
+        assert_eq!(
+            guess("Luis Fonsi ‒ Despacito (Lyrics / Lyric Video) ft. Daddy Yankee", "Ciara"),
+            ("Luis Fonsi".into(), "Despacito ft. Daddy Yankee".into())
+        );
+        assert_eq!(
+            readings("Titi Me Pregunto - Bad Bunny (Audio/Estudio) 2022", "JRMUSIC")[1],
+            ("Bad Bunny".into(), "Titi Me Pregunto".into())
+        );
+        assert_eq!(
+            guess("Justin Bieber - One Less Lonely Girl // Lyrics + Español // Video Official", "BrunoTraductor Official"),
+            ("Justin Bieber".into(), "One Less Lonely Girl".into())
+        );
+    }
+
+    #[test]
+    fn a_word_of_an_artist_name_is_not_the_artist() {
+        assert!(!artist_agrees("Queen", "Galileéo, Scaramouche, Killer Queen, Khashoggi & The Cast of \"We Will Rock You\""));
+        assert!(artist_agrees("Weeknd", "The Weeknd"));
+        assert!(artist_agrees("Justin Bieber", "Justin Bieber & benny blanco"));
+        assert!(!artist_agrees("One Less Lonely Girl", "Justin Bieber"));
+    }
+
+    #[test]
+    fn only_the_current_marker_counts_as_organised() {
+        // Everything 0.2.0 organised is looked at once more, so whatever it
+        // got wrong is put right.
+        assert!(!current_mark("YT Pocket · youtube"));
+        assert!(!current_mark("YT Pocket · itunes"));
+        assert!(!current_mark("something else"));
+        assert!(current_mark("YT Pocket · itunes · v2"));
+    }
+
     /// Tags written, read back by lofty: everything the player shows,
     /// including the cover and the length.
     #[test]
@@ -1054,6 +1268,66 @@ mod live_tests {
         assert!(cover_for(&meta, "fJ9rUzIMcZQ").is_some(), "no thumbnail fallback");
     }
 
+    /// Live: a file 0.2.0 organised wrong -- the "Pillow" upload, tagged
+    /// artist "One Less Lonely Girl", title "Justin Bieber 🎵", with 0.2.0's
+    /// unversioned marker -- is looked up again from the video it came from
+    /// and comes out as Justin Bieber's song, named and filed as such.
+    ///
+    /// ```text
+    /// cargo test --release -- --ignored --nocapture wrongly_organised
+    /// ```
+    #[test]
+    #[ignore]
+    fn a_wrongly_organised_file_is_put_right() {
+        let hits = crate::youtube::search("One Less Lonely Girl - Justin Bieber (Lyrics) Pillow", 10).expect("search failed");
+        let hit = hits.iter().find(|h| h.channel == "Pillow").expect("the Pillow upload is not in the results");
+        println!("video {} \"{}\" by {}", hit.id, hit.title, hit.channel);
+
+        let dir = std::env::temp_dir().join("ytpocket-repair-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let (m4a, mp3) = (dir.join("tone.m4a"), dir.join("tone.mp3"));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "aac"])
+            .arg(&m4a)
+            .output()
+            .expect("ffmpeg is needed to make the fixture");
+        assert!(made.status.success());
+        crate::mp3::transcode(&m4a, &mp3, Some("x"), Some("y"), &mut |_| true).unwrap();
+        let wrong = Meta {
+            artist: "One Less Lonely Girl".into(),
+            title: "Justin Bieber 🎵".into(),
+            album_artist: "One Less Lonely Girl".into(),
+            source: "youtube".into(),
+            ..Meta::default()
+        };
+        write(&mp3, &wrong, None, &hit.id, false).unwrap();
+        {
+            // 0.2.0's marker, which had no version.
+            // Through the ID3v2 tag itself, so the WOAS frame survives.
+            use lofty::config::{ParseOptions, WriteOptions};
+            use lofty::file::AudioFile;
+            use lofty::prelude::{Accessor, TagExt};
+            let mut file = std::fs::File::open(&mp3).unwrap();
+            let mut mpeg = lofty::mpeg::MpegFile::read_from(&mut file, ParseOptions::new()).unwrap();
+            let id3 = mpeg.id3v2_mut().unwrap();
+            id3.set_comment("YT Pocket · youtube".into());
+            id3.save_to_path(&mp3, WriteOptions::default().use_id3v23(true)).unwrap();
+        }
+        let before = read(&mp3).unwrap();
+        assert!(!before.organised, "0.2.0's marker must not be trusted");
+        assert_eq!(before.folder, "One Less Lonely Girl");
+
+        let outcome = tag_file(&mp3, &Hint::default(), "ES").unwrap();
+        println!("{outcome:?}");
+        assert!(outcome.rewritten);
+        assert_eq!(outcome.folder, "Justin Bieber");
+        assert_eq!(outcome.file_name, "Justin Bieber - My Worlds - One Less Lonely Girl.mp3");
+        let after = read(&mp3).unwrap();
+        assert!(after.organised);
+        assert_eq!((after.artist.as_str(), after.title.as_str()), ("Justin Bieber", "One Less Lonely Girl"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Live, and the honest measure of the heuristics: real searches, the
     /// top result's real title/channel/description, and what came of each.
     /// Prints a table; asserts only that most of them found an album, since
@@ -1103,3 +1377,5 @@ mod live_tests {
         assert!(with_album * 2 >= queries.len(), "only {with_album} of {} found an album", queries.len());
     }
 }
+
+
