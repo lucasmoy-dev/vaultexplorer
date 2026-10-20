@@ -70,19 +70,24 @@ pub fn raise<R: Runtime>(window: &WebviewWindow<R>) {
 }
 
 /// `raise` for a window that was only just created: it has to be mapped
-/// before the window manager will act on an activation request for it, so
-/// this waits a moment (off the main thread) and raises it then.
+/// *and managed by the window manager* before an activation request for it
+/// does anything, and "visible" to GTK comes before that -- the one raise
+/// this used to send landed too early, and the new window stayed behind
+/// the browser that asked for it. So this keeps raising, off the main
+/// thread, until the window actually has focus (or ~2 s pass).
 pub fn raise_when_mapped<R: Runtime>(app: &tauri::AppHandle<R>, label: String) {
     let app = app.clone();
     std::thread::spawn(move || {
-        for _ in 0..10 {
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            if let Some(w) = app.get_webview_window(&label) {
-                if w.is_visible().unwrap_or(false) {
-                    raise(&w);
-                    return;
-                }
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let Some(w) = app.get_webview_window(&label) else { return };
+            if !w.is_visible().unwrap_or(false) {
+                continue;
             }
+            if w.is_focused().unwrap_or(false) {
+                return;
+            }
+            raise(&w);
         }
     });
 }

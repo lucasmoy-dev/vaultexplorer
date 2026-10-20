@@ -434,18 +434,10 @@ export const api = {
   vaultDecryptToTemp: (relPath: string) => invoke<string>("vault_decrypt_to_temp", { relPath }),
 
   fsWatchSet: (path: string | null) => invoke<void>("fs_watch_set", { path }),
+  // Native GTK drag of real files out of the window (dragout.rs). `image`
+  // is a synchronously-built PNG data URL (see buildDragImage in App.tsx).
   startFileDrag: (paths: string[], image?: string) =>
-    invoke<void>("plugin:drag|start_drag", {
-      item: paths,
-      // A 1x1 transparent pixel fallback -- callers normally pass a real
-      // (synchronously-built, so the drag starts without any extra delay)
-      // translucent icon instead; see buildDragImage in App.tsx.
-      image:
-        image ??
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-      options: { mode: "copy" },
-      onEvent: new Channel(),
-    }),
+    invoke<void>("start_file_drag", { paths, image: image ?? null }),
 };
 
 

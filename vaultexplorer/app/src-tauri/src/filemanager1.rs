@@ -113,26 +113,63 @@ pub fn report_window_location(window: tauri::WebviewWindow, path: Option<String>
     }
 }
 
+/// The explorer window the user focused last, so a reveal can reuse it.
+fn last_focused() -> &'static Mutex<Option<String>> {
+    static LAST: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+    LAST.get_or_init(Default::default)
+}
+
+/// Called from the window-event hook whenever a window gains focus.
+pub fn note_focused(label: &str) {
+    if label == "main" || label.starts_with("main-") {
+        if let Ok(mut slot) = last_focused().lock() {
+            *slot = Some(label.to_string());
+        }
+    }
+}
+
 /// Show `dir` (selecting `select` in it, if given) in front of the user:
 /// in the window already showing that folder if there is one, else in the
-/// never-shown main window of a D-Bus-activated instance, else in a new
-/// window -- and in every case actually raised (see raise.rs).
+/// explorer window used last (navigated there), else in the never-shown
+/// main window of a D-Bus-activated instance, else in a new window -- and
+/// in every case actually raised (see raise.rs).
+///
+/// Reusing an open window matters for speed: "Show in folder" from
+/// Chrome's downloads with VaultExplorer open on another folder used to
+/// build a whole new window (a fresh WebKit web process, the bundle, the
+/// listing) and then fail to bring it in front -- about 5 s until the user
+/// found it. An already-loaded window only has to list one folder.
 pub fn reveal(app: &AppHandle, dir: String, select: Option<String>) {
     let payload = ShowInFolderPayload { path: dir.clone(), select };
-    let same_folder = window_locations().lock().ok().and_then(|map| {
-        map.iter()
-            .filter(|(_, path)| **path == dir)
-            .map(|(label, _)| label.clone())
-            .find(|label| {
-                app.get_webview_window(label)
-                    .map(|w| w.is_visible().unwrap_or(false))
-                    .unwrap_or(false)
-            })
-    });
-    if let Some(label) = same_folder {
+    let visible = |label: &String| {
+        app.get_webview_window(label)
+            .map(|w| w.is_visible().unwrap_or(false))
+            .unwrap_or(false)
+    };
+    let (same_folder, any_window) = window_locations()
+        .lock()
+        .ok()
+        .map(|map| {
+            let same = map
+                .iter()
+                .filter(|(_, path)| **path == dir)
+                .map(|(label, _)| label.clone())
+                .find(|label| visible(label));
+            let last = last_focused().lock().ok().and_then(|l| l.clone());
+            let any = last
+                .filter(|label| map.contains_key(label) && visible(label))
+                .or_else(|| map.keys().find(|label| visible(label)).cloned());
+            (same, any)
+        })
+        .unwrap_or((None, None));
+    if let Some(label) = same_folder.or(any_window) {
         if let Some(w) = app.get_webview_window(&label) {
             let _ = app.emit_to(label.as_str(), "show-in-folder", payload);
             crate::raise::raise(&w);
+            // The window manager doesn't always honour the first request
+            // (seen once as "demands attention" instead of focus); retried
+            // until the window has focus.
+            crate::raise::raise_when_mapped(app, label);
             return;
         }
     }

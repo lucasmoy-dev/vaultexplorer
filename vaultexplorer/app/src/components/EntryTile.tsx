@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Entry } from "../api";
 import { View } from "../types";
 import { formatSize, formatDate } from "../api";
@@ -56,7 +56,8 @@ export function EntryTile({
   onClick: (e: React.MouseEvent) => void;
   onOpen: () => void;
   onMenu: (e: React.MouseEvent) => void;
-  onDragStart: (e: React.DragEvent) => void;
+  // Pointer moved far enough with the button held: start dragging out.
+  onDragStart: () => void;
   onDragOver?: (e: React.DragEvent) => void;
   onDragLeave?: () => void;
   onDrop?: (e: React.DragEvent) => void;
@@ -85,13 +86,15 @@ export function EntryTile({
   // changed, not because the folder did.
   const thumb = useThumbnail(entry, fullPath, inVault, 160, tileRef);
 
-  // `draggable` only turns on once the pointer has actually moved past a
-  // small threshold with the button held -- not from mousedown alone. Left
-  // permanently draggable, a real double-click's second mousedown (which
-  // always has a couple px of jitter relative to the first) can be read by
-  // WebKitGTK as the start of an HTML5 drag instead of a second click,
-  // which silently eats the dblclick and makes opening a folder do nothing.
-  const [dragReady, setDragReady] = useState(false);
+  // Dragging a tile out starts the native OS drag (see beginDrag in
+  // App.tsx) once the pointer has moved past a small threshold with the
+  // button held. It used to wait for WebKit's own HTML5 `dragstart`, with
+  // `draggable` switched on only after that same threshold: WebKit decides
+  // at mousedown whether a press may start a drag, so a press on a tile
+  // that wasn't draggable *yet* often never produced one -- the first
+  // drag after opening a folder did nothing, and which part of the tile
+  // you grabbed seemed to matter. The tile is never `draggable` now (which
+  // also keeps a double-click's jitter from being read as a drag).
   const pointerDownAt = useRef<{ x: number; y: number } | null>(null);
 
   function onPointerDown(e: React.PointerEvent) {
@@ -100,12 +103,18 @@ export function EntryTile({
   }
   function onPointerMove(e: React.PointerEvent) {
     const start = pointerDownAt.current;
-    if (!start || dragReady) return;
-    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) setDragReady(true);
+    if (!start) return;
+    if (!(e.buttons & 1)) {
+      pointerDownAt.current = null;
+      return;
+    }
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) {
+      pointerDownAt.current = null;
+      onDragStart();
+    }
   }
   function onPointerUp() {
     pointerDownAt.current = null;
-    setDragReady(false);
   }
 
   return (
@@ -118,19 +127,13 @@ export function EntryTile({
       }`}
       data-name={entry.name}
       title={editing ? undefined : entry.name}
-      // HTML5 drag is dead weight on touch (Android WebView never
-      // synthesizes drag events from a touch gesture, see beginDrag) and
-      // actively harmful: a `draggable` element can swallow the long-press
-      // that's supposed to open the context menu instead. Off entirely on
-      // mobile rather than just unused.
-      draggable={!editing && !mobile && dragReady}
+      draggable={false}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onClick={editing ? undefined : onClick}
       onDoubleClick={editing ? undefined : onOpen}
       onContextMenu={editing ? undefined : onMenu}
-      onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}

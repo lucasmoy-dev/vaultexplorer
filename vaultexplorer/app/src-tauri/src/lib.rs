@@ -17,6 +17,8 @@ mod errmap;
 // them to shell out to or hook into).
 #[cfg(desktop)]
 mod filemanager1;
+#[cfg(target_os = "linux")]
+mod dragout;
 #[cfg(desktop)]
 mod fs_watch;
 // Android gets a stub with the same shape, aliased to the same name so the
@@ -1713,8 +1715,17 @@ pub fn run() {
         // Measured on GNOME/X11 against a solid backdrop: 0.3.0 showed a
         // square (opaque) corner after some resizes; with this, 0 of the
         // move/resize/top-left-drag rounds did.
+        // Native drag-out needs each webview's mouse presses (dragout.rs).
+        .on_page_load(|_webview, _payload| {
+            #[cfg(target_os = "linux")]
+            dragout::hook(_webview);
+        })
         .on_window_event(|window, event| {
             let label = window.label();
+            #[cfg(desktop)]
+            if let tauri::WindowEvent::Focused(true) = event {
+                filemanager1::note_focused(label);
+            }
             let transparent_shell = label.starts_with("main") || label.starts_with("picker");
             let repaints = matches!(
                 event,
@@ -1786,6 +1797,8 @@ pub fn run() {
             app_icon::app_icon_for_ext,
             #[cfg(desktop)]
             app_icon::list_apps_for_path,
+            #[cfg(target_os = "linux")]
+            dragout::start_file_drag,
             #[cfg(desktop)]
             filemanager1::take_pending_reveal,
             #[cfg(desktop)]

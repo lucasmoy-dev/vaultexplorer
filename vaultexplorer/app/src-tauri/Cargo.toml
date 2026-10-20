@@ -1,6 +1,6 @@
 [package]
 name = "vaultexplorer"
-version = "0.3.1"
+version = "0.3.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -88,6 +88,7 @@ tauri-plugin-drag = "2"
 # Cargo.lock) -- pinning it as a direct dep just gives app_icon.rs a name
 # to `use gtk::...` under, not a second GTK copy.
 gtk = "0.18.2"
+webkit2gtk = "2.0.2"
 # The X11 window id behind a GTK window, so a "Show in Files" from another
 # app can raise the window through _NET_ACTIVE_WINDOW (see raise.rs). Same
 # version tauri's runtime already links.

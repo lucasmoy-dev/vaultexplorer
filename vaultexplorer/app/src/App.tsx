@@ -3471,42 +3471,28 @@ function Explorer({ home }: { home: string }) {
   }
 
   // ---- internal drag-drop (move) ----
-  // Real fs files/folders also start a *native* OS-level drag alongside
-  // the usual HTML5 one -- HTML5's own `dataTransfer` never carries real
-  // file bytes another process could read, so without this, dropping
-  // onto an external app (a browser tab, another native app) silently
-  // does nothing no matter what's in `dataTransfer`. Vault entries on
-  // desktop get the same native drag, resolved through the FUSE mount
-  // (api.openPath, same call activate() uses to open a vault file) --
-  // there's a real on-disk path there. Mobile has no FUSE mount, so vault
-  // entries there fall back to the in-webview HTML5 drag, same as before.
-  function beginDrag(e: React.DragEvent, entry: Entry) {
+  // Dragging tiles always starts a *native* OS-level drag (dragout.rs) --
+  // HTML5's own `dataTransfer` never carries real file bytes another
+  // process could read, so dropping onto an external app (a browser tab,
+  // another native app) would otherwise silently do nothing. Dropping the
+  // same drag back onto our own window still works: the `onDragDropEvent`
+  // handler below treats a non-empty `dragPaths` as "this is our own drag
+  // coming back". Vault entries get the same drag, resolved through the
+  // FUSE mount (api.openPath, same call activate() uses to open a vault
+  // file) -- there's a real on-disk path there. Desktop only: the tile
+  // never calls this on mobile.
+  function beginDrag(entry: Entry) {
     const names = selected.has(entry.name) && selected.size ? [...selected] : [entry.name];
     if (!selected.has(entry.name)) selectOnly(entry.name);
     dragPaths.current = names.map((n) => joinPath(curDir, n));
+    const image = buildDragImage(entry, names.length);
     if (!inVault) {
-      // Cancel WebKitGTK's own HTML5 drag entirely and start a real OS-
-      // level one instead (see api.startFileDrag) -- letting *both* run
-      // for the same gesture means they compete for the same X11 pointer
-      // grab, and WebKitGTK's own (which never carries real file bytes
-      // another process could read, no matter what's in `dataTransfer`)
-      // was winning that race, silently. Dropping this same drag back
-      // onto our own window still works: the `onDragDropEvent` handler
-      // below treats a non-empty `dragPaths` as "this is our own drag
-      // coming back" and routes it the same way `onDrop` used to.
-      e.preventDefault();
-      api.startFileDrag(dragPaths.current, buildDragImage(entry, names.length)).catch(() => {});
+      api.startFileDrag(dragPaths.current, image).catch(() => {});
       return;
     }
-    if (!mobile) {
-      e.preventDefault();
-      Promise.all(dragPaths.current.map((p) => api.openPath(p)))
-        .then((absPaths) => api.startFileDrag(absPaths, buildDragImage(entry, names.length)))
-        .catch(() => {});
-      return;
-    }
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", dragPaths.current.join("\n"));
+    Promise.all(dragPaths.current.map((p) => api.openPath(p)))
+      .then((absPaths) => api.startFileDrag(absPaths, image))
+      .catch(() => {});
   }
   // ---- touch drag-to-folder (mobile) --------------------------------
   // Mobile has no HTML5 drag: `draggable` is off there because it swallows
@@ -4114,7 +4100,6 @@ function Explorer({ home }: { home: string }) {
         onClick: async () => {
           try {
             await copyText(abs);
-            setInfoMsg("Path copied");
           } catch (err) {
             setError(String(err));
           }
@@ -4989,7 +4974,7 @@ function Explorer({ home }: { home: string }) {
                 activate(curDir, entry);
               }}
               onMenu={(e) => entryMenu(e, entry)}
-              onDragStart={(e) => beginDrag(e, entry)}
+              onDragStart={() => beginDrag(entry)}
               onDragOver={
                 entry.is_dir && (!entry.is_vault || !inVault)
                   ? (e) => {
@@ -5075,7 +5060,6 @@ function Explorer({ home }: { home: string }) {
     });
     try {
       await copyText(paths.join("\n"));
-      setInfoMsg(paths.length === 1 ? "Path copied" : `${paths.length} paths copied`);
     } catch (e) {
       setError(String(e));
     }
@@ -5883,7 +5867,19 @@ function Explorer({ home }: { home: string }) {
 
       {folderPickTarget && (
         <FolderPickerSheet
-          startPath={home ?? "/"}
+          {...(inVault && loc.kind === "vault"
+            ? {
+                startPath: curDir,
+                root: "",
+                rootLabel: baseName(loc.root) || "Vault",
+                list: (d: string) => api.vaultListDirAt(loc.root, d),
+              }
+            : {
+                startPath: curDir,
+                root: mobile ? PHONE_STORAGE_PATH : "/",
+                rootLabel: mobile ? "Phone" : "Computer",
+                list: (d: string) => api.fsList(d, false),
+              })}
           title={folderPickTarget.title}
           onPick={folderPickTarget.onPick}
           onClose={() => setFolderPickTarget(null)}
